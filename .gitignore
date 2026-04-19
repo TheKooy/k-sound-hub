@@ -1,0 +1,55 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.pyd
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+
+# IDE / editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS / misc
+.DS_Store
+Thumbs.db
+
+# Local runtime / logs
+*.log
+logs/
+.tmp/
+tmp/
+
+# Build artifacts
+build/
+dist/
+*.tar.gz
+*.zip
+
+# Project-local user state
+state/
+cache/
+*.qpwgraph
+*.carxp
+
+# Screenshots / personal exports
+screenshots/
+exports/
+
+# Secrets / environment
+.env
+.env.*
+
+# Local config dumps
+*.json.bak
+*.local.json
