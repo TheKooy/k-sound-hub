@@ -30,11 +30,11 @@ CHANNEL_META = {
 }
 
 DEVICE_CHOICES = {
-    "playback": ["ANPW", "USB Audio S/PDIF", "Temporary output"],
-    "monitor": ["ANPW", "USB Audio S/PDIF"],
+    "playback": ["ANPW", "SB Audio S/PD", "Temporary output"],
+    "monitor": ["ANPW", "SB Audio S/PD"],
 }
 RETURN_MODES = ["Post-EE", "Final Mix"]
-MIC_INPUT_CHOICES = ["Arctis Nova Pro Mic", "RODE NT-USB", "Both microphones"]
+MIC_INPUT_CHOICES = ["ANPW Mic", "RODE NT-USB", "Both mics"]
 
 
 class ChannelWidget(QFrame):
@@ -150,7 +150,7 @@ class ChannelWidget(QFrame):
             return RETURN_MODES[0]
         return ""
 
-    def _selector_frame(self, combo: CenteredComboBox, *, badge_text: str | None = None, frame_width: int = 136) -> QWidget:
+    def _selector_frame(self, combo: CenteredComboBox, *, frame_width: int = 136) -> QWidget:
         frame = QFrame()
         frame.setObjectName("selectorFrame")
         frame.setFixedWidth(frame_width)
@@ -158,14 +158,7 @@ class ChannelWidget(QFrame):
 
         row = QHBoxLayout(frame)
         row.setContentsMargins(8, 4, 8, 4)
-        row.setSpacing(6)
-
-        if badge_text:
-            badge = QLabel(badge_text)
-            badge.setObjectName("selectorBadge")
-            badge.setAlignment(Qt.AlignCenter)
-            badge.setFixedWidth(12)
-            row.addWidget(badge, 0, Qt.AlignVCenter)
+        row.setSpacing(0)
 
         combo.setObjectName("selectorCombo")
         combo.setMinimumHeight(26)
@@ -182,7 +175,7 @@ class ChannelWidget(QFrame):
             box = QWidget()
             outer = QHBoxLayout(box)
             outer.setContentsMargins(0, 0, 0, 0)
-            outer.setSpacing(8)
+            outer.setSpacing(10)
             outer.addStretch(1)
 
             self.device_combo = CenteredComboBox()
@@ -190,15 +183,26 @@ class ChannelWidget(QFrame):
             self._prepare_combo(self.device_combo)
             self._set_combo_text(self.device_combo, self.channel.primary_target)
             self.device_combo.currentTextChanged.connect(self._on_primary_target_changed)
-            outer.addWidget(self._selector_frame(self.device_combo, badge_text="O", frame_width=130), 0, Qt.AlignCenter)
+            outer.addWidget(self._selector_frame(self.device_combo, frame_width=136), 0, Qt.AlignCenter)
+
+            input_group = QWidget()
+            input_row = QHBoxLayout(input_group)
+            input_row.setContentsMargins(0, 0, 0, 0)
+            input_row.setSpacing(6)
+
+            input_label = QLabel("Input")
+            input_label.setObjectName("mutedLabel")
+            input_label.setAlignment(Qt.AlignCenter)
+            input_row.addWidget(input_label, 0, Qt.AlignVCenter)
 
             self.return_mode_combo = CenteredComboBox()
             self.return_mode_combo.addItems(RETURN_MODES)
             self._prepare_combo(self.return_mode_combo)
             self._set_combo_text(self.return_mode_combo, self.channel.secondary_target)
             self.return_mode_combo.currentTextChanged.connect(self._on_secondary_target_changed)
-            outer.addWidget(self._selector_frame(self.return_mode_combo, badge_text="I", frame_width=136), 0, Qt.AlignCenter)
+            input_row.addWidget(self._selector_frame(self.return_mode_combo, frame_width=142), 0, Qt.AlignCenter)
 
+            outer.addWidget(input_group, 0, Qt.AlignCenter)
             outer.addStretch(1)
             return box
 
@@ -239,7 +243,7 @@ class ChannelWidget(QFrame):
 
     def set_card_width(self, width: int) -> None:
         if self.channel.key == "return-mic":
-            self._card_width = max(306, min(330, int(width) + 106))
+            self._card_width = max(318, min(346, int(width) + 160))
         elif self.channel.key == "micro":
             self._card_width = max(166, min(186, int(width) + 12))
         else:
