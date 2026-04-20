@@ -3,13 +3,37 @@ from __future__ import annotations
 from pathlib import Path
 
 APP_NAME = "K-Sound Hub"
-APP_VERSION = "0.2.12"
+APP_VERSION = "0.3.0"
 ORG_NAME = "K-Sound Hub"
 ORG_DOMAIN = "local.ksoundhub"
 
 CONFIG_DIR = Path.home() / ".config" / "ksound-hub"
 SETTINGS_PATH = CONFIG_DIR / "settings.json"
 LOG_DIR = CONFIG_DIR / "logs"
+RUNTIME_DIR = CONFIG_DIR / "runtime"
+
+MEDIA_EQ_RUNTIME_DIR = RUNTIME_DIR / "media-eq"
+MEDIA_EQ_CONFIG_PATH = MEDIA_EQ_RUNTIME_DIR / "ksh-media-eq.conf"
+MEDIA_EQ_LOG_PATH = LOG_DIR / "ksh-media-eq.log"
+MEDIA_EQ_CAPTURE_TARGET = "media"
+
+PIPEWIRE_REMOTE_NAME = "pipewire-0"
+
+OUTPUT_TARGET_HINTS: dict[str, list[str]] = {
+    "ANPW": [
+        "alsa_output.usb-SteelSeries_Arctis_Nova_Pro_Wireless-00.analog-stereo",
+        "SteelSeries_Arctis_Nova_Pro_Wireless",
+        "Arctis_Nova_Pro_Wireless",
+        "analog-stereo",
+    ],
+    "S/PDIF": [
+        "alsa_output.usb-Generic_USB_Audio-00.HiFi__SPDIF__sink",
+        "SPDIF",
+        "S/PDIF",
+        "Generic_USB_Audio",
+    ],
+    "Temp out": [],
+}
 
 DEFAULT_CHANNELS = [
     {"key": "all", "name": "ALL", "enabled": True, "kind": "playback"},

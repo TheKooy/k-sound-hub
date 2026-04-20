@@ -13,7 +13,7 @@ STYLE_SHEET = """
 QWidget {
     background: #0d1118;
     color: #edf4ff;
-    font-size: 13px;
+    font-size: 12px;
 }
 QMainWindow, QDialog {
     background: #0d1118;
@@ -24,7 +24,7 @@ QLabel#pageTitle {
 }
 QLabel#mutedLabel {
     color: #9eabc2;
-    font-size: 11px;
+    font-size: 10px;
 }
 QFrame#channelCard {
     background: rgba(16, 22, 34, 238);
@@ -64,9 +64,9 @@ QPushButton#sectionToggle,
 QPushButton#deviceButton,
 QPushButton#titleButton,
 QPushButton#ghostButton {
-    padding: 4px 7px;
+    padding: 3px 6px;
     border-radius: 8px;
-    font-size: 11px;
+    font-size: 10px;
 }
 QPushButton#ghostButton {
     background: rgba(12, 18, 28, 175);

@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QListWidget,
     QListWidgetItem,
+    QMessageBox,
     QPushButton,
     QSizePolicy,
     QSlider,
@@ -16,8 +17,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..models import ChannelConfig, EqBand, EqProfile
-from .widgets import CenteredComboBox, CollapsibleSection, EqBandSlider, HeaderBadge, StereoLevelMeterWidget
+from ..models import ChannelConfig, EqProfile
+from .eq_dialog import EqProfileDialog
+from .widgets import CenteredComboBox, CollapsibleSection, HeaderBadge, StereoLevelMeterWidget
 
 CHANNEL_META = {
     "all": {"icon": "🌍", "apps": ["Default desktop audio", "Browser", "System sounds"]},
@@ -73,6 +75,7 @@ class ChannelWidget(QFrame):
 
         self.device_combo: CenteredComboBox | None = None
         self.return_mode_combo: CenteredComboBox | None = None
+        self.eq_list: QListWidget | None = None
 
         controls_row = self._build_primary_controls()
         if controls_row is not None:
@@ -166,21 +169,6 @@ class ChannelWidget(QFrame):
         row.addWidget(combo, 1)
 
         return frame
-
-    def _selector_column(self, title: str | None, combo: CenteredComboBox, *, frame_width: int) -> QWidget:
-        box = QWidget()
-        col = QVBoxLayout(box)
-        col.setContentsMargins(0, 0, 0, 0)
-        col.setSpacing(4)
-
-        if title:
-            title_label = QLabel(title)
-            title_label.setObjectName("mutedLabel")
-            title_label.setAlignment(Qt.AlignCenter)
-            col.addWidget(title_label, 0, Qt.AlignHCenter)
-
-        col.addWidget(self._selector_frame(combo, frame_width=frame_width), 0, Qt.AlignHCenter)
-        return box
 
     def _build_primary_controls(self) -> QWidget | None:
         self.channel.primary_target = self.channel.primary_target or self._default_primary_target()
@@ -282,43 +270,40 @@ class ChannelWidget(QFrame):
         self.apps_section.content_layout.addLayout(actions)
 
     def _populate_eq_section(self) -> None:
-        top_row = QHBoxLayout()
-        self.profile_combo = CenteredComboBox()
-        self._reload_profiles()
-        self.profile_combo.currentTextChanged.connect(self._on_profile_selected)
-        top_row.addWidget(self.profile_combo, 1)
+        badge_row = QHBoxLayout()
+        badge_row.addWidget(HeaderBadge("Presets"))
+        badge_row.addStretch(1)
+        self.eq_section.content_layout.addLayout(badge_row)
+
+        self.eq_list = QListWidget()
+        self.eq_list.setMinimumHeight(82)
+        self.eq_list.setStyleSheet("font-size: 11px;")
+        self.eq_list.currentItemChanged.connect(self._on_eq_selection_changed)
+        self.eq_section.content_layout.addWidget(self.eq_list)
+
+        actions = QHBoxLayout()
+        actions.setContentsMargins(0, 0, 0, 0)
+        actions.setSpacing(4)
 
         add_profile_btn = QPushButton("+")
         add_profile_btn.setObjectName("tinyButton")
         add_profile_btn.clicked.connect(self._add_profile)
-        top_row.addWidget(add_profile_btn)
+        actions.addWidget(add_profile_btn)
 
-        remove_profile_btn = QPushButton("−")
+        actions.addStretch(1)
+
+        edit_profile_btn = QPushButton("✎")
+        edit_profile_btn.setObjectName("tinyButton")
+        edit_profile_btn.clicked.connect(self._edit_profile)
+        actions.addWidget(edit_profile_btn)
+
+        remove_profile_btn = QPushButton("🗑")
         remove_profile_btn.setObjectName("tinyButton")
         remove_profile_btn.clicked.connect(self._remove_profile)
-        top_row.addWidget(remove_profile_btn)
+        actions.addWidget(remove_profile_btn)
 
-        self.eq_section.content_layout.addLayout(top_row)
-
-        bands_row = QHBoxLayout()
-        bands_row.setSpacing(5)
-        self.band_sliders: list[EqBandSlider] = []
-        profile = self._current_profile()
-        for band in profile.bands:
-            slider = EqBandSlider(self._band_label(band.frequency), int(band.gain_db))
-            slider.slider.valueChanged.connect(self._update_bands_from_ui)
-            self.band_sliders.append(slider)
-            bands_row.addWidget(slider)
-        self.eq_section.content_layout.addLayout(bands_row)
-
-        advanced_row = QHBoxLayout()
-        advanced_row.addWidget(HeaderBadge("Simple EQ"))
-        advanced_row.addStretch(1)
-        adv_btn = QPushButton("Advanced later")
-        adv_btn.setObjectName("titleButton")
-        adv_btn.setEnabled(False)
-        advanced_row.addWidget(adv_btn)
-        self.eq_section.content_layout.addLayout(advanced_row)
+        self.eq_section.content_layout.addLayout(actions)
+        self._reload_profiles()
 
     def _populate_details_section(self) -> None:
         grid = QGridLayout()
@@ -417,27 +402,33 @@ class ChannelWidget(QFrame):
         return profile
 
     def _reload_profiles(self) -> None:
-        self.profile_combo.blockSignals(True)
-        self.profile_combo.clear()
-        for profile in self.channel.eq_profiles:
-            self.profile_combo.addItem(profile.name)
-        index = max(0, self.profile_combo.findText(self.channel.selected_eq_profile))
-        self.profile_combo.setCurrentIndex(index)
-        self.profile_combo.blockSignals(False)
-
-    def _band_label(self, frequency: float) -> str:
-        if frequency >= 1000:
-            return f"{int(frequency / 1000)}k"
-        return f"{int(frequency)}"
-
-    def _update_bands_from_ui(self) -> None:
-        profile = self._current_profile()
-        if len(profile.bands) != len(self.band_sliders):
+        if self.eq_list is None:
             return
-        new_bands: list[EqBand] = []
-        for old_band, slider in zip(profile.bands, self.band_sliders, strict=False):
-            new_bands.append(EqBand(frequency=old_band.frequency, gain_db=float(slider.value()), q=old_band.q))
-        profile.bands = new_bands
+
+        current_name = self.channel.selected_eq_profile or self._current_profile().name
+
+        self.eq_list.blockSignals(True)
+        self.eq_list.clear()
+
+        selected_row = 0
+        for idx, profile in enumerate(self.channel.eq_profiles):
+            item = QListWidgetItem(profile.name)
+            self.eq_list.addItem(item)
+            if profile.name == current_name:
+                selected_row = idx
+
+        if self.eq_list.count() > 0:
+            self.eq_list.setCurrentRow(selected_row)
+
+        self.eq_list.blockSignals(False)
+
+    def _on_eq_selection_changed(self, current: QListWidgetItem | None, previous: QListWidgetItem | None) -> None:
+        if current is None:
+            return
+        name = current.text().strip()
+        if not name or name == self.channel.selected_eq_profile:
+            return
+        self.channel.selected_eq_profile = name
         self.changed.emit()
 
     def _on_enabled_changed(self, checked: bool) -> None:
@@ -459,12 +450,17 @@ class ChannelWidget(QFrame):
         self._set_meter_visibility()
         self.changed.emit()
 
-    def _on_profile_selected(self, profile_name: str) -> None:
-        self.channel.selected_eq_profile = profile_name
-        profile = self._current_profile()
-        for slider, band in zip(self.band_sliders, profile.bands, strict=False):
-            slider.setValue(int(band.gain_db))
-        self.changed.emit()
+    def _unique_profile_name(self, wanted: str, *, preserve_current: str | None = None) -> str:
+        existing = {profile.name for profile in self.channel.eq_profiles}
+        if preserve_current:
+            existing.discard(preserve_current)
+        base = wanted.strip() or "Profile"
+        if base not in existing:
+            return base
+        idx = 2
+        while f"{base} {idx}" in existing:
+            idx += 1
+        return f"{base} {idx}"
 
     def _on_primary_target_changed(self, value: str) -> None:
         self.channel.primary_target = value
@@ -482,19 +478,48 @@ class ChannelWidget(QFrame):
         idx = 1
         while f"{base} {idx}" in existing:
             idx += 1
-        new_profile = EqProfile.default(name=f"{base} {idx}")
+        draft = EqProfile.default(name=f"{base} {idx}")
+        dialog = EqProfileDialog(draft, self, title="Add EQ preset")
+        if not dialog.exec():
+            return
+
+        new_profile = dialog.build_profile()
+        new_profile.name = self._unique_profile_name(new_profile.name)
         self.channel.eq_profiles.append(new_profile)
         self.channel.selected_eq_profile = new_profile.name
         self._reload_profiles()
-        self._on_profile_selected(new_profile.name)
+        self.changed.emit()
+
+    def _edit_profile(self) -> None:
+        current = self._current_profile()
+        dialog = EqProfileDialog(current, self, title=f"Edit EQ preset — {current.name}")
+        if not dialog.exec():
+            return
+
+        updated = dialog.build_profile()
+        current.name = self._unique_profile_name(updated.name, preserve_current=current.name)
+        current.bands = updated.bands
+        self.channel.selected_eq_profile = current.name
+        self._reload_profiles()
         self.changed.emit()
 
     def _remove_profile(self) -> None:
         if len(self.channel.eq_profiles) <= 1:
+            QMessageBox.information(self, "EQ preset", "At least one EQ preset must remain.")
             return
+
         selected = self.channel.selected_eq_profile
+        answer = QMessageBox.question(
+            self,
+            "Delete EQ preset",
+            f"Delete preset '{selected}'?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+
         self.channel.eq_profiles = [profile for profile in self.channel.eq_profiles if profile.name != selected]
         self.channel.selected_eq_profile = self.channel.eq_profiles[0].name
         self._reload_profiles()
-        self._on_profile_selected(self.channel.selected_eq_profile)
         self.changed.emit()

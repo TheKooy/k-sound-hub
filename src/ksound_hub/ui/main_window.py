@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..audio import PipeWireAudioEngine
+from ..audio.pipewire import PipeWireAudioEngine
 from ..config import APP_NAME, APP_VERSION
 from ..settings_store import SettingsStore
 from .channel_widget import ChannelWidget
@@ -73,10 +73,16 @@ class MainWindow(QMainWindow):
         root.addWidget(self.footer_bar)
 
         self._reload_channels()
+        self.audio_engine.apply_settings(self.settings)
+        self.refresh_status()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._apply_column_widths()
+
+    def closeEvent(self, event):
+        self.audio_engine.shutdown()
+        super().closeEvent(event)
 
     def _clear_columns(self) -> None:
         while self.columns_layout.count():
@@ -130,7 +136,6 @@ class MainWindow(QMainWindow):
             self.channel_widgets[channel.key] = widget
             self.columns_layout.addWidget(widget)
 
-        self.refresh_status()
         self._apply_column_widths()
 
     def _autosave(self) -> None:
@@ -138,7 +143,8 @@ class MainWindow(QMainWindow):
 
     def _on_any_changed(self) -> None:
         self._autosave()
-        self.backend_status.setText(self.audio_engine.status_text())
+        self.audio_engine.apply_settings(self.settings)
+        self.refresh_status()
 
     def refresh_status(self) -> None:
         enabled_channels = sum(1 for channel in self.settings.channels if channel.enabled)
@@ -159,3 +165,5 @@ class MainWindow(QMainWindow):
             self.settings = dialog.build_result()
             self._autosave()
             self._reload_channels()
+            self.audio_engine.apply_settings(self.settings)
+            self.refresh_status()

@@ -3,6 +3,8 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
+from ..models import AppSettings
+
 
 @dataclass
 class AudioNode:
@@ -18,6 +20,14 @@ class AudioEngine(ABC):
 
     @abstractmethod
     def list_sources(self) -> list[AudioNode]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def apply_settings(self, settings: AppSettings) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def shutdown(self) -> None:
         raise NotImplementedError
 
     @abstractmethod
