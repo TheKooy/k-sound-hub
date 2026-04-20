@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
 from ..audio.engine import AudioEngine
 from ..models import ChannelConfig, EqProfile
 from .eq_dialog import EqProfileDialog
-from .widgets import MenuSelectorButton, CollapsibleSection, HeaderBadge, SelectorFrame, StereoLevelMeterWidget
+from .widgets import ChannelVolumeSlider, MenuSelectorButton, CollapsibleSection, HeaderBadge, SelectorFrame, StereoLevelMeterWidget
 
 CHANNEL_META = {
     "all": {"icon": "🌍", "apps": ["Default desktop audio", "Browser", "System sounds"]},
@@ -106,20 +106,37 @@ class ChannelWidget(QFrame):
 
         self.left_meter = StereoLevelMeterWidget("L")
         self.right_meter = StereoLevelMeterWidget("R")
+        meter_height = 162
+        self.left_meter.setFixedHeight(meter_height)
+        self.right_meter.setFixedHeight(meter_height)
 
         slider_row = QHBoxLayout()
         slider_row.setContentsMargins(0, 0, 0, 0)
-        slider_row.setSpacing(6)
+        slider_row.setSpacing(4)
         slider_row.addStretch(1)
         slider_row.addWidget(self.left_meter, 0, Qt.AlignBottom)
 
-        self.slider = QSlider(Qt.Vertical)
+        self.slider = ChannelVolumeSlider()
+        self.slider.setObjectName("channelVolumeSlider")
         self.slider.setRange(0, 100)
+        self.slider.setSingleStep(1)
+        self.slider.setPageStep(5)
+        self.slider.setTracking(True)
         self.slider.setValue(channel.volume)
         self.slider.valueChanged.connect(self._on_volume_changed)
-        self.slider.setFixedHeight(156)
-        slider_row.addWidget(self.slider, 0, Qt.AlignHCenter)
+        self.slider.setFixedHeight(meter_height)
+        self.slider.setFixedWidth(32)
 
+        slider_host = QWidget()
+        slider_host.setAttribute(Qt.WA_TranslucentBackground, True)
+        slider_host.setAutoFillBackground(False)
+        slider_host.setStyleSheet("background: transparent;")
+        slider_host_layout = QVBoxLayout(slider_host)
+        slider_host_layout.setContentsMargins(0, 0, 0, 0)
+        slider_host_layout.setSpacing(0)
+        slider_host_layout.addWidget(self.slider, 0, Qt.AlignHCenter)
+
+        slider_row.addWidget(slider_host, 0, Qt.AlignHCenter)
         slider_row.addWidget(self.right_meter, 0, Qt.AlignBottom)
         slider_row.addStretch(1)
         root.addLayout(slider_row)

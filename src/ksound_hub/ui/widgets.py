@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtCore import QPoint, Qt, Signal
+from PySide6.QtCore import QPoint, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QFrame,
@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QSizePolicy,
+    QSlider,
     QVBoxLayout,
     QWidget,
 )
@@ -23,8 +24,11 @@ class SelectorFrame(QFrame):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing, True)
 
-        rect = self.rect().adjusted(0, 0, -1, -1)
         pen = QPen(QColor(62, 216, 255, 88), 1.45)
+        pen.setJoinStyle(Qt.RoundJoin)
+        inset = pen.widthF() / 2.0
+        rect = QRectF(self.rect()).adjusted(inset, inset, -inset, -inset)
+
         painter.setPen(pen)
         painter.setBrush(QColor(8, 12, 19, 220))
         painter.drawRoundedRect(rect, 12, 12)
@@ -116,8 +120,12 @@ class SelectorPopup(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing, True)
 
-        rect = self.rect().adjusted(0, 0, -1, -1)
-        painter.setPen(QPen(QColor(62, 216, 255, 88), 1.45))
+        pen = QPen(QColor(62, 216, 255, 88), 1.45)
+        pen.setJoinStyle(Qt.RoundJoin)
+        inset = pen.widthF() / 2.0
+        rect = QRectF(self.rect()).adjusted(inset, inset, -inset, -inset)
+
+        painter.setPen(pen)
         painter.setBrush(QColor(8, 12, 19, 245))
         painter.drawRoundedRect(rect, 12, 12)
 
@@ -190,6 +198,76 @@ class MenuSelectorButton(QPushButton):
         )
         painter.drawText(text_rect, Qt.AlignCenter | Qt.AlignVCenter, text)
         painter.restore()
+
+
+class ChannelVolumeSlider(QSlider):
+    def __init__(self, parent=None):
+        super().__init__(Qt.Vertical, parent)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setAutoFillBackground(False)
+        self.setStyleSheet("background: transparent; border: none;")
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+
+        rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+
+        groove_w = 12.0
+        groove_margin = 5.0
+        groove_radius = groove_w / 2.0
+        handle_d = 15.0
+        handle_radius = handle_d / 2.0
+
+        groove = QRectF(
+            rect.center().x() - groove_w / 2.0,
+            rect.top() + groove_margin,
+            groove_w,
+            max(1.0, rect.height() - groove_margin * 2.0),
+        )
+
+        groove_path = QPainterPath()
+        groove_path.addRoundedRect(groove, groove_radius, groove_radius)
+
+        painter.setPen(QPen(QColor(74, 101, 138, 138), 1.0))
+        painter.setBrush(QColor(9, 13, 20, 235))
+        painter.drawPath(groove_path)
+
+        span = max(1, self.maximum() - self.minimum())
+        ratio = (self.value() - self.minimum()) / span
+        handle_center_y = groove.bottom() - ratio * groove.height()
+        handle_center_y = max(
+            rect.top() + handle_radius,
+            min(rect.bottom() - handle_radius, handle_center_y),
+        )
+
+        fill_top = max(groove.top() + 1.0, min(handle_center_y, groove.bottom() - 0.01))
+        fill_h = groove.bottom() - fill_top
+        if fill_h > 0.5:
+            fill = QRectF(
+                groove.left() + 1.0,
+                fill_top,
+                groove.width() - 2.0,
+                fill_h,
+            )
+            fill_radius = min(fill.width() / 2.0, fill.height() / 2.0)
+
+            painter.save()
+            painter.setClipPath(groove_path)
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor(62, 216, 255, 224))
+            painter.drawRoundedRect(fill, fill_radius, fill_radius)
+            painter.restore()
+
+        handle_rect = QRectF(
+            groove.center().x() - handle_radius,
+            handle_center_y - handle_radius,
+            handle_d,
+            handle_d,
+        )
+        painter.setPen(QPen(QColor(255, 255, 255, 214), 1.0))
+        painter.setBrush(QColor(247, 251, 255, 245))
+        painter.drawEllipse(handle_rect)
 
 
 class StereoLevelMeterWidget(QWidget):

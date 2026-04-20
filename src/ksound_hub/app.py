@@ -162,6 +162,28 @@ QSlider::add-page:vertical {
     background: rgba(62, 216, 255, 210);
     border-radius: 6px;
 }
+QSlider#channelVolumeSlider::groove:vertical {
+    background: rgba(9, 13, 20, 235);
+    width: 10px;
+    border: 1px solid rgba(74, 101, 138, 138);
+    border-radius: 5px;
+}
+QSlider#channelVolumeSlider::handle:vertical {
+    background: rgba(247, 251, 255, 245);
+    border: 1px solid rgba(255, 255, 255, 214);
+    width: 14px;
+    height: 14px;
+    margin: -1px -3px;
+    border-radius: 7px;
+}
+QSlider#channelVolumeSlider::sub-page:vertical {
+    background: rgba(16, 24, 36, 240);
+    border-radius: 5px;
+}
+QSlider#channelVolumeSlider::add-page:vertical {
+    background: rgba(62, 216, 255, 224);
+    border-radius: 5px;
+}
 QSlider::groove:horizontal {
     background: rgba(11, 16, 24, 235);
     height: 10px;
