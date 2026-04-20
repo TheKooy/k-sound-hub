@@ -53,3 +53,4 @@ exports/
 # Local config dumps
 *.json.bak
 *.local.json
+*.bak-*
