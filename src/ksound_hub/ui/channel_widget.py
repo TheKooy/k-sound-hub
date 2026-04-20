@@ -157,52 +157,51 @@ class ChannelWidget(QFrame):
 
         if self.channel.key == "return-mic":
             box = QWidget()
-            layout = QGridLayout(box)
+            layout = QHBoxLayout(box)
             layout.setContentsMargins(0, 0, 0, 0)
-            layout.setHorizontalSpacing(8)
-            layout.setVerticalSpacing(0)
+            layout.setSpacing(8)
 
             out_wrap = QWidget()
+            out_wrap.setMinimumWidth(176)
             out_row = QHBoxLayout(out_wrap)
             out_row.setContentsMargins(0, 0, 0, 0)
-            out_row.setSpacing(3)
+            out_row.setSpacing(4)
 
             out_badge = QLabel("O")
             out_badge.setAlignment(Qt.AlignCenter)
             out_badge.setStyleSheet("font-size: 13px; font-weight: 900; color: #ffd166; background: transparent;")
-            out_badge.setFixedWidth(10)
-            out_row.addWidget(out_badge, 0)
+            out_badge.setFixedSize(14, 28)
+            out_row.addWidget(out_badge, 0, Qt.AlignVCenter)
 
             self.device_combo = QComboBox()
-            self.device_combo.setMinimumWidth(160)
-            self.device_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
             self.device_combo.addItems(DEVICE_CHOICES["monitor"])
+            self._prepare_combo(self.device_combo, min_width=154)
             self._set_combo_text(self.device_combo, self.channel.primary_target)
             self.device_combo.currentTextChanged.connect(self._on_primary_target_changed)
             out_row.addWidget(self.device_combo, 1)
 
-            layout.addWidget(out_wrap, 0, 0)
+            layout.addWidget(out_wrap, 1)
 
             in_wrap = QWidget()
+            in_wrap.setMinimumWidth(176)
             in_row = QHBoxLayout(in_wrap)
             in_row.setContentsMargins(0, 0, 0, 0)
-            in_row.setSpacing(3)
+            in_row.setSpacing(4)
 
             in_badge = QLabel("I")
             in_badge.setAlignment(Qt.AlignCenter)
             in_badge.setStyleSheet("font-size: 13px; font-weight: 900; color: #34d3ff; background: transparent;")
-            in_badge.setFixedWidth(10)
-            in_row.addWidget(in_badge, 0)
+            in_badge.setFixedSize(14, 28)
+            in_row.addWidget(in_badge, 0, Qt.AlignVCenter)
 
             self.return_mode_combo = QComboBox()
-            self.return_mode_combo.setMinimumWidth(160)
-            self.return_mode_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
             self.return_mode_combo.addItems(RETURN_MODES)
+            self._prepare_combo(self.return_mode_combo, min_width=154)
             self._set_combo_text(self.return_mode_combo, self.channel.secondary_target)
             self.return_mode_combo.currentTextChanged.connect(self._on_secondary_target_changed)
             in_row.addWidget(self.return_mode_combo, 1)
 
-            layout.addWidget(in_wrap, 0, 1)
+            layout.addWidget(in_wrap, 1)
 
             return box
 
@@ -212,13 +211,13 @@ class ChannelWidget(QFrame):
         layout.setSpacing(0)
 
         self.device_combo = QComboBox()
-        self.device_combo.setMinimumWidth(136)
         if self.channel.key == "micro":
             self.device_combo.addItems(MIC_INPUT_CHOICES)
         elif self.channel.kind == "monitor":
             self.device_combo.addItems(DEVICE_CHOICES["monitor"])
         else:
             self.device_combo.addItems(DEVICE_CHOICES["playback"])
+        self._prepare_combo(self.device_combo, min_width=136)
         self._set_combo_text(self.device_combo, self.channel.primary_target)
         self.device_combo.currentTextChanged.connect(self._on_primary_target_changed)
         layout.addWidget(self.device_combo)
@@ -228,9 +227,19 @@ class ChannelWidget(QFrame):
         idx = combo.findText(value)
         combo.setCurrentIndex(idx if idx >= 0 else 0)
 
+    def _prepare_combo(self, combo: QComboBox, *, min_width: int) -> None:
+        combo.setMinimumWidth(min_width)
+        combo.setMinimumHeight(30)
+        combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        combo.setEditable(True)
+        combo.lineEdit().setReadOnly(True)
+        combo.lineEdit().setAlignment(Qt.AlignCenter)
+        combo.lineEdit().setCursorPosition(0)
+
     def set_card_width(self, width: int) -> None:
         if self.channel.key == "return-mic":
-            self._card_width = max(272, min(300, int(width) + 92))
+            self._card_width = max(296, min(336, int(width) + 106))
         elif self.channel.key == "micro":
             self._card_width = max(150, min(178, int(width) + 8))
         else:
