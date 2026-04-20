@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Iterable
-
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (
@@ -15,59 +13,53 @@ from PySide6.QtWidgets import (
 )
 
 
-class LevelMeterWidget(QWidget):
-    def __init__(self, parent=None):
+class StereoLevelMeterWidget(QWidget):
+    def __init__(self, side: str, parent=None):
         super().__init__(parent)
-        self._levels = [0.0] * 14
-        self.setMinimumHeight(54)
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.setToolTip("Real signal meter. It stays idle until backend level values are wired.")
+        self.side = side
+        self._value = 0.0
+        self._segments = 14
+        self.setFixedWidth(16)
+        self.setMinimumHeight(154)
+        self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
+        self.setToolTip(f"{side.upper()} meter. It stays idle until backend audio levels are wired.")
 
     def clear(self) -> None:
-        self.set_levels([0.0] * len(self._levels))
+        self.set_level(0.0)
 
     def set_level(self, value: float) -> None:
-        value = max(0.0, min(1.0, float(value)))
-        self._levels = [value] * len(self._levels)
-        self.update()
-
-    def set_levels(self, values: Iterable[float]) -> None:
-        levels = [max(0.0, min(1.0, float(v))) for v in values]
-        if not levels:
-            levels = [0.0] * len(self._levels)
-        self._levels = levels[:14]
-        if len(self._levels) < 14:
-            self._levels.extend([0.0] * (14 - len(self._levels)))
+        self._value = max(0.0, min(1.0, float(value)))
         self.update()
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing, False)
-        painter.fillRect(self.rect(), QColor("#18121f"))
+        painter.fillRect(self.rect(), QColor("#10141d"))
 
         width = max(1, self.width())
         height = max(1, self.height())
+        margin = 3
         gap = 2
-        bar_count = len(self._levels)
-        bar_width = max(3, (width - gap * (bar_count - 1)) // bar_count)
+        usable_h = max(1, height - margin * 2)
+        seg_h = max(2, (usable_h - gap * (self._segments - 1)) // self._segments)
+        lit = int(round(self._value * self._segments))
 
-        x = 0
-        for value in self._levels:
-            clamped = max(0.0, min(1.0, value))
-            bar_height = max(2, int((height - 8) * clamped)) if clamped > 0 else 2
-            y = height - bar_height - 4
-            if clamped <= 0.0:
-                color = QColor("#33283f")
-            elif clamped < 0.55:
-                color = QColor("#c484ff")
-            elif clamped < 0.85:
-                color = QColor("#ff9cd6")
+        y = height - margin - seg_h
+        for i in range(self._segments):
+            level_index = self._segments - 1 - i
+            active = level_index < lit
+            if not active:
+                color = QColor("#1a2430")
+            elif i < 7:
+                color = QColor("#34d3ff")
+            elif i < 11:
+                color = QColor("#ff65d4")
             else:
-                color = QColor("#ffd36a")
-            painter.fillRect(x, y, bar_width, bar_height, color)
-            x += bar_width + gap
+                color = QColor("#ffd166")
+            painter.fillRect(margin, y, width - margin * 2, seg_h, color)
+            y -= seg_h + gap
 
-        painter.setPen(QPen(QColor("#5f4b77")))
+        painter.setPen(QPen(QColor("#35506a")))
         painter.drawRect(self.rect().adjusted(0, 0, -1, -1))
 
 
@@ -93,8 +85,8 @@ class EqBandSlider(QWidget):
         self.slider.setValue(value)
         self.slider.setTickPosition(QSlider.NoTicks)
         self.slider.valueChanged.connect(self._on_value_changed)
-        self.slider.setFixedHeight(120)
-        self.slider.setFixedWidth(28)
+        self.slider.setFixedHeight(112)
+        self.slider.setFixedWidth(24)
         root.addWidget(self.slider, alignment=Qt.AlignHCenter)
 
         self.label = QLabel(label)
@@ -160,5 +152,5 @@ class HeaderBadge(QLabel):
         super().__init__(text, parent)
         self.setAlignment(Qt.AlignCenter)
         self.setStyleSheet(
-            "background: rgba(196, 132, 255, 45); border: 1px solid rgba(216, 170, 255, 85); border-radius: 8px; padding: 3px 7px;"
+            "background: rgba(52, 211, 255, 32); border: 1px solid rgba(52, 211, 255, 82); border-radius: 8px; padding: 3px 7px;"
         )

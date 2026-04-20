@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..models import ChannelConfig, EqBand, EqProfile
-from .widgets import CollapsibleSection, EqBandSlider, HeaderBadge, LevelMeterWidget
+from .widgets import CollapsibleSection, EqBandSlider, HeaderBadge, StereoLevelMeterWidget
 
 CHANNEL_META = {
     "all": {"icon": "🌍", "device": "Main output", "apps": ["Default desktop audio", "Browser", "System sounds"]},
@@ -47,28 +47,28 @@ class ChannelWidget(QFrame):
         self.global_visualizer_enabled = global_visualizer_enabled
         self.setObjectName("channelCard")
         self.setFrameShape(QFrame.StyledPanel)
-        self.setMinimumWidth(216)
-        self.setMaximumWidth(232)
+        self._card_width = 176
+        self.setFixedWidth(self._card_width)
         self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(10, 10, 10, 10)
-        root.setSpacing(8)
+        root.setContentsMargins(9, 10, 9, 10)
+        root.setSpacing(7)
 
         meta = CHANNEL_META.get(channel.key, {"icon": "🎚️", "device": "Custom channel", "apps": ["No routed apps yet"]})
 
         header = QVBoxLayout()
         header.setContentsMargins(0, 0, 0, 0)
-        header.setSpacing(2)
+        header.setSpacing(1)
 
         icon_label = QLabel(meta["icon"])
         icon_label.setAlignment(Qt.AlignCenter)
-        icon_label.setStyleSheet("font-size: 22px;")
+        icon_label.setStyleSheet("font-size: 20px;")
         header.addWidget(icon_label)
 
         title = QLabel(channel.name)
         title.setAlignment(Qt.AlignCenter)
-        title.setStyleSheet("font-size: 15px; font-weight: 800;")
+        title.setStyleSheet("font-size: 14px; font-weight: 800;")
         header.addWidget(title)
 
         self.subtitle = QLabel(self._subtitle_text(meta["device"]))
@@ -94,19 +94,28 @@ class ChannelWidget(QFrame):
 
         self.volume_percent = QLabel(f"{self.channel.volume}%")
         self.volume_percent.setAlignment(Qt.AlignCenter)
-        self.volume_percent.setStyleSheet("font-size: 20px; font-weight: 900;")
+        self.volume_percent.setStyleSheet("font-size: 17px; font-weight: 900;")
         root.addWidget(self.volume_percent)
 
-        self.meter = LevelMeterWidget()
-        self.meter.setVisible(global_visualizer_enabled and channel.visualizer_enabled)
-        root.addWidget(self.meter)
+        self.left_meter = StereoLevelMeterWidget("L")
+        self.right_meter = StereoLevelMeterWidget("R")
+
+        slider_row = QHBoxLayout()
+        slider_row.setContentsMargins(0, 0, 0, 0)
+        slider_row.setSpacing(7)
+        slider_row.addStretch(1)
+        slider_row.addWidget(self.left_meter, 0, Qt.AlignBottom)
 
         self.slider = QSlider(Qt.Vertical)
         self.slider.setRange(0, 100)
         self.slider.setValue(channel.volume)
         self.slider.valueChanged.connect(self._on_volume_changed)
-        self.slider.setFixedHeight(180)
-        root.addWidget(self.slider, alignment=Qt.AlignHCenter)
+        self.slider.setFixedHeight(164)
+        slider_row.addWidget(self.slider, 0, Qt.AlignHCenter)
+
+        slider_row.addWidget(self.right_meter, 0, Qt.AlignBottom)
+        slider_row.addStretch(1)
+        root.addLayout(slider_row)
 
         controls = QHBoxLayout()
         controls.setSpacing(4)
@@ -141,14 +150,19 @@ class ChannelWidget(QFrame):
         root.addWidget(self.details_section)
 
         root.addStretch(1)
+        self._set_meter_visibility()
+
+    def set_card_width(self, width: int) -> None:
+        self._card_width = max(150, min(190, int(width)))
+        self.setFixedWidth(self._card_width)
+
+    def _set_meter_visibility(self) -> None:
+        visible = self.global_visualizer_enabled and self.channel.visualizer_enabled
+        self.left_meter.setVisible(visible)
+        self.right_meter.setVisible(visible)
 
     def _subtitle_text(self, base: str) -> str:
-        kind_label = {
-            "playback": "Playback channel",
-            "micro": "Voice output bus",
-            "monitor": "Monitoring bus",
-        }.get(self.channel.kind, "Custom channel")
-        return f"{base} • {kind_label}"
+        return base
 
     def _device_button_text(self) -> str:
         if self.channel.key == "micro":
@@ -161,11 +175,14 @@ class ChannelWidget(QFrame):
             current = self.device_button.text()
             idx = (choices.index(current) + 1) % len(choices) if current in choices else 0
             self.device_button.setText(choices[idx])
+            self.subtitle.setText("Voice output bus")
         else:
             choices = DEVICE_CHOICES.get(self.channel.kind, DEVICE_CHOICES["playback"])
             current = self.device_button.text().replace("Device: ", "")
             idx = (choices.index(current) + 1) % len(choices) if current in choices else 0
-            self.device_button.setText(f"Device: {choices[idx]}")
+            picked = choices[idx]
+            self.device_button.setText(f"Device: {picked}")
+            self.subtitle.setText(picked)
         self.changed.emit()
 
     def _toggle_return_mode(self) -> None:
@@ -183,7 +200,7 @@ class ChannelWidget(QFrame):
         self.apps_section.content_layout.addLayout(badge_row)
 
         app_list = QListWidget()
-        app_list.setMinimumHeight(110)
+        app_list.setMinimumHeight(96)
         for app_name in app_names:
             app_list.addItem(QListWidgetItem(app_name))
         self.apps_section.content_layout.addWidget(app_list)
@@ -218,7 +235,7 @@ class ChannelWidget(QFrame):
         self.eq_section.content_layout.addLayout(top_row)
 
         bands_row = QHBoxLayout()
-        bands_row.setSpacing(6)
+        bands_row.setSpacing(5)
         self.band_sliders: list[EqBandSlider] = []
         profile = self._current_profile()
         for band in profile.bands:
@@ -231,7 +248,7 @@ class ChannelWidget(QFrame):
         advanced_row = QHBoxLayout()
         advanced_row.addWidget(HeaderBadge("Simple EQ"))
         advanced_row.addStretch(1)
-        adv_btn = QPushButton("Advanced mode later")
+        adv_btn = QPushButton("Advanced later")
         adv_btn.setObjectName("titleButton")
         adv_btn.setEnabled(False)
         advanced_row.addWidget(adv_btn)
@@ -266,7 +283,7 @@ class ChannelWidget(QFrame):
 
         if self.channel.key == "micro":
             inputs = QListWidget()
-            inputs.setMinimumHeight(72)
+            inputs.setMinimumHeight(68)
             for name in MIC_INPUTS:
                 item = QListWidgetItem(name)
                 inputs.addItem(item)
@@ -275,7 +292,7 @@ class ChannelWidget(QFrame):
 
     def set_global_visualizer_enabled(self, enabled: bool) -> None:
         self.global_visualizer_enabled = enabled
-        self.meter.setVisible(enabled and self.channel.visualizer_enabled)
+        self._set_meter_visibility()
 
     def _current_profile(self) -> EqProfile:
         wanted = self.channel.selected_eq_profile
@@ -326,7 +343,7 @@ class ChannelWidget(QFrame):
 
     def _on_visualizer_changed(self, checked: bool) -> None:
         self.channel.visualizer_enabled = checked
-        self.meter.setVisible(self.global_visualizer_enabled and checked)
+        self._set_meter_visibility()
         self.changed.emit()
 
     def _on_profile_selected(self, profile_name: str) -> None:

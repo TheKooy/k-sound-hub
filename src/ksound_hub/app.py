@@ -11,48 +11,52 @@ from .ui.main_window import MainWindow
 
 STYLE_SHEET = """
 QWidget {
-    background: #16131b;
-    color: #efeaf7;
+    background: #0d1118;
+    color: #edf4ff;
     font-size: 13px;
 }
 QMainWindow, QDialog {
-    background: #16131b;
+    background: #0d1118;
 }
 QLabel#pageTitle {
     font-size: 20px;
     font-weight: 800;
 }
 QLabel#mutedLabel {
-    color: #b9b0c8;
+    color: #9eabc2;
     font-size: 11px;
 }
 QFrame#channelCard {
-    background: rgba(32, 23, 39, 228);
-    border: 1px solid rgba(122, 96, 150, 160);
+    background: rgba(16, 22, 34, 238);
+    border: 1px solid rgba(62, 216, 255, 90);
     border-radius: 18px;
+}
+QFrame#channelCard:hover {
+    border: 1px solid rgba(255, 92, 199, 120);
 }
 QFrame#sectionCard,
 QFrame#footerBar,
 QFrame#appRuleRow {
-    background: rgba(22, 18, 30, 220);
-    border: 1px solid rgba(96, 78, 120, 165);
+    background: rgba(11, 16, 26, 228);
+    border: 1px solid rgba(74, 101, 138, 150);
     border-radius: 12px;
 }
 QFrame#appRuleRow:hover {
-    background: rgba(33, 27, 43, 228);
-    border: 1px solid rgba(158, 126, 194, 180);
+    background: rgba(17, 24, 38, 235);
+    border: 1px solid rgba(255, 92, 199, 120);
 }
 QPushButton {
-    background: rgba(88, 70, 112, 210);
-    border: 1px solid rgba(141, 110, 180, 185);
+    background: rgba(21, 31, 48, 235);
+    border: 1px solid rgba(62, 216, 255, 110);
     border-radius: 10px;
     padding: 7px 10px;
 }
 QPushButton:hover {
-    background: rgba(104, 82, 132, 220);
+    background: rgba(28, 40, 61, 240);
+    border: 1px solid rgba(255, 92, 199, 120);
 }
 QPushButton:pressed {
-    background: rgba(70, 56, 92, 220);
+    background: rgba(18, 28, 42, 245);
 }
 QPushButton#tinyButton,
 QPushButton#muteButton,
@@ -65,64 +69,64 @@ QPushButton#ghostButton {
     font-size: 11px;
 }
 QPushButton#ghostButton {
-    background: rgba(28, 23, 36, 150);
+    background: rgba(12, 18, 28, 175);
 }
 QPushButton#deviceButton {
     font-weight: 700;
 }
 QPushButton#muteButton:checked {
-    background: rgba(155, 78, 95, 220);
-    border: 1px solid rgba(232, 140, 160, 210);
+    background: rgba(92, 35, 61, 230);
+    border: 1px solid rgba(255, 112, 164, 190);
 }
 QListWidget {
-    background: rgba(16, 13, 22, 170);
-    border: 1px solid rgba(92, 75, 118, 170);
+    background: rgba(8, 12, 19, 200);
+    border: 1px solid rgba(63, 84, 114, 170);
     border-radius: 10px;
     padding: 4px;
 }
 QComboBox, QSpinBox, QLineEdit {
-    background: rgba(16, 13, 22, 180);
-    border: 1px solid rgba(118, 96, 145, 185);
+    background: rgba(8, 12, 19, 220);
+    border: 1px solid rgba(62, 216, 255, 95);
     border-radius: 8px;
     padding: 4px 6px;
 }
 QSlider::groove:vertical {
-    background: rgba(24, 18, 32, 230);
-    width: 16px;
-    border: 1px solid rgba(158, 126, 194, 88);
-    border-radius: 8px;
+    background: rgba(11, 16, 24, 235);
+    width: 14px;
+    border: 1px solid rgba(63, 84, 114, 160);
+    border-radius: 7px;
 }
 QSlider::handle:vertical {
-    background: #f4eaff;
-    border: 1px solid #fff7ff;
-    width: 16px;
-    height: 12px;
+    background: #f7fbff;
+    border: 1px solid #ffffff;
+    width: 14px;
+    height: 11px;
     margin: 0px;
-    border-radius: 6px;
+    border-radius: 5px;
 }
 QSlider::sub-page:vertical {
-    background: rgba(24, 18, 32, 230);
-    border-radius: 7px;
+    background: rgba(11, 16, 24, 235);
+    border-radius: 6px;
 }
 QSlider::add-page:vertical {
-    background: rgba(196, 132, 255, 200);
-    border-radius: 7px;
+    background: rgba(62, 216, 255, 210);
+    border-radius: 6px;
 }
 QSlider::groove:horizontal {
-    background: rgba(24, 18, 32, 230);
+    background: rgba(11, 16, 24, 235);
     height: 10px;
-    border: 1px solid rgba(158, 126, 194, 88);
+    border: 1px solid rgba(63, 84, 114, 160);
     border-radius: 5px;
 }
 QSlider::handle:horizontal {
-    background: #f4eaff;
-    border: 1px solid #fff7ff;
+    background: #f7fbff;
+    border: 1px solid #ffffff;
     width: 12px;
     margin: -4px 0px;
     border-radius: 6px;
 }
 QSlider::sub-page:horizontal {
-    background: rgba(196, 132, 255, 200);
+    background: rgba(255, 92, 199, 185);
     border-radius: 4px;
 }
 QCheckBox {
@@ -138,7 +142,7 @@ QScrollBar:vertical {
     margin: 0px;
 }
 QScrollBar::handle:vertical {
-    background: rgba(196, 132, 255, 150);
+    background: rgba(62, 216, 255, 160);
     min-height: 24px;
     border-radius: 3px;
 }
@@ -159,7 +163,7 @@ QScrollBar:horizontal {
     margin: 0px;
 }
 QScrollBar::handle:horizontal {
-    background: rgba(196, 132, 255, 150);
+    background: rgba(255, 92, 199, 155);
     min-width: 24px;
     border-radius: 4px;
 }
@@ -168,17 +172,17 @@ QScrollBar::handle:horizontal {
 
 def _apply_palette(app: QApplication) -> None:
     palette = app.palette()
-    palette.setColor(QPalette.Window, QColor("#16131b"))
-    palette.setColor(QPalette.WindowText, QColor("#efeaf7"))
-    palette.setColor(QPalette.Base, QColor("#140f1b"))
-    palette.setColor(QPalette.AlternateBase, QColor("#191320"))
-    palette.setColor(QPalette.ToolTipBase, QColor("#140f1b"))
-    palette.setColor(QPalette.ToolTipText, QColor("#efeaf7"))
-    palette.setColor(QPalette.Text, QColor("#efeaf7"))
-    palette.setColor(QPalette.Button, QColor("#584670"))
-    palette.setColor(QPalette.ButtonText, QColor("#efeaf7"))
-    palette.setColor(QPalette.Highlight, QColor("#c484ff"))
-    palette.setColor(QPalette.HighlightedText, QColor("#ffffff"))
+    palette.setColor(QPalette.Window, QColor("#0d1118"))
+    palette.setColor(QPalette.WindowText, QColor("#edf4ff"))
+    palette.setColor(QPalette.Base, QColor("#09101a"))
+    palette.setColor(QPalette.AlternateBase, QColor("#0f1621"))
+    palette.setColor(QPalette.ToolTipBase, QColor("#0d1118"))
+    palette.setColor(QPalette.ToolTipText, QColor("#edf4ff"))
+    palette.setColor(QPalette.Text, QColor("#edf4ff"))
+    palette.setColor(QPalette.Button, QColor("#152031"))
+    palette.setColor(QPalette.ButtonText, QColor("#edf4ff"))
+    palette.setColor(QPalette.Highlight, QColor("#3ed8ff"))
+    palette.setColor(QPalette.HighlightedText, QColor("#0d1118"))
     app.setPalette(palette)
 
 

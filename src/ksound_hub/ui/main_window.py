@@ -14,7 +14,6 @@ from PySide6.QtWidgets import (
 
 from ..audio import PipeWireAudioEngine
 from ..config import APP_NAME, APP_VERSION
-from ..models import AppSettings
 from ..settings_store import SettingsStore
 from .channel_widget import ChannelWidget
 from .settings_dialog import SettingsDialog
@@ -29,36 +28,32 @@ class MainWindow(QMainWindow):
         self.channel_widgets: dict[str, ChannelWidget] = {}
 
         self.setWindowTitle(f"{APP_NAME} {APP_VERSION}")
-        self.resize(1480, 880)
+        self.resize(1460, 860)
 
         central = QWidget()
         self.setCentralWidget(central)
         root = QVBoxLayout(central)
-        root.setContentsMargins(12, 12, 12, 12)
-        root.setSpacing(10)
+        root.setContentsMargins(8, 8, 8, 8)
+        root.setSpacing(8)
 
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
-        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         root.addWidget(self.scroll, 1)
 
         self.columns_host = QWidget()
         self.columns_layout = QHBoxLayout(self.columns_host)
         self.columns_layout.setContentsMargins(0, 0, 0, 0)
-        self.columns_layout.setSpacing(10)
+        self.columns_layout.setSpacing(8)
         self.columns_layout.setAlignment(Qt.AlignLeft | Qt.AlignTop)
         self.scroll.setWidget(self.columns_host)
 
         self.footer_bar = QFrame()
         self.footer_bar.setObjectName("footerBar")
         footer_layout = QHBoxLayout(self.footer_bar)
-        footer_layout.setContentsMargins(10, 8, 10, 8)
+        footer_layout.setContentsMargins(10, 6, 10, 6)
         footer_layout.setSpacing(8)
-
-        self.footer_title = QLabel(f"{APP_NAME} {APP_VERSION}")
-        self.footer_title.setObjectName("mutedLabel")
-        footer_layout.addWidget(self.footer_title)
 
         self.backend_status = QLabel(self.audio_engine.status_text())
         self.backend_status.setObjectName("mutedLabel")
@@ -79,6 +74,10 @@ class MainWindow(QMainWindow):
 
         self._reload_channels()
 
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._apply_column_widths()
+
     def _clear_columns(self) -> None:
         while self.columns_layout.count():
             item = self.columns_layout.takeAt(0)
@@ -87,26 +86,44 @@ class MainWindow(QMainWindow):
                 widget.deleteLater()
         self.channel_widgets.clear()
 
+    def _enabled_channels(self):
+        return [channel for channel in self.settings.channels if channel.enabled]
+
+    def _apply_column_widths(self) -> None:
+        widgets = list(self.channel_widgets.values())
+        if not widgets:
+            return
+
+        available = max(600, self.scroll.viewport().width())
+        spacing = self.columns_layout.spacing()
+        count = len(widgets)
+        width = (available - spacing * max(0, count - 1)) // count
+        width = max(152, min(188, width))
+
+        for widget in widgets:
+            widget.set_card_width(width)
+
+        total = count * width + spacing * max(0, count - 1)
+        self.columns_host.setMinimumWidth(total)
+
     def _reload_channels(self) -> None:
         self._clear_columns()
 
-        for channel in self.settings.channels:
-            if not channel.enabled:
-                continue
+        for channel in self._enabled_channels():
             widget = ChannelWidget(channel, global_visualizer_enabled=self.settings.visualizer_enabled)
             widget.changed.connect(self._on_any_changed)
             self.channel_widgets[channel.key] = widget
             self.columns_layout.addWidget(widget)
 
-        self.columns_layout.addStretch(1)
         self.refresh_status()
+        self._apply_column_widths()
 
     def _autosave(self) -> None:
         self.settings_store.save(self.settings)
 
     def _on_any_changed(self) -> None:
         self._autosave()
-        self.backend_status.setText(self.audio_engine.status_text() + " • auto-saved")
+        self.backend_status.setText(self.audio_engine.status_text())
 
     def refresh_status(self) -> None:
         enabled_channels = sum(1 for channel in self.settings.channels if channel.enabled)
@@ -119,6 +136,7 @@ class MainWindow(QMainWindow):
         )
         for widget in self.channel_widgets.values():
             widget.set_global_visualizer_enabled(self.settings.visualizer_enabled)
+        self._apply_column_widths()
 
     def open_settings(self) -> None:
         dialog = SettingsDialog(self.settings, self)

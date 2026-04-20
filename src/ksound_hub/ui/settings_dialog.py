@@ -41,7 +41,7 @@ class SettingsDialog(QDialog):
         self.visualizer_check.setChecked(self.settings.visualizer_enabled)
         root.addWidget(self.visualizer_check)
 
-        hint = QLabel("Channel changes are stored in global settings. The hub itself auto-saves after changes.")
+        hint = QLabel("Channel changes are stored immediately in global settings.")
         hint.setObjectName("mutedLabel")
         hint.setWordWrap(True)
         root.addWidget(hint)
