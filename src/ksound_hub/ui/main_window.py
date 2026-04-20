@@ -97,6 +97,8 @@ class MainWindow(QMainWindow):
         available = max(600, self.scroll.viewport().width())
         count = len(widgets)
         min_spacing = 10
+        max_spacing = 28
+        edge_margin = 0
         base_width = max(136, min(152, (available - min_spacing * max(0, count - 1)) // count))
 
         for widget in widgets:
@@ -106,18 +108,17 @@ class MainWindow(QMainWindow):
         total_widget_width = sum(widths)
 
         if count > 1:
-            raw_spacing = (available - total_widget_width) // (count - 1)
-            spacing = max(min_spacing, raw_spacing)
+            free_space = max(0, available - total_widget_width)
+            slot = free_space // (count + 1)
+            spacing = max(min_spacing, min(max_spacing, slot))
+            edge_margin = max(0, (available - total_widget_width - spacing * (count - 1)) // 2)
         else:
             spacing = 0
-
-        total = total_widget_width + spacing * max(0, count - 1)
-
-        if count > 1 and total < available:
-            spacing += max(0, (available - total) // (count - 1))
-            total = total_widget_width + spacing * max(0, count - 1)
+            edge_margin = max(0, (available - total_widget_width) // 2)
 
         self.columns_layout.setSpacing(spacing)
+        self.columns_layout.setContentsMargins(edge_margin, 0, edge_margin, 0)
+        total = total_widget_width + spacing * max(0, count - 1) + edge_margin * 2
         self.columns_host.setMinimumWidth(max(available, total))
 
     def _reload_channels(self) -> None:

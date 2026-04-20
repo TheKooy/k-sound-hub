@@ -65,41 +65,10 @@ class ChannelWidget(QFrame):
         icon_label.setStyleSheet("font-size: 20px;")
         header.addWidget(icon_label)
 
-        if channel.key == "return-mic":
-            title_row = QHBoxLayout()
-            title_row.setContentsMargins(0, 0, 0, 0)
-            title_row.setSpacing(4)
-            title_row.addStretch(1)
-
-            title = QLabel(channel.name)
-            title.setAlignment(Qt.AlignCenter)
-            title.setStyleSheet("font-size: 15px; font-weight: 900;")
-            title_row.addWidget(title)
-
-            out_badge = QLabel("O")
-            out_badge.setAlignment(Qt.AlignCenter)
-            out_badge.setFixedSize(16, 16)
-            out_badge.setStyleSheet(
-                "font-size: 10px; font-weight: 800; color: #0d1118; "
-                "background: rgba(255, 209, 102, 220); border-radius: 8px;"
-            )
-            title_row.addWidget(out_badge)
-
-            in_badge = QLabel("I")
-            in_badge.setAlignment(Qt.AlignCenter)
-            in_badge.setFixedSize(16, 16)
-            in_badge.setStyleSheet(
-                "font-size: 10px; font-weight: 800; color: #0d1118; "
-                "background: rgba(62, 216, 255, 220); border-radius: 8px;"
-            )
-            title_row.addWidget(in_badge)
-            title_row.addStretch(1)
-            header.addLayout(title_row)
-        else:
-            title = QLabel(channel.name)
-            title.setAlignment(Qt.AlignCenter)
-            title.setStyleSheet("font-size: 15px; font-weight: 900;")
-            header.addWidget(title)
+        title = QLabel(channel.name)
+        title.setAlignment(Qt.AlignCenter)
+        title.setStyleSheet("font-size: 16px; font-weight: 900;")
+        header.addWidget(title)
 
         root.addLayout(header)
 
@@ -191,20 +160,44 @@ class ChannelWidget(QFrame):
             box.setObjectName("appRuleRow")
             layout = QGridLayout(box)
             layout.setContentsMargins(8, 7, 8, 7)
-            layout.setHorizontalSpacing(6)
+            layout.setHorizontalSpacing(10)
             layout.setVerticalSpacing(0)
 
+            out_wrap = QWidget()
+            out_row = QHBoxLayout(out_wrap)
+            out_row.setContentsMargins(0, 0, 0, 0)
+            out_row.setSpacing(5)
+            out_badge = QLabel("O")
+            out_badge.setAlignment(Qt.AlignCenter)
+            out_badge.setStyleSheet("font-size: 12px; font-weight: 900; color: #ffd166;")
+            out_badge.setFixedWidth(12)
+            out_row.addWidget(out_badge)
+
             self.device_combo = QComboBox()
+            self.device_combo.setMinimumWidth(132)
             self.device_combo.addItems(DEVICE_CHOICES["monitor"])
             self._set_combo_text(self.device_combo, self.channel.primary_target)
             self.device_combo.currentTextChanged.connect(self._on_primary_target_changed)
-            layout.addWidget(self.device_combo, 0, 0)
+            out_row.addWidget(self.device_combo, 1)
+            layout.addWidget(out_wrap, 0, 0)
+
+            in_wrap = QWidget()
+            in_row = QHBoxLayout(in_wrap)
+            in_row.setContentsMargins(0, 0, 0, 0)
+            in_row.setSpacing(5)
+            in_badge = QLabel("I")
+            in_badge.setAlignment(Qt.AlignCenter)
+            in_badge.setStyleSheet("font-size: 12px; font-weight: 900; color: #34d3ff;")
+            in_badge.setFixedWidth(12)
+            in_row.addWidget(in_badge)
 
             self.return_mode_combo = QComboBox()
+            self.return_mode_combo.setMinimumWidth(148)
             self.return_mode_combo.addItems(RETURN_MODES)
             self._set_combo_text(self.return_mode_combo, self.channel.secondary_target)
             self.return_mode_combo.currentTextChanged.connect(self._on_secondary_target_changed)
-            layout.addWidget(self.return_mode_combo, 0, 1)
+            in_row.addWidget(self.return_mode_combo, 1)
+            layout.addWidget(in_wrap, 0, 1)
 
             return box
 
@@ -214,6 +207,7 @@ class ChannelWidget(QFrame):
         layout.setSpacing(0)
 
         self.device_combo = QComboBox()
+        self.device_combo.setMinimumWidth(128)
         if self.channel.key == "micro":
             self.device_combo.addItems(MIC_INPUT_CHOICES)
         elif self.channel.kind == "monitor":
@@ -231,7 +225,7 @@ class ChannelWidget(QFrame):
 
     def set_card_width(self, width: int) -> None:
         if self.channel.key == "return-mic":
-            self._card_width = max(196, min(214, int(width) + 34))
+            self._card_width = max(222, min(246, int(width) + 54))
         elif self.channel.key == "micro":
             self._card_width = max(150, min(178, int(width) + 8))
         else:

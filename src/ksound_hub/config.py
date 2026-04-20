@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 APP_NAME = "K-Sound Hub"
-APP_VERSION = "0.2.5"
+APP_VERSION = "0.2.6"
 ORG_NAME = "K-Sound Hub"
 ORG_DOMAIN = "local.ksoundhub"
 
