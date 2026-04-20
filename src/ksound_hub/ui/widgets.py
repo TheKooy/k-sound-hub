@@ -24,7 +24,7 @@ class SelectorFrame(QFrame):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing, True)
 
-        pen = QPen(QColor(62, 216, 255, 88), 1.45)
+        pen = QPen(QColor(62, 216, 255, 96), 1.7)
         pen.setJoinStyle(Qt.RoundJoin)
         inset = pen.widthF() / 2.0
         rect = QRectF(self.rect()).adjusted(inset, inset, -inset, -inset)
@@ -120,7 +120,7 @@ class SelectorPopup(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing, True)
 
-        pen = QPen(QColor(62, 216, 255, 88), 1.45)
+        pen = QPen(QColor(62, 216, 255, 96), 1.7)
         pen.setJoinStyle(Qt.RoundJoin)
         inset = pen.widthF() / 2.0
         rect = QRectF(self.rect()).adjusted(inset, inset, -inset, -inset)
@@ -229,7 +229,7 @@ class ChannelVolumeSlider(QSlider):
         groove_path = QPainterPath()
         groove_path.addRoundedRect(groove, groove_radius, groove_radius)
 
-        painter.setPen(QPen(QColor(74, 101, 138, 138), 1.0))
+        painter.setPen(QPen(QColor(74, 101, 138, 150), 1.25))
         painter.setBrush(QColor(9, 13, 20, 235))
         painter.drawPath(groove_path)
 
@@ -265,7 +265,7 @@ class ChannelVolumeSlider(QSlider):
             handle_d,
             handle_d,
         )
-        painter.setPen(QPen(QColor(255, 255, 255, 214), 1.0))
+        painter.setPen(QPen(QColor(255, 255, 255, 220), 1.25))
         painter.setBrush(QColor(247, 251, 255, 245))
         painter.drawEllipse(handle_rect)
 

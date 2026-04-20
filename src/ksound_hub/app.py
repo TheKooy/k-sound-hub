@@ -28,32 +28,32 @@ QLabel#mutedLabel {
 }
 QFrame#channelCard {
     background: rgba(16, 22, 34, 238);
-    border: 1px solid rgba(62, 216, 255, 58);
+    border: 1px solid rgba(62, 216, 255, 68);
     border-radius: 18px;
 }
 QFrame#channelCard:hover {
-    border: 1px solid rgba(255, 92, 199, 78);
+    border: 1px solid rgba(255, 92, 199, 84);
 }
 QFrame#sectionCard,
 QFrame#footerBar,
 QFrame#appRuleRow {
     background: rgba(11, 16, 26, 228);
-    border: 1px solid rgba(74, 101, 138, 96);
+    border: 1px solid rgba(74, 101, 138, 108);
     border-radius: 12px;
 }
 QFrame#appRuleRow:hover {
     background: rgba(17, 24, 38, 235);
-    border: 1px solid rgba(255, 92, 199, 78);
+    border: 1px solid rgba(255, 92, 199, 84);
 }
 QPushButton {
     background: rgba(21, 31, 48, 235);
-    border: 1px solid rgba(62, 216, 255, 70);
+    border: 1px solid rgba(62, 216, 255, 76);
     border-radius: 10px;
     padding: 7px 10px;
 }
 QPushButton:hover {
     background: rgba(28, 40, 61, 240);
-    border: 1px solid rgba(255, 92, 199, 78);
+    border: 1px solid rgba(255, 92, 199, 84);
 }
 QPushButton:pressed {
     background: rgba(18, 28, 42, 245);
@@ -76,17 +76,17 @@ QPushButton#deviceButton {
 }
 QPushButton#muteButton:checked {
     background: rgba(92, 35, 61, 230);
-    border: 1px solid rgba(255, 112, 164, 190);
+    border: 1px solid rgba(255, 112, 164, 196);
 }
 QListWidget {
     background: rgba(8, 12, 19, 200);
-    border: 1px solid rgba(63, 84, 114, 120);
+    border: 1px solid rgba(63, 84, 114, 126);
     border-radius: 10px;
     padding: 4px;
 }
 QComboBox, QSpinBox, QLineEdit {
     background: rgba(8, 12, 19, 220);
-    border: 1px solid rgba(62, 216, 255, 62);
+    border: 1px solid rgba(62, 216, 255, 68);
     border-radius: 8px;
     padding: 4px 8px;
     min-height: 28px;
@@ -134,7 +134,7 @@ QComboBox#selectorCombo::down-arrow {
 }
 QComboBox QAbstractItemView {
     background: rgba(8, 12, 19, 245);
-    border: 1px solid rgba(62, 216, 255, 62);
+    border: 1px solid rgba(62, 216, 255, 68);
     border-radius: 10px;
     outline: none;
     selection-background-color: rgba(255, 92, 199, 120);
@@ -143,7 +143,7 @@ QComboBox QAbstractItemView {
 QSlider::groove:vertical {
     background: rgba(11, 16, 24, 235);
     width: 14px;
-    border: 1px solid rgba(63, 84, 114, 160);
+    border: 1px solid rgba(63, 84, 114, 158);
     border-radius: 7px;
 }
 QSlider::handle:vertical {
@@ -165,7 +165,7 @@ QSlider::add-page:vertical {
 QSlider#channelVolumeSlider::groove:vertical {
     background: rgba(9, 13, 20, 235);
     width: 10px;
-    border: 1px solid rgba(74, 101, 138, 138);
+    border: 1px solid rgba(74, 101, 138, 150);
     border-radius: 5px;
 }
 QSlider#channelVolumeSlider::handle:vertical {
@@ -187,7 +187,7 @@ QSlider#channelVolumeSlider::add-page:vertical {
 QSlider::groove:horizontal {
     background: rgba(11, 16, 24, 235);
     height: 10px;
-    border: 1px solid rgba(63, 84, 114, 160);
+    border: 1px solid rgba(63, 84, 114, 158);
     border-radius: 5px;
 }
 QSlider::handle:horizontal {
