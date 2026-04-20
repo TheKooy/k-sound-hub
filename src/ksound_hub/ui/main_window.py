@@ -28,7 +28,7 @@ class MainWindow(QMainWindow):
         self.channel_widgets: dict[str, ChannelWidget] = {}
 
         self.setWindowTitle(f"{APP_NAME} {APP_VERSION}")
-        self.resize(1460, 860)
+        self.resize(1440, 860)
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -45,8 +45,8 @@ class MainWindow(QMainWindow):
         self.columns_host = QWidget()
         self.columns_layout = QHBoxLayout(self.columns_host)
         self.columns_layout.setContentsMargins(0, 0, 0, 0)
-        self.columns_layout.setSpacing(8)
-        self.columns_layout.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        self.columns_layout.setSpacing(10)
+        self.columns_layout.setAlignment(Qt.AlignTop)
         self.scroll.setWidget(self.columns_host)
 
         self.footer_bar = QFrame()
@@ -95,16 +95,26 @@ class MainWindow(QMainWindow):
             return
 
         available = max(600, self.scroll.viewport().width())
-        spacing = self.columns_layout.spacing()
         count = len(widgets)
-        width = (available - spacing * max(0, count - 1)) // count
-        width = max(152, min(188, width))
+        min_spacing = 10
+        min_width = 146
+        max_width = 160
+
+        width = (available - min_spacing * max(0, count - 1)) // count
+        width = max(min_width, min(max_width, width))
+
+        if count > 1:
+            spacing = max(min_spacing, (available - count * width) // (count - 1))
+        else:
+            spacing = 0
+
+        self.columns_layout.setSpacing(spacing)
 
         for widget in widgets:
             widget.set_card_width(width)
 
         total = count * width + spacing * max(0, count - 1)
-        self.columns_host.setMinimumWidth(total)
+        self.columns_host.setMinimumWidth(max(available, total))
 
     def _reload_channels(self) -> None:
         self._clear_columns()

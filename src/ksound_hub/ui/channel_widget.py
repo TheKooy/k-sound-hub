@@ -20,13 +20,13 @@ from ..models import ChannelConfig, EqBand, EqProfile
 from .widgets import CollapsibleSection, EqBandSlider, HeaderBadge, StereoLevelMeterWidget
 
 CHANNEL_META = {
-    "all": {"icon": "🌍", "device": "Main output", "apps": ["Default desktop audio", "Browser", "System sounds"]},
-    "game": {"icon": "🎮", "device": "Gaming device", "apps": ["Steam game", "FMOD stream"]},
-    "chat": {"icon": "💬", "device": "Chat device", "apps": ["Discord voice", "Team chat"]},
-    "media": {"icon": "🎵", "device": "Media device", "apps": ["Firefox media", "Music player"]},
-    "more": {"icon": "🔊", "device": "Extra output", "apps": ["Utility output"]},
-    "micro": {"icon": "🎤", "device": "Voice output bus", "apps": ["Voice apps", "Injected playback sends"]},
-    "return-mic": {"icon": "🎧", "device": "Local monitoring", "apps": ["Post-EasyEffects", "Final micro mix"]},
+    "all": {"icon": "🌍", "apps": ["Default desktop audio", "Browser", "System sounds"]},
+    "game": {"icon": "🎮", "apps": ["Steam game", "FMOD stream"]},
+    "chat": {"icon": "💬", "apps": ["Discord voice", "Team chat"]},
+    "media": {"icon": "🎵", "apps": ["Firefox media", "Music player"]},
+    "more": {"icon": "🔊", "apps": ["Utility output"]},
+    "micro": {"icon": "🎤", "apps": ["Voice apps", "Injected playback sends"]},
+    "return-mic": {"icon": "🎧", "apps": ["Post-EasyEffects", "Final micro mix"]},
 }
 
 DEVICE_CHOICES = {
@@ -47,15 +47,15 @@ class ChannelWidget(QFrame):
         self.global_visualizer_enabled = global_visualizer_enabled
         self.setObjectName("channelCard")
         self.setFrameShape(QFrame.StyledPanel)
-        self._card_width = 176
+        self._card_width = 156
         self.setFixedWidth(self._card_width)
         self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(9, 10, 9, 10)
+        root.setContentsMargins(8, 10, 8, 10)
         root.setSpacing(7)
 
-        meta = CHANNEL_META.get(channel.key, {"icon": "🎚️", "device": "Custom channel", "apps": ["No routed apps yet"]})
+        meta = CHANNEL_META.get(channel.key, {"icon": "🎚️", "apps": ["No routed apps yet"]})
 
         header = QVBoxLayout()
         header.setContentsMargins(0, 0, 0, 0)
@@ -70,12 +70,6 @@ class ChannelWidget(QFrame):
         title.setAlignment(Qt.AlignCenter)
         title.setStyleSheet("font-size: 14px; font-weight: 800;")
         header.addWidget(title)
-
-        self.subtitle = QLabel(self._subtitle_text(meta["device"]))
-        self.subtitle.setAlignment(Qt.AlignCenter)
-        self.subtitle.setObjectName("mutedLabel")
-        self.subtitle.setWordWrap(True)
-        header.addWidget(self.subtitle)
 
         root.addLayout(header)
 
@@ -94,7 +88,7 @@ class ChannelWidget(QFrame):
 
         self.volume_percent = QLabel(f"{self.channel.volume}%")
         self.volume_percent.setAlignment(Qt.AlignCenter)
-        self.volume_percent.setStyleSheet("font-size: 17px; font-weight: 900;")
+        self.volume_percent.setStyleSheet("font-size: 15px; font-weight: 800;")
         root.addWidget(self.volume_percent)
 
         self.left_meter = StereoLevelMeterWidget("L")
@@ -102,7 +96,7 @@ class ChannelWidget(QFrame):
 
         slider_row = QHBoxLayout()
         slider_row.setContentsMargins(0, 0, 0, 0)
-        slider_row.setSpacing(7)
+        slider_row.setSpacing(6)
         slider_row.addStretch(1)
         slider_row.addWidget(self.left_meter, 0, Qt.AlignBottom)
 
@@ -110,7 +104,7 @@ class ChannelWidget(QFrame):
         self.slider.setRange(0, 100)
         self.slider.setValue(channel.volume)
         self.slider.valueChanged.connect(self._on_volume_changed)
-        self.slider.setFixedHeight(164)
+        self.slider.setFixedHeight(160)
         slider_row.addWidget(self.slider, 0, Qt.AlignHCenter)
 
         slider_row.addWidget(self.right_meter, 0, Qt.AlignBottom)
@@ -153,7 +147,7 @@ class ChannelWidget(QFrame):
         self._set_meter_visibility()
 
     def set_card_width(self, width: int) -> None:
-        self._card_width = max(150, min(190, int(width)))
+        self._card_width = max(142, min(168, int(width)))
         self.setFixedWidth(self._card_width)
 
     def _set_meter_visibility(self) -> None:
@@ -161,28 +155,23 @@ class ChannelWidget(QFrame):
         self.left_meter.setVisible(visible)
         self.right_meter.setVisible(visible)
 
-    def _subtitle_text(self, base: str) -> str:
-        return base
-
     def _device_button_text(self) -> str:
         if self.channel.key == "micro":
-            return "Inputs: 2 selected"
-        return "Device: Arctis Nova Pro"
+            return "2 inputs selected"
+        return "Arctis Nova Pro"
 
     def _rotate_device_choice(self) -> None:
         if self.channel.key == "micro":
-            choices = ["Inputs: 1 selected", "Inputs: 2 selected"]
+            choices = ["1 input selected", "2 inputs selected"]
             current = self.device_button.text()
             idx = (choices.index(current) + 1) % len(choices) if current in choices else 0
             self.device_button.setText(choices[idx])
-            self.subtitle.setText("Voice output bus")
         else:
             choices = DEVICE_CHOICES.get(self.channel.kind, DEVICE_CHOICES["playback"])
-            current = self.device_button.text().replace("Device: ", "")
+            current = self.device_button.text()
             idx = (choices.index(current) + 1) % len(choices) if current in choices else 0
             picked = choices[idx]
-            self.device_button.setText(f"Device: {picked}")
-            self.subtitle.setText(picked)
+            self.device_button.setText(picked)
         self.changed.emit()
 
     def _toggle_return_mode(self) -> None:
