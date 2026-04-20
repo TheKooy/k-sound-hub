@@ -28,32 +28,32 @@ QLabel#mutedLabel {
 }
 QFrame#channelCard {
     background: rgba(16, 22, 34, 238);
-    border: 1px solid rgba(62, 216, 255, 90);
+    border: 1px solid rgba(62, 216, 255, 58);
     border-radius: 18px;
 }
 QFrame#channelCard:hover {
-    border: 1px solid rgba(255, 92, 199, 120);
+    border: 1px solid rgba(255, 92, 199, 78);
 }
 QFrame#sectionCard,
 QFrame#footerBar,
 QFrame#appRuleRow {
     background: rgba(11, 16, 26, 228);
-    border: 1px solid rgba(74, 101, 138, 150);
+    border: 1px solid rgba(74, 101, 138, 96);
     border-radius: 12px;
 }
 QFrame#appRuleRow:hover {
     background: rgba(17, 24, 38, 235);
-    border: 1px solid rgba(255, 92, 199, 120);
+    border: 1px solid rgba(255, 92, 199, 78);
 }
 QPushButton {
     background: rgba(21, 31, 48, 235);
-    border: 1px solid rgba(62, 216, 255, 110);
+    border: 1px solid rgba(62, 216, 255, 70);
     border-radius: 10px;
     padding: 7px 10px;
 }
 QPushButton:hover {
     background: rgba(28, 40, 61, 240);
-    border: 1px solid rgba(255, 92, 199, 120);
+    border: 1px solid rgba(255, 92, 199, 78);
 }
 QPushButton:pressed {
     background: rgba(18, 28, 42, 245);
@@ -80,13 +80,13 @@ QPushButton#muteButton:checked {
 }
 QListWidget {
     background: rgba(8, 12, 19, 200);
-    border: 1px solid rgba(63, 84, 114, 170);
+    border: 1px solid rgba(63, 84, 114, 120);
     border-radius: 10px;
     padding: 4px;
 }
 QComboBox, QSpinBox, QLineEdit {
     background: rgba(8, 12, 19, 220);
-    border: 1px solid rgba(62, 216, 255, 95);
+    border: 1px solid rgba(62, 216, 255, 62);
     border-radius: 8px;
     padding: 4px 8px;
     min-height: 28px;
@@ -100,23 +100,43 @@ QComboBox::drop-down {
     width: 18px;
 }
 QFrame#selectorFrame {
-    background: rgba(8, 12, 19, 220);
-    border: 1px solid rgba(62, 216, 255, 95);
-    border-radius: 10px;
+    background: transparent;
+    border: none;
+}
+QPushButton#selectorButton {
+    background: transparent;
+    border: none;
+    padding: 0px 6px 0px 6px;
+    margin: 0px;
+}
+QPushButton#selectorButton:hover {
+    background: transparent;
+    border: none;
+}
+QPushButton#selectorButton:pressed {
+    background: transparent;
+    border: none;
 }
 QComboBox#selectorCombo {
     background: transparent;
     border: none;
     min-height: 26px;
-    padding: 0px 18px 0px 0px;
+    padding: 0px 6px 0px 6px;
 }
 QComboBox#selectorCombo::drop-down {
     border: none;
-    width: 18px;
+    width: 0px;
+}
+QComboBox#selectorCombo::down-arrow {
+    image: none;
+    width: 0px;
+    height: 0px;
 }
 QComboBox QAbstractItemView {
     background: rgba(8, 12, 19, 245);
-    border: 1px solid rgba(62, 216, 255, 95);
+    border: 1px solid rgba(62, 216, 255, 62);
+    border-radius: 10px;
+    outline: none;
     selection-background-color: rgba(255, 92, 199, 120);
     selection-color: #edf4ff;
 }

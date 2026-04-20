@@ -1,37 +1,190 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QRect
-from PySide6.QtGui import QColor, QPainter, QPen
+from PySide6.QtCore import QPoint, Qt, Signal
+from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
-    QComboBox,
     QFrame,
     QHBoxLayout,
     QLabel,
     QPushButton,
     QSizePolicy,
-    QStyle,
-    QStyleOptionComboBox,
     QVBoxLayout,
     QWidget,
 )
 
 
-class CenteredComboBox(QComboBox):
+class SelectorFrame(QFrame):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setAutoFillBackground(False)
+
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
-        option = QStyleOptionComboBox()
-        self.initStyleOption(option)
-        option.currentText = ""
-        self.style().drawComplexControl(QStyle.ComplexControl.CC_ComboBox, option, painter, self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
 
-        arrow_space = max(18, self.height() - 6)
-        symmetric_pad = arrow_space + 4
-        text_rect = self.rect().adjusted(symmetric_pad, 0, -symmetric_pad, 0)
+        rect = self.rect().adjusted(0, 0, -1, -1)
+        pen = QPen(QColor(62, 216, 255, 88), 1.45)
+        painter.setPen(pen)
+        painter.setBrush(QColor(8, 12, 19, 220))
+        painter.drawRoundedRect(rect, 12, 12)
+
+
+class SelectorPopupItem(QPushButton):
+    def __init__(self, text: str, selected: bool, parent=None):
+        super().__init__(text, parent)
+        self._selected = selected
+        self.setFlat(True)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setMinimumHeight(32)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.setStyleSheet("background: transparent; border: none; color: #edf4ff;")
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        painter.setRenderHint(QPainter.TextAntialiasing, True)
+
+        rect = self.rect().adjusted(0, 0, -1, -1)
+
+        if self._selected:
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor(62, 216, 255, 56))
+            painter.drawRoundedRect(rect.adjusted(2, 1, -2, -1), 8, 8)
+        elif self.underMouse():
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor(255, 92, 199, 70))
+            painter.drawRoundedRect(rect.adjusted(2, 1, -2, -1), 8, 8)
+
+        painter.setPen(QColor("#edf4ff"))
+        painter.drawText(self.rect().adjusted(10, 0, -10, 0), Qt.AlignCenter | Qt.AlignVCenter, self.text())
+
+
+class SelectorPopup(QWidget):
+    itemChosen = Signal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(None, Qt.Popup | Qt.FramelessWindowHint | Qt.NoDropShadowWindowHint)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setAutoFillBackground(False)
+
+        self._layout = QVBoxLayout(self)
+        self._layout.setContentsMargins(0, 0, 0, 0)
+        self._layout.setSpacing(0)
+
+        self._content = QWidget(self)
+        self._content.setAttribute(Qt.WA_TranslucentBackground, True)
+        self._content.setAutoFillBackground(False)
+        self._content.setStyleSheet("background: transparent;")
+
+        self._content_layout = QVBoxLayout(self._content)
+        self._content_layout.setContentsMargins(4, 4, 4, 6)
+        self._content_layout.setSpacing(2)
+
+        self._layout.addWidget(self._content)
+
+    def clear_items(self) -> None:
+        while self._content_layout.count():
+            item = self._content_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+    def set_items(self, items: list[str], current_text: str) -> None:
+        self.clear_items()
+        for item_text in items:
+            btn = SelectorPopupItem(item_text, item_text == current_text, self._content)
+            btn.clicked.connect(lambda checked=False, text=item_text: self._choose(text))
+            self._content_layout.addWidget(btn)
+
+    def _choose(self, text: str) -> None:
+        self.itemChosen.emit(text)
+        self.close()
+
+    def show_below(self, anchor: QWidget) -> None:
+        self.setFixedWidth(anchor.width())
+        self.adjustSize()
+
+        top_left = anchor.mapToGlobal(anchor.rect().topLeft())
+        x = top_left.x() + (anchor.width() - self.width()) // 2
+        y = top_left.y() + anchor.height() + 3
+        self.move(x, y)
+        self.show()
+        self.raise_()
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+
+        rect = self.rect().adjusted(0, 0, -1, -1)
+        painter.setPen(QPen(QColor(62, 216, 255, 88), 1.45))
+        painter.setBrush(QColor(8, 12, 19, 245))
+        painter.drawRoundedRect(rect, 12, 12)
+
+
+class MenuSelectorButton(QPushButton):
+    currentTextChanged = Signal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._items: list[str] = []
+        self._current_text = ""
+        self._popup: SelectorPopup | None = None
+        self.setCursor(Qt.PointingHandCursor)
+        self.setFlat(True)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setAutoFillBackground(False)
+        self.clicked.connect(self._open_menu)
+
+    def set_items(self, items: list[str]) -> None:
+        self._items = [str(x) for x in items]
+        if self._items and self._current_text not in self._items:
+            self._current_text = self._items[0]
+        self.update()
+
+    def currentText(self) -> str:
+        return self._current_text
+
+    def setCurrentText(self, value: str) -> None:
+        if self._items:
+            new_value = value if value in self._items else self._items[0]
+        else:
+            new_value = str(value)
+
+        changed = new_value != self._current_text
+        self._current_text = new_value
+        self.update()
+        if changed:
+            self.currentTextChanged.emit(new_value)
+
+    def _open_menu(self) -> None:
+        if not self._items:
+            return
+
+        anchor = self.parentWidget() if self.parentWidget() is not None else self
+
+        if self._popup is not None:
+            self._popup.close()
+            self._popup.deleteLater()
+            self._popup = None
+
+        popup = SelectorPopup(self)
+        popup.set_items(self._items, self._current_text)
+        popup.itemChosen.connect(self.setCurrentText)
+        popup.show_below(anchor)
+        self._popup = popup
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        painter.setRenderHint(QPainter.TextAntialiasing, True)
+
+        text_rect = self.rect().adjusted(10, 0, -10, 0)
 
         painter.save()
-        painter.setPen(option.palette.buttonText().color())
-        text = option.fontMetrics.elidedText(
-            self.currentText(),
+        painter.setPen(self.palette().buttonText().color())
+        text = self.fontMetrics().elidedText(
+            self._current_text,
             Qt.ElideRight,
             max(12, text_rect.width() - 2),
         )

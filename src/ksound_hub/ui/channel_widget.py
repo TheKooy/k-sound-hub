@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
 from ..audio.engine import AudioEngine
 from ..models import ChannelConfig, EqProfile
 from .eq_dialog import EqProfileDialog
-from .widgets import CenteredComboBox, CollapsibleSection, HeaderBadge, StereoLevelMeterWidget
+from .widgets import MenuSelectorButton, CollapsibleSection, HeaderBadge, SelectorFrame, StereoLevelMeterWidget
 
 CHANNEL_META = {
     "all": {"icon": "🌍", "apps": ["Default desktop audio", "Browser", "System sounds"]},
@@ -79,20 +79,21 @@ class ChannelWidget(QFrame):
 
         icon_label = QLabel(meta["icon"])
         icon_label.setAlignment(Qt.AlignCenter)
-        icon_label.setStyleSheet("font-size: 20px;")
+        icon_label.setStyleSheet("font-size: 20px; background: transparent;")
         header.addWidget(icon_label)
 
         title = QLabel(channel.name)
         title.setAlignment(Qt.AlignCenter)
-        title.setStyleSheet("font-size: 16px; font-weight: 900;")
+        title.setStyleSheet("font-size: 16px; font-weight: 900; background: transparent;")
         header.addWidget(title)
 
         root.addLayout(header)
 
-        self.device_combo: CenteredComboBox | None = None
-        self.return_mode_combo: CenteredComboBox | None = None
+        self.device_combo: MenuSelectorButton | None = None
+        self.return_mode_combo: MenuSelectorButton | None = None
         self.eq_list: QListWidget | None = None
         self.apps_list: QListWidget | None = None
+        self._selector_frames: list[tuple[QFrame, int]] = []
 
         controls_row = self._build_primary_controls()
         if controls_row is not None:
@@ -100,7 +101,7 @@ class ChannelWidget(QFrame):
 
         self.volume_percent = QLabel(f"{self.channel.volume}%")
         self.volume_percent.setAlignment(Qt.AlignCenter)
-        self.volume_percent.setStyleSheet("font-size: 12px; font-weight: 800;")
+        self.volume_percent.setStyleSheet("font-size: 12px; font-weight: 800; background: transparent;")
         root.addWidget(self.volume_percent)
 
         self.left_meter = StereoLevelMeterWidget("L")
@@ -174,17 +175,18 @@ class ChannelWidget(QFrame):
             return RETURN_MODES[0]
         return ""
 
-    def _selector_frame(self, combo: CenteredComboBox, *, frame_width: int = 136) -> QWidget:
-        frame = QFrame()
+    def _selector_frame(self, combo: MenuSelectorButton, *, frame_width: int = 136) -> QWidget:
+        frame = SelectorFrame()
         frame.setObjectName("selectorFrame")
         frame.setFixedWidth(frame_width)
         frame.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self._selector_frames.append((frame, frame_width))
 
         row = QHBoxLayout(frame)
-        row.setContentsMargins(10, 4, 10, 4)
+        row.setContentsMargins(8, 4, 8, 4)
         row.setSpacing(0)
 
-        combo.setObjectName("selectorCombo")
+        combo.setObjectName("selectorButton")
         combo.setMinimumHeight(26)
         combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         row.addWidget(combo, 1)
@@ -197,62 +199,65 @@ class ChannelWidget(QFrame):
 
         if self.channel.key == "return-mic":
             box = QWidget()
+            box.setAttribute(Qt.WA_TranslucentBackground, True)
+            box.setAutoFillBackground(False)
+            box.setStyleSheet("background: transparent;")
             outer = QHBoxLayout(box)
             outer.setContentsMargins(0, 0, 0, 0)
             outer.setSpacing(8)
             outer.addStretch(1)
 
-            self.device_combo = CenteredComboBox()
-            self.device_combo.addItems(DEVICE_CHOICES["monitor"])
-            self._prepare_combo(self.device_combo)
-            self._set_combo_text(self.device_combo, self.channel.primary_target)
+            self.device_combo = MenuSelectorButton()
+            self.device_combo.set_items(DEVICE_CHOICES["monitor"])
+            self._prepare_selector(self.device_combo)
+            self._set_selector_text(self.device_combo, self.channel.primary_target)
             self.device_combo.currentTextChanged.connect(self._on_primary_target_changed)
-            outer.addWidget(self._selector_frame(self.device_combo, frame_width=132), 0, Qt.AlignCenter)
+            outer.addWidget(self._selector_frame(self.device_combo, frame_width=126), 0, Qt.AlignCenter)
 
-            self.return_mode_combo = CenteredComboBox()
-            self.return_mode_combo.addItems(RETURN_MODES)
-            self._prepare_combo(self.return_mode_combo)
-            self._set_combo_text(self.return_mode_combo, self.channel.secondary_target)
+            self.return_mode_combo = MenuSelectorButton()
+            self.return_mode_combo.set_items(RETURN_MODES)
+            self._prepare_selector(self.return_mode_combo)
+            self._set_selector_text(self.return_mode_combo, self.channel.secondary_target)
             self.return_mode_combo.currentTextChanged.connect(self._on_secondary_target_changed)
-            outer.addWidget(self._selector_frame(self.return_mode_combo, frame_width=132), 0, Qt.AlignCenter)
+            outer.addWidget(self._selector_frame(self.return_mode_combo, frame_width=126), 0, Qt.AlignCenter)
 
             outer.addStretch(1)
             return box
 
         box = QWidget()
+        box.setAttribute(Qt.WA_TranslucentBackground, True)
+        box.setAutoFillBackground(False)
+        box.setStyleSheet("background: transparent;")
         outer = QHBoxLayout(box)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
         outer.addStretch(1)
 
-        self.device_combo = CenteredComboBox()
+        self.device_combo = MenuSelectorButton()
         if self.channel.key == "micro":
-            self.device_combo.addItems(MIC_INPUT_CHOICES)
-            frame_width = 148
+            self.device_combo.set_items(MIC_INPUT_CHOICES)
+            frame_width = 140
         elif self.channel.kind == "monitor":
-            self.device_combo.addItems(DEVICE_CHOICES["monitor"])
-            frame_width = 136
+            self.device_combo.set_items(DEVICE_CHOICES["monitor"])
+            frame_width = 130
         else:
-            self.device_combo.addItems(DEVICE_CHOICES["playback"])
-            frame_width = 136
+            self.device_combo.set_items(DEVICE_CHOICES["playback"])
+            frame_width = 130
 
-        self._prepare_combo(self.device_combo)
-        self._set_combo_text(self.device_combo, self.channel.primary_target)
+        self._prepare_selector(self.device_combo)
+        self._set_selector_text(self.device_combo, self.channel.primary_target)
         self.device_combo.currentTextChanged.connect(self._on_primary_target_changed)
         outer.addWidget(self._selector_frame(self.device_combo, frame_width=frame_width), 0, Qt.AlignCenter)
 
         outer.addStretch(1)
         return box
 
-    def _set_combo_text(self, combo: CenteredComboBox, value: str) -> None:
-        idx = combo.findText(value)
-        combo.setCurrentIndex(idx if idx >= 0 else 0)
+    def _set_selector_text(self, combo: MenuSelectorButton, value: str) -> None:
+        combo.setCurrentText(value)
 
-    def _prepare_combo(self, combo: CenteredComboBox) -> None:
+    def _prepare_selector(self, combo: MenuSelectorButton) -> None:
         combo.setMinimumWidth(0)
         combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        combo.setSizeAdjustPolicy(CenteredComboBox.SizeAdjustPolicy.AdjustToContents)
-        combo.setEditable(False)
 
     def set_card_width(self, width: int) -> None:
         if self.channel.key == "return-mic":
@@ -262,6 +267,21 @@ class ChannelWidget(QFrame):
         else:
             self._card_width = max(136, min(156, int(width)))
         self.setFixedWidth(self._card_width)
+        self._resize_selector_frames()
+
+    def _resize_selector_frames(self) -> None:
+        if not self._selector_frames:
+            return
+
+        if self.channel.key == "return-mic":
+            available_each = max(104, (self._card_width - 32 - 8) // 2)
+            for frame, base_width in self._selector_frames:
+                frame.setFixedWidth(min(base_width, available_each))
+            return
+
+        available = max(104, self._card_width - 22)
+        for frame, base_width in self._selector_frames:
+            frame.setFixedWidth(min(base_width, available))
 
     def _set_meter_visibility(self) -> None:
         visible = self.global_visualizer_enabled and self.channel.visualizer_enabled
@@ -502,7 +522,7 @@ class ChannelWidget(QFrame):
             return
         self.channel.primary_target = target
         if self.device_combo is not None:
-            self._set_combo_text(self.device_combo, target)
+            self._set_selector_text(self.device_combo, target)
         self._emit_changed("routing")
 
     def set_global_visualizer_enabled(self, enabled: bool) -> None:
