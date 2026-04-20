@@ -46,7 +46,7 @@ class ChannelWidget(QFrame):
         self.channel = channel
         self.global_visualizer_enabled = global_visualizer_enabled
         self.setObjectName("channelCard")
-        self._card_width = 156
+        self._card_width = 152
         self.setFixedWidth(self._card_width)
         self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
 
@@ -58,17 +58,48 @@ class ChannelWidget(QFrame):
 
         header = QVBoxLayout()
         header.setContentsMargins(0, 0, 0, 0)
-        header.setSpacing(1)
+        header.setSpacing(2)
 
         icon_label = QLabel(meta["icon"])
         icon_label.setAlignment(Qt.AlignCenter)
         icon_label.setStyleSheet("font-size: 20px;")
         header.addWidget(icon_label)
 
-        title = QLabel(channel.name)
-        title.setAlignment(Qt.AlignCenter)
-        title.setStyleSheet("font-size: 14px; font-weight: 800;")
-        header.addWidget(title)
+        if channel.key == "return-mic":
+            title_row = QHBoxLayout()
+            title_row.setContentsMargins(0, 0, 0, 0)
+            title_row.setSpacing(4)
+            title_row.addStretch(1)
+
+            title = QLabel(channel.name)
+            title.setAlignment(Qt.AlignCenter)
+            title.setStyleSheet("font-size: 15px; font-weight: 900;")
+            title_row.addWidget(title)
+
+            out_badge = QLabel("O")
+            out_badge.setAlignment(Qt.AlignCenter)
+            out_badge.setFixedSize(16, 16)
+            out_badge.setStyleSheet(
+                "font-size: 10px; font-weight: 800; color: #0d1118; "
+                "background: rgba(255, 209, 102, 220); border-radius: 8px;"
+            )
+            title_row.addWidget(out_badge)
+
+            in_badge = QLabel("I")
+            in_badge.setAlignment(Qt.AlignCenter)
+            in_badge.setFixedSize(16, 16)
+            in_badge.setStyleSheet(
+                "font-size: 10px; font-weight: 800; color: #0d1118; "
+                "background: rgba(62, 216, 255, 220); border-radius: 8px;"
+            )
+            title_row.addWidget(in_badge)
+            title_row.addStretch(1)
+            header.addLayout(title_row)
+        else:
+            title = QLabel(channel.name)
+            title.setAlignment(Qt.AlignCenter)
+            title.setStyleSheet("font-size: 15px; font-weight: 900;")
+            header.addWidget(title)
 
         root.addLayout(header)
 
@@ -161,29 +192,19 @@ class ChannelWidget(QFrame):
             layout = QGridLayout(box)
             layout.setContentsMargins(8, 7, 8, 7)
             layout.setHorizontalSpacing(6)
-            layout.setVerticalSpacing(3)
-
-            output_label = QLabel("Output")
-            output_label.setObjectName("mutedLabel")
-            output_label.setAlignment(Qt.AlignCenter)
-            layout.addWidget(output_label, 0, 0)
-
-            input_label = QLabel("Input")
-            input_label.setObjectName("mutedLabel")
-            input_label.setAlignment(Qt.AlignCenter)
-            layout.addWidget(input_label, 0, 1)
+            layout.setVerticalSpacing(0)
 
             self.device_combo = QComboBox()
             self.device_combo.addItems(DEVICE_CHOICES["monitor"])
             self._set_combo_text(self.device_combo, self.channel.primary_target)
             self.device_combo.currentTextChanged.connect(self._on_primary_target_changed)
-            layout.addWidget(self.device_combo, 1, 0)
+            layout.addWidget(self.device_combo, 0, 0)
 
             self.return_mode_combo = QComboBox()
             self.return_mode_combo.addItems(RETURN_MODES)
             self._set_combo_text(self.return_mode_combo, self.channel.secondary_target)
             self.return_mode_combo.currentTextChanged.connect(self._on_secondary_target_changed)
-            layout.addWidget(self.return_mode_combo, 1, 1)
+            layout.addWidget(self.return_mode_combo, 0, 1)
 
             return box
 
@@ -210,11 +231,11 @@ class ChannelWidget(QFrame):
 
     def set_card_width(self, width: int) -> None:
         if self.channel.key == "return-mic":
-            self._card_width = max(180, min(198, int(width) + 26))
+            self._card_width = max(196, min(214, int(width) + 34))
         elif self.channel.key == "micro":
             self._card_width = max(150, min(178, int(width) + 8))
         else:
-            self._card_width = max(138, min(160, int(width)))
+            self._card_width = max(136, min(156, int(width)))
         self.setFixedWidth(self._card_width)
 
     def _set_meter_visibility(self) -> None:
