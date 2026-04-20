@@ -7,6 +7,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QGridLayout,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QListWidget,
     QListWidgetItem,
@@ -19,6 +20,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..audio.engine import AudioEngine
 from ..models import ChannelConfig, EqProfile
 from .eq_dialog import EqProfileDialog
 from .widgets import CenteredComboBox, CollapsibleSection, HeaderBadge, StereoLevelMeterWidget
@@ -39,15 +41,27 @@ DEVICE_CHOICES = {
 }
 RETURN_MODES = ["Post-EE", "Final Mix"]
 MIC_INPUT_CHOICES = ["ANPW Mic", "RODE NT-USB", "Both mics"]
+PLAYBACK_CHANNEL_KEYS = {"all", "game", "chat", "media", "more"}
 
 
 class ChannelWidget(QFrame):
     changed = Signal()
 
-    def __init__(self, channel: ChannelConfig, global_visualizer_enabled: bool, parent=None):
+    def __init__(
+        self,
+        channel: ChannelConfig,
+        global_visualizer_enabled: bool,
+        audio_engine: AudioEngine | None = None,
+        on_runtime_refresh=None,
+        parent=None,
+    ):
         super().__init__(parent)
         self.channel = channel
         self.global_visualizer_enabled = global_visualizer_enabled
+        self.audio_engine = audio_engine
+        self.on_runtime_refresh = on_runtime_refresh
+        self._change_hint = "init"
+
         self.setObjectName("channelCard")
         self._card_width = 152
         self.setFixedWidth(self._card_width)
@@ -78,6 +92,7 @@ class ChannelWidget(QFrame):
         self.device_combo: CenteredComboBox | None = None
         self.return_mode_combo: CenteredComboBox | None = None
         self.eq_list: QListWidget | None = None
+        self.apps_list: QListWidget | None = None
 
         controls_row = self._build_primary_controls()
         if controls_row is not None:
@@ -142,6 +157,10 @@ class ChannelWidget(QFrame):
 
         root.addStretch(1)
         self._set_meter_visibility()
+
+    def _emit_changed(self, hint: str) -> None:
+        self._change_hint = hint
+        self.changed.emit()
 
     def _default_primary_target(self) -> str:
         if self.channel.key == "micro":
@@ -255,21 +274,117 @@ class ChannelWidget(QFrame):
         badge_row.addStretch(1)
         self.apps_section.content_layout.addLayout(badge_row)
 
-        app_list = QListWidget()
-        app_list.setMinimumHeight(96)
-        for app_name in app_names:
-            app_list.addItem(QListWidgetItem(app_name))
-        self.apps_section.content_layout.addWidget(app_list)
+        self.apps_list = QListWidget()
+        self.apps_list.setMinimumHeight(96)
+        self.apps_section.content_layout.addWidget(self.apps_list)
 
         actions = QHBoxLayout()
         add_btn = QPushButton("+")
         add_btn.setObjectName("tinyButton")
+        add_btn.clicked.connect(self._add_app_route)
+
         remove_btn = QPushButton("🗑")
         remove_btn.setObjectName("tinyButton")
+        remove_btn.clicked.connect(self._remove_selected_app_route)
+
         actions.addWidget(add_btn)
         actions.addStretch(1)
         actions.addWidget(remove_btn)
         self.apps_section.content_layout.addLayout(actions)
+
+        self._reload_app_routes(fallback_names=app_names)
+
+    def _reload_app_routes(self, fallback_names: list[str] | None = None) -> None:
+        if self.apps_list is None:
+            return
+
+        self.apps_list.clear()
+
+        if self.audio_engine is None or self.channel.key not in PLAYBACK_CHANNEL_KEYS:
+            for app_name in (fallback_names or []):
+                self.apps_list.addItem(QListWidgetItem(app_name))
+            return
+
+        streams = self.audio_engine.list_sink_inputs()
+        shown = 0
+        for stream in streams:
+            if stream.sink_name != self.channel.key:
+                continue
+            item = QListWidgetItem(stream.display_name)
+            item.setData(Qt.UserRole, stream.stream_id)
+            self.apps_list.addItem(item)
+            shown += 1
+
+        if shown == 0 and fallback_names:
+            for app_name in fallback_names[:1]:
+                item = QListWidgetItem(app_name)
+                item.setFlags(item.flags() & ~Qt.ItemIsSelectable)
+                self.apps_list.addItem(item)
+
+    def _add_app_route(self) -> None:
+        if self.audio_engine is None or self.channel.key not in PLAYBACK_CHANNEL_KEYS:
+            return
+
+        streams = [s for s in self.audio_engine.list_sink_inputs() if s.sink_name != self.channel.key]
+        if not streams:
+            QMessageBox.information(self, "Apps", "No active audio app available to move.")
+            return
+
+        choices = []
+        mapping: dict[str, int] = {}
+        for stream in streams:
+            label = f"{stream.display_name} [{stream.stream_id}]"
+            if stream.sink_name:
+                label += f" → {stream.sink_name}"
+            choices.append(label)
+            mapping[label] = stream.stream_id
+
+        choice, ok = QInputDialog.getItem(
+            self,
+            f"Send app to {self.channel.name}",
+            "Active apps",
+            choices,
+            0,
+            False,
+        )
+        if not ok or not choice:
+            return
+
+        stream_id = mapping[choice]
+        if not self.audio_engine.move_sink_input_to_channel(stream_id, self.channel.key):
+            QMessageBox.warning(self, "Apps", "Unable to move this app to the selected channel.")
+            return
+
+        if callable(self.on_runtime_refresh):
+            self.on_runtime_refresh()
+
+    def _remove_selected_app_route(self) -> None:
+        if self.audio_engine is None or self.channel.key not in PLAYBACK_CHANNEL_KEYS:
+            return
+
+        item = self.apps_list.currentItem() if self.apps_list is not None else None
+        if item is None:
+            return
+
+        stream_id = item.data(Qt.UserRole)
+        if not isinstance(stream_id, int):
+            return
+
+        if self.channel.key == "all":
+            QMessageBox.information(self, "Apps", "This app is already on ALL.")
+            return
+
+        if not self.audio_engine.move_sink_input_to_channel(stream_id, "all"):
+            QMessageBox.warning(self, "Apps", "Unable to move this app back to ALL.")
+            return
+
+        if callable(self.on_runtime_refresh):
+            self.on_runtime_refresh()
+
+    def refresh_runtime_views(self) -> None:
+        meta = CHANNEL_META.get(self.channel.key, {"apps": []})
+        self._reload_app_routes(fallback_names=meta["apps"])
+        self._reload_profiles()
 
     def _populate_eq_section(self) -> None:
         badge_row = QHBoxLayout()
@@ -388,7 +503,7 @@ class ChannelWidget(QFrame):
         self.channel.primary_target = target
         if self.device_combo is not None:
             self._set_combo_text(self.device_combo, target)
-        self.changed.emit()
+        self._emit_changed("routing")
 
     def set_global_visualizer_enabled(self, enabled: bool) -> None:
         self.global_visualizer_enabled = enabled
@@ -431,26 +546,26 @@ class ChannelWidget(QFrame):
         if not name or name == self.channel.selected_eq_profile:
             return
         self.channel.selected_eq_profile = name
-        self.changed.emit()
+        self._emit_changed("eq_select")
 
     def _on_enabled_changed(self, checked: bool) -> None:
         self.channel.enabled = checked
-        self.changed.emit()
+        self._emit_changed("enabled")
 
     def _on_volume_changed(self, value: int) -> None:
         self.channel.volume = value
         self.volume_percent.setText(f"{value}%")
-        self.changed.emit()
+        self._emit_changed("volume")
 
     def _on_muted_changed(self, checked: bool) -> None:
         self.channel.muted = checked
         self.mute_btn.setText("Muted" if checked else "Mute")
-        self.changed.emit()
+        self._emit_changed("mute")
 
     def _on_visualizer_changed(self, checked: bool) -> None:
         self.channel.visualizer_enabled = checked
         self._set_meter_visibility()
-        self.changed.emit()
+        self._emit_changed("visualizer")
 
     def _unique_profile_name(self, wanted: str, *, preserve_current: str | None = None) -> str:
         existing = {profile.name for profile in self.channel.eq_profiles}
@@ -466,17 +581,17 @@ class ChannelWidget(QFrame):
 
     def _apply_preview_to_profile(self, target: EqProfile, preview: EqProfile) -> None:
         target.bands = copy.deepcopy(preview.bands)
-        self.changed.emit()
+        self._emit_changed("eq_preview")
 
     def _on_primary_target_changed(self, value: str) -> None:
         self.channel.primary_target = value
         if self.channel.key == "micro":
             self._sync_micro_checks_from_target()
-        self.changed.emit()
+        self._emit_changed("target")
 
     def _on_secondary_target_changed(self, value: str) -> None:
         self.channel.secondary_target = value
-        self.changed.emit()
+        self._emit_changed("target")
 
     def _add_profile(self) -> None:
         original_profiles = copy.deepcopy(self.channel.eq_profiles)
@@ -492,7 +607,7 @@ class ChannelWidget(QFrame):
         self.channel.eq_profiles.append(temp)
         self.channel.selected_eq_profile = temp.name
         self._reload_profiles()
-        self.changed.emit()
+        self._emit_changed("eq_profiles")
 
         dialog = EqProfileDialog(temp, self, title="Add EQ preset")
         dialog.previewChanged.connect(lambda preview: self._apply_preview_to_profile(temp, preview))
@@ -501,7 +616,7 @@ class ChannelWidget(QFrame):
             self.channel.eq_profiles = original_profiles
             self.channel.selected_eq_profile = original_selected
             self._reload_profiles()
-            self.changed.emit()
+            self._emit_changed("eq_profiles")
             return
 
         updated = dialog.build_profile()
@@ -523,7 +638,7 @@ class ChannelWidget(QFrame):
             current.bands = copy.deepcopy(original.bands)
             self.channel.selected_eq_profile = original.name
             self._reload_profiles()
-            self.changed.emit()
+            self._emit_changed("eq_profiles")
             return
 
         updated = dialog.build_profile()
@@ -531,7 +646,7 @@ class ChannelWidget(QFrame):
         current.bands = copy.deepcopy(updated.bands)
         self.channel.selected_eq_profile = current.name
         self._reload_profiles()
-        self.changed.emit()
+        self._emit_changed("eq_profiles")
 
     def _remove_profile(self) -> None:
         if len(self.channel.eq_profiles) <= 1:
@@ -552,4 +667,4 @@ class ChannelWidget(QFrame):
         self.channel.eq_profiles = [profile for profile in self.channel.eq_profiles if profile.name != selected]
         self.channel.selected_eq_profile = self.channel.eq_profiles[0].name
         self._reload_profiles()
-        self.changed.emit()
+        self._emit_changed("eq_profiles")

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -26,6 +26,23 @@ class MainWindow(QMainWindow):
         self.settings = settings_store.load()
         self.audio_engine = PipeWireAudioEngine()
         self.channel_widgets: dict[str, ChannelWidget] = {}
+        self._pending_apply_keys: set[str] = set()
+
+        self._save_timer = QTimer(self)
+        self._save_timer.setSingleShot(True)
+        self._save_timer.setInterval(180)
+        self._save_timer.timeout.connect(self._autosave)
+
+        self._status_timer = QTimer(self)
+        self._status_timer.setSingleShot(True)
+        self._status_timer.setInterval(90)
+        self._status_timer.timeout.connect(self.refresh_status)
+
+        self._apply_timer = QTimer(self)
+        self._apply_timer.setSingleShot(True)
+        self._apply_timer.timeout.connect(self._flush_pending_channel_apply)
+
+        self._link_shared_eq_library()
 
         self.setWindowTitle(f"{APP_NAME} {APP_VERSION}")
         self.resize(1440, 860)
@@ -75,6 +92,28 @@ class MainWindow(QMainWindow):
         self._reload_channels()
         self.audio_engine.apply_settings(self.settings)
         self.refresh_status()
+
+    def _link_shared_eq_library(self, source_channel=None) -> None:
+        shared_profiles = None
+
+        if source_channel is not None and getattr(source_channel, "eq_profiles", None):
+            shared_profiles = source_channel.eq_profiles
+        else:
+            for channel in self.settings.channels:
+                if channel.eq_profiles:
+                    shared_profiles = channel.eq_profiles
+                    break
+
+        if not shared_profiles:
+            return
+
+        valid_names = {profile.name for profile in shared_profiles}
+        default_name = shared_profiles[0].name
+
+        for channel in self.settings.channels:
+            channel.eq_profiles = shared_profiles
+            if channel.selected_eq_profile not in valid_names:
+                channel.selected_eq_profile = default_name
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -131,7 +170,12 @@ class MainWindow(QMainWindow):
         self._clear_columns()
 
         for channel in self._enabled_channels():
-            widget = ChannelWidget(channel, global_visualizer_enabled=self.settings.visualizer_enabled)
+            widget = ChannelWidget(
+                channel,
+                global_visualizer_enabled=self.settings.visualizer_enabled,
+                audio_engine=self.audio_engine,
+                on_runtime_refresh=self.refresh_status,
+            )
             widget.changed.connect(self._on_any_changed)
             self.channel_widgets[channel.key] = widget
             self.columns_layout.addWidget(widget)
@@ -141,10 +185,44 @@ class MainWindow(QMainWindow):
     def _autosave(self) -> None:
         self.settings_store.save(self.settings)
 
+    def _queue_channel_apply(self, channel_key: str, delay_ms: int) -> None:
+        self._pending_apply_keys.add(channel_key)
+        remaining = self._apply_timer.remainingTime()
+        if remaining < 0 or remaining > delay_ms:
+            self._apply_timer.start(delay_ms)
+
+    def _flush_pending_channel_apply(self) -> None:
+        keys = list(self._pending_apply_keys)
+        self._pending_apply_keys.clear()
+        for key in keys:
+            self.audio_engine.apply_channel(self.settings, key)
+        self._status_timer.start()
+
     def _on_any_changed(self) -> None:
-        self._autosave()
-        self.audio_engine.apply_settings(self.settings)
-        self.refresh_status()
+        sender = self.sender()
+        source_channel = getattr(sender, "channel", None)
+        hint = getattr(sender, "_change_hint", "generic")
+
+        self._link_shared_eq_library(source_channel=source_channel)
+
+        if source_channel is None:
+            self.audio_engine.apply_settings(self.settings)
+            self._save_timer.start()
+            self._status_timer.start()
+            return
+
+        if hint == "volume":
+            self._queue_channel_apply(source_channel.key, 30)
+        elif hint == "eq_preview":
+            self._queue_channel_apply(source_channel.key, 95)
+        elif hint == "mute":
+            self.audio_engine.apply_channel(self.settings, source_channel.key)
+            self._status_timer.start()
+        else:
+            self.audio_engine.apply_channel(self.settings, source_channel.key)
+            self._status_timer.start()
+
+        self._save_timer.start()
 
     def refresh_status(self) -> None:
         enabled_channels = sum(1 for channel in self.settings.channels if channel.enabled)
@@ -157,12 +235,14 @@ class MainWindow(QMainWindow):
         )
         for widget in self.channel_widgets.values():
             widget.set_global_visualizer_enabled(self.settings.visualizer_enabled)
+            widget.refresh_runtime_views()
         self._apply_column_widths()
 
     def open_settings(self) -> None:
         dialog = SettingsDialog(self.settings, self)
         if dialog.exec():
             self.settings = dialog.build_result()
+            self._link_shared_eq_library()
             self._autosave()
             self._reload_channels()
             self.audio_engine.apply_settings(self.settings)

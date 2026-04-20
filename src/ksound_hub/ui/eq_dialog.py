@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import copy
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import QTimer, Signal
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QDialog,
@@ -31,6 +31,11 @@ class EqProfileDialog(QDialog):
         self._source_profile = copy.deepcopy(profile)
         self._initial_profile = copy.deepcopy(profile)
         self._dirty = False
+
+        self._preview_timer = QTimer(self)
+        self._preview_timer.setSingleShot(True)
+        self._preview_timer.setInterval(95)
+        self._preview_timer.timeout.connect(self._emit_preview)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(12, 12, 12, 12)
@@ -90,10 +95,21 @@ class EqProfileDialog(QDialog):
         self.previewChanged.emit(profile)
 
     def _on_live_changed(self, *args) -> None:
-        self._emit_preview()
+        self._preview_timer.start()
 
     def _cancel_without_saving(self) -> None:
         self.reject()
+
+    def accept(self) -> None:
+        if self._preview_timer.isActive():
+            self._preview_timer.stop()
+            self._emit_preview()
+        super().accept()
+
+    def reject(self) -> None:
+        if self._preview_timer.isActive():
+            self._preview_timer.stop()
+        super().reject()
 
     def closeEvent(self, event: QCloseEvent) -> None:
         profile = self.build_profile()

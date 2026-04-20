@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
 from ..config import CONFIG_DIR
 from ..models import AppSettings, ChannelConfig, EqProfile
-from .engine import AudioEngine, AudioNode
+from .engine import AppStream, AudioEngine, AudioNode
 
 
 TARGET_OBJECT_BY_LABEL = {
@@ -16,22 +18,53 @@ TARGET_OBJECT_BY_LABEL = {
     "S/PDIF": "alsa_output.usb-Generic_USB_Audio-00.HiFi__SPDIF__sink",
 }
 
+PLAYBACK_EQ_CHANNELS = {
+    "all": "all",
+    "game": "game",
+    "chat": "chat",
+    "media": "media",
+    "more": "more",
+}
+
+STATUS_ORDER = ["all", "game", "chat", "media", "more"]
+STATUS_LABELS = {
+    "all": "all-eq",
+    "game": "game-eq",
+    "chat": "chat-eq",
+    "media": "media-eq",
+    "more": "more-eq",
+}
+
+
+@dataclass
+class EqRuntimeSlot:
+    key: str
+    logical_sink: str
+    proc: subprocess.Popen | None = None
+    signature: str = ""
+    status: str = "idle"
+
 
 class PipeWireAudioEngine(AudioEngine):
     def __init__(self) -> None:
         self.runtime_dir = CONFIG_DIR / "runtime"
         self.runtime_dir.mkdir(parents=True, exist_ok=True)
-        self.media_eq_proc: subprocess.Popen | None = None
-        self.media_eq_signature = ""
-        self.media_eq_status = "media-eq: idle"
-        self.media_eq_log_path = self.runtime_dir / "media-eq.log"
-        self.media_eq_xdg_home = self.runtime_dir / "media-eq-xdg"
-        self.media_eq_dropin_path = self.media_eq_xdg_home / "pipewire" / "filter-chain.conf.d" / "ksound-media-eq.conf"
+
+        self.eq_slots: dict[str, EqRuntimeSlot] = {
+            key: EqRuntimeSlot(key=key, logical_sink=logical_sink)
+            for key, logical_sink in PLAYBACK_EQ_CHANNELS.items()
+        }
 
     def _run(self, args: list[str]) -> subprocess.CompletedProcess[str]:
         env = os.environ.copy()
         env["LC_ALL"] = "C"
         return subprocess.run(args, capture_output=True, text=True, timeout=3, env=env)
+
+    def _run_no_fail(self, args: list[str]) -> None:
+        try:
+            self._run(args)
+        except Exception:
+            pass
 
     def _parse_short(self, lines: Iterable[str], kind: str) -> list[AudioNode]:
         nodes: list[AudioNode] = []
@@ -59,15 +92,29 @@ class PipeWireAudioEngine(AudioEngine):
         return f"PipeWire backend available • sinks: {sinks} • sources: {sources}"
 
     def status_text(self) -> str:
-        return f"{self._status_base()} • {self.media_eq_status}"
+        parts = [self._status_base()]
+        for key in STATUS_ORDER:
+            slot = self.eq_slots[key]
+            parts.append(f"{STATUS_LABELS[key]}: {slot.status}")
+        return " • ".join(parts)
 
     def shutdown(self) -> None:
-        self._stop_media_eq()
+        for slot in self.eq_slots.values():
+            self._stop_slot(slot)
 
-    def _stop_media_eq(self) -> None:
-        proc = self.media_eq_proc
-        self.media_eq_proc = None
-        self.media_eq_signature = ""
+    def _log_path_for(self, key: str) -> Path:
+        return self.runtime_dir / f"{key}-eq.log"
+
+    def _xdg_home_for(self, key: str) -> Path:
+        return self.runtime_dir / f"{key}-eq-xdg"
+
+    def _dropin_path_for(self, key: str) -> Path:
+        return self._xdg_home_for(key) / "pipewire" / "filter-chain.conf.d" / f"ksound-{key}-eq.conf"
+
+    def _stop_slot(self, slot: EqRuntimeSlot) -> None:
+        proc = slot.proc
+        slot.proc = None
+        slot.signature = ""
         if proc is None:
             return
         try:
@@ -104,14 +151,15 @@ class PipeWireAudioEngine(AudioEngine):
             )
         return "\n          ".join(lines)
 
-    def _render_media_eq_dropin(self, *, profile: EqProfile, target_sink: str) -> str:
+    def _render_eq_dropin(self, *, key: str, logical_sink: str, profile: EqProfile, target_sink: str) -> str:
         filters = self._render_filters(profile)
+        title = key.upper()
         return f'''context.modules = [
   {{
     name = libpipewire-module-filter-chain
     args = {{
-      node.description = "K-Sound Hub MEDIA EQ"
-      media.name = "K-Sound Hub MEDIA EQ"
+      node.description = "K-Sound Hub {title} EQ"
+      media.name = "K-Sound Hub {title} EQ"
       filter.graph = {{
         nodes = [
           {{
@@ -129,8 +177,8 @@ class PipeWireAudioEngine(AudioEngine):
         outputs = [ "eq:Out 1" "eq:Out 2" ]
       }}
       capture.props = {{
-        node.name = "ksh_media_eq.capture"
-        target.object = "media"
+        node.name = "ksh_{key}_eq.capture"
+        target.object = "{logical_sink}"
         stream.capture.sink = true
         node.passive = true
         node.dont-reconnect = true
@@ -138,7 +186,7 @@ class PipeWireAudioEngine(AudioEngine):
         audio.position = [ FL FR ]
       }}
       playback.props = {{
-        node.name = "ksh_media_eq.playback"
+        node.name = "ksh_{key}_eq.playback"
         target.object = "{target_sink}"
         node.passive = true
         node.dont-reconnect = true
@@ -150,71 +198,91 @@ class PipeWireAudioEngine(AudioEngine):
 ]
 '''
 
-    def _write_media_eq_dropin(self, text: str) -> None:
-        self.media_eq_dropin_path.parent.mkdir(parents=True, exist_ok=True)
-        self.media_eq_dropin_path.write_text(text, encoding="utf-8")
+    def _write_slot_dropin(self, key: str, text: str) -> None:
+        path = self._dropin_path_for(key)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
 
-    def _start_media_eq(self, signature: str) -> None:
-        if self.media_eq_proc is not None and self.media_eq_signature == signature and self.media_eq_proc.poll() is None:
+    def _start_slot(self, slot: EqRuntimeSlot, signature: str) -> None:
+        if slot.proc is not None and slot.signature == signature and slot.proc.poll() is None:
             return
 
-        self._stop_media_eq()
+        self._stop_slot(slot)
 
         env = os.environ.copy()
-        env["XDG_CONFIG_HOME"] = str(self.media_eq_xdg_home)
+        env["XDG_CONFIG_HOME"] = str(self._xdg_home_for(slot.key))
         env["LC_ALL"] = "C"
 
-        with self.media_eq_log_path.open("ab", buffering=0) as log_file:
-            self.media_eq_proc = subprocess.Popen(
+        with self._log_path_for(slot.key).open("ab", buffering=0) as log_file:
+            slot.proc = subprocess.Popen(
                 ["pipewire", "-c", "filter-chain.conf"],
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
                 env=env,
             )
-        self.media_eq_signature = signature
+        slot.signature = signature
 
-    def _read_media_eq_log_tail(self) -> str:
-        if not self.media_eq_log_path.is_file():
+    def _read_slot_log_tail(self, key: str) -> str:
+        log_path = self._log_path_for(key)
+        if not log_path.is_file():
             return ""
         try:
-            lines = self.media_eq_log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+            lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
         except Exception:
             return ""
         return lines[-1].strip() if lines else ""
 
-    def apply_settings(self, settings: AppSettings) -> None:
-        media_channel = self._find_channel(settings, "media")
-        if media_channel is None:
-            self._stop_media_eq()
-            self.media_eq_status = "media-eq: MEDIA channel missing"
+    def _apply_channel_controls(self, channel: ChannelConfig, logical_sink: str) -> None:
+        if not self._sink_exists(logical_sink):
+            return
+        volume = max(0, min(150, int(channel.volume)))
+        self._run_no_fail(["pactl", "set-sink-volume", logical_sink, f"{volume}%"])
+        self._run_no_fail(["pactl", "set-sink-mute", logical_sink, "1" if channel.muted else "0"])
+
+    def _apply_eq_slot(self, settings: AppSettings, key: str) -> None:
+        slot = self.eq_slots[key]
+        logical_sink = slot.logical_sink
+
+        channel = self._find_channel(settings, key)
+        if channel is None:
+            self._stop_slot(slot)
+            slot.status = f"{key.upper()} channel missing"
             return
 
-        if not media_channel.enabled:
-            self._stop_media_eq()
-            self.media_eq_status = "media-eq: MEDIA channel disabled"
+        self._apply_channel_controls(channel, logical_sink)
+
+        if not channel.enabled:
+            self._stop_slot(slot)
+            slot.status = "disabled"
             return
 
-        if not self._sink_exists("media"):
-            self._stop_media_eq()
-            self.media_eq_status = "media-eq: waiting for sink 'media'"
+        if not self._sink_exists(logical_sink):
+            self._stop_slot(slot)
+            slot.status = f"waiting for sink '{logical_sink}'"
             return
 
-        target_label = (media_channel.primary_target or "ANPW").strip()
+        target_label = (channel.primary_target or "ANPW").strip()
         target_sink = TARGET_OBJECT_BY_LABEL.get(target_label)
         if not target_sink:
-            self._stop_media_eq()
-            self.media_eq_status = f"media-eq: no target mapping for {target_label}"
+            self._stop_slot(slot)
+            slot.status = f"no target mapping for {target_label}"
             return
 
         if not self._sink_exists(target_sink):
-            self._stop_media_eq()
-            self.media_eq_status = f"media-eq: target sink missing ({target_label})"
+            self._stop_slot(slot)
+            slot.status = f"target sink missing ({target_label})"
             return
 
-        profile = self._current_profile(media_channel)
-        dropin_text = self._render_media_eq_dropin(profile=profile, target_sink=target_sink)
+        profile = self._current_profile(channel)
+        dropin_text = self._render_eq_dropin(
+            key=key,
+            logical_sink=logical_sink,
+            profile=profile,
+            target_sink=target_sink,
+        )
         signature = json.dumps(
             {
+                "key": key,
                 "profile": profile.to_dict(),
                 "target_label": target_label,
                 "target_sink": target_sink,
@@ -222,17 +290,130 @@ class PipeWireAudioEngine(AudioEngine):
             sort_keys=True,
             ensure_ascii=False,
         )
-        self._write_media_eq_dropin(dropin_text)
-        self._start_media_eq(signature)
+        self._write_slot_dropin(key, dropin_text)
+        self._start_slot(slot, signature)
 
-        proc = self.media_eq_proc
+        proc = slot.proc
         if proc is None:
-            self.media_eq_status = "media-eq: failed to start"
+            slot.status = "failed to start"
             return
 
         if proc.poll() is None:
-            self.media_eq_status = f"media-eq: active ({profile.name} → {target_label})"
+            extra = []
+            if channel.muted:
+                extra.append("muted")
+            elif channel.volume != 100:
+                extra.append(f"vol {channel.volume}%")
+            suffix = f" • {', '.join(extra)}" if extra else ""
+            slot.status = f"active ({profile.name} → {target_label}){suffix}"
             return
 
-        tail = self._read_media_eq_log_tail()
-        self.media_eq_status = f"media-eq: failed ({tail or 'see log'})"
+        tail = self._read_slot_log_tail(key)
+        slot.status = f"failed ({tail or 'see log'})"
+
+    def apply_channel(self, settings: AppSettings, channel_key: str) -> None:
+        if channel_key in PLAYBACK_EQ_CHANNELS:
+            self._apply_eq_slot(settings, channel_key)
+
+    def apply_settings(self, settings: AppSettings) -> None:
+        for key in PLAYBACK_EQ_CHANNELS:
+            self._apply_eq_slot(settings, key)
+
+    def _sink_index_to_name(self) -> dict[int, str]:
+        mapping: dict[int, str] = {}
+        proc = self._run(["pactl", "list", "short", "sinks"])
+        if proc.returncode != 0:
+            return mapping
+        for line in proc.stdout.splitlines():
+            parts = line.split()
+            if len(parts) >= 2 and parts[0].isdigit():
+                mapping[int(parts[0])] = parts[1]
+        return mapping
+
+    def _sink_input_sink_indexes(self) -> dict[int, int]:
+        mapping: dict[int, int] = {}
+        proc = self._run(["pactl", "list", "short", "sink-inputs"])
+        if proc.returncode != 0:
+            return mapping
+        for line in proc.stdout.splitlines():
+            parts = line.split()
+            if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
+                mapping[int(parts[0])] = int(parts[1])
+        return mapping
+
+    def _sink_input_labels(self) -> dict[int, str]:
+        proc = self._run(["pactl", "list", "sink-inputs"])
+        if proc.returncode != 0:
+            return {}
+
+        labels: dict[int, str] = {}
+        current_id: int | None = None
+        app_name = ""
+        media_name = ""
+        binary_name = ""
+
+        def flush() -> None:
+            nonlocal current_id, app_name, media_name, binary_name
+            if current_id is None:
+                return
+            base = app_name or binary_name or media_name or f"Stream {current_id}"
+            if "K-Sound Hub" in base or "K-Sound Hub" in media_name:
+                return
+            if media_name and media_name.lower() not in {base.lower(), "audio stream"}:
+                label = f"{base} — {media_name}"
+            else:
+                label = base
+            labels[current_id] = label
+
+        for raw_line in proc.stdout.splitlines():
+            line = raw_line.rstrip()
+            match = re.match(r"^Sink Input #(\d+)", line)
+            if match:
+                flush()
+                current_id = int(match.group(1))
+                app_name = ""
+                media_name = ""
+                binary_name = ""
+                continue
+
+            if current_id is None:
+                continue
+
+            stripped = line.strip()
+            if stripped.startswith("application.name = "):
+                app_name = stripped.split("=", 1)[1].strip().strip('"')
+            elif stripped.startswith("media.name = "):
+                media_name = stripped.split("=", 1)[1].strip().strip('"')
+            elif stripped.startswith("application.process.binary = "):
+                binary_name = stripped.split("=", 1)[1].strip().strip('"')
+
+        flush()
+        return labels
+
+    def list_sink_inputs(self) -> list[AppStream]:
+        sink_names = self._sink_index_to_name()
+        sink_indexes = self._sink_input_sink_indexes()
+        labels = self._sink_input_labels()
+
+        streams: list[AppStream] = []
+        for stream_id, sink_index in sink_indexes.items():
+            if stream_id not in labels:
+                continue
+            streams.append(
+                AppStream(
+                    stream_id=stream_id,
+                    display_name=labels[stream_id],
+                    sink_name=sink_names.get(sink_index, ""),
+                )
+            )
+        streams.sort(key=lambda item: (item.display_name.lower(), item.stream_id))
+        return streams
+
+    def move_sink_input_to_channel(self, stream_id: int, channel_key: str) -> bool:
+        target = PLAYBACK_EQ_CHANNELS.get(channel_key)
+        if not target:
+            return False
+        if not self._sink_exists(target):
+            return False
+        proc = self._run(["pactl", "move-sink-input", str(stream_id), target])
+        return proc.returncode == 0
