@@ -1,16 +1,42 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QRect
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (
+    QComboBox,
     QFrame,
     QHBoxLayout,
     QLabel,
     QPushButton,
     QSizePolicy,
+    QStyle,
+    QStyleOptionComboBox,
     QVBoxLayout,
     QWidget,
 )
+
+
+class CenteredComboBox(QComboBox):
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        option = QStyleOptionComboBox()
+        self.initStyleOption(option)
+        self.style().drawComplexControl(QStyle.ComplexControl.CC_ComboBox, option, painter, self)
+
+        text_rect = self.style().subControlRect(
+            QStyle.ComplexControl.CC_ComboBox,
+            option,
+            QStyle.SubControl.SC_ComboBoxEditField,
+            self,
+        )
+        text_rect = text_rect.adjusted(2, 0, -2, 0)
+
+        painter.save()
+        painter.setPen(option.palette.buttonText().color())
+        painter.drawText(text_rect, Qt.AlignCenter | Qt.AlignVCenter, self.currentText())
+        painter.restore()
+
+
 
 
 class StereoLevelMeterWidget(QWidget):
