@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import copy
+
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -462,6 +464,10 @@ class ChannelWidget(QFrame):
             idx += 1
         return f"{base} {idx}"
 
+    def _apply_preview_to_profile(self, target: EqProfile, preview: EqProfile) -> None:
+        target.bands = copy.deepcopy(preview.bands)
+        self.changed.emit()
+
     def _on_primary_target_changed(self, value: str) -> None:
         self.channel.primary_target = value
         if self.channel.key == "micro":
@@ -473,32 +479,56 @@ class ChannelWidget(QFrame):
         self.changed.emit()
 
     def _add_profile(self) -> None:
+        original_profiles = copy.deepcopy(self.channel.eq_profiles)
+        original_selected = self.channel.selected_eq_profile
+
         base = "Profile"
         existing = {profile.name for profile in self.channel.eq_profiles}
         idx = 1
         while f"{base} {idx}" in existing:
             idx += 1
-        draft = EqProfile.default(name=f"{base} {idx}")
-        dialog = EqProfileDialog(draft, self, title="Add EQ preset")
+
+        temp = EqProfile.default(name=f"{base} {idx}")
+        self.channel.eq_profiles.append(temp)
+        self.channel.selected_eq_profile = temp.name
+        self._reload_profiles()
+        self.changed.emit()
+
+        dialog = EqProfileDialog(temp, self, title="Add EQ preset")
+        dialog.previewChanged.connect(lambda preview: self._apply_preview_to_profile(temp, preview))
+
         if not dialog.exec():
+            self.channel.eq_profiles = original_profiles
+            self.channel.selected_eq_profile = original_selected
+            self._reload_profiles()
+            self.changed.emit()
             return
 
-        new_profile = dialog.build_profile()
-        new_profile.name = self._unique_profile_name(new_profile.name)
-        self.channel.eq_profiles.append(new_profile)
-        self.channel.selected_eq_profile = new_profile.name
+        updated = dialog.build_profile()
+        temp.name = self._unique_profile_name(updated.name)
+        temp.bands = copy.deepcopy(updated.bands)
+        self.channel.selected_eq_profile = temp.name
         self._reload_profiles()
         self.changed.emit()
 
     def _edit_profile(self) -> None:
         current = self._current_profile()
+        original = copy.deepcopy(current)
+
         dialog = EqProfileDialog(current, self, title=f"Edit EQ preset — {current.name}")
+        dialog.previewChanged.connect(lambda preview: self._apply_preview_to_profile(current, preview))
+
         if not dialog.exec():
+            current.name = original.name
+            current.bands = copy.deepcopy(original.bands)
+            self.channel.selected_eq_profile = original.name
+            self._reload_profiles()
+            self.changed.emit()
             return
 
         updated = dialog.build_profile()
-        current.name = self._unique_profile_name(updated.name, preserve_current=current.name)
-        current.bands = updated.bands
+        current.name = self._unique_profile_name(updated.name, preserve_current=original.name)
+        current.bands = copy.deepcopy(updated.bands)
         self.channel.selected_eq_profile = current.name
         self._reload_profiles()
         self.changed.emit()
