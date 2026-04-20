@@ -30,8 +30,8 @@ CHANNEL_META = {
 }
 
 DEVICE_CHOICES = {
-    "playback": ["ANPW", "SB Audio S/PD", "Temporary output"],
-    "monitor": ["ANPW", "SB Audio S/PD"],
+    "playback": ["ANPW", "S/PDIF", "Temp out"],
+    "monitor": ["ANPW", "S/PDIF"],
 }
 RETURN_MODES = ["Post-EE", "Final Mix"]
 MIC_INPUT_CHOICES = ["ANPW Mic", "RODE NT-USB", "Both mics"]
@@ -53,7 +53,7 @@ class ChannelWidget(QFrame):
         root.setContentsMargins(8, 10, 8, 10)
         root.setSpacing(7)
 
-        meta = CHANNEL_META.get(channel.key, {"icon": "🎚️", "apps": ["No routed apps yet"]})
+        meta = CHANNEL_META.get(channel.key, {"icon": "🎚", "apps": ["No routed apps yet"]})
 
         header = QVBoxLayout()
         header.setContentsMargins(0, 0, 0, 0)
@@ -140,7 +140,7 @@ class ChannelWidget(QFrame):
 
     def _default_primary_target(self) -> str:
         if self.channel.key == "micro":
-            return "Both microphones"
+            return "Both mics"
         if self.channel.kind == "monitor":
             return DEVICE_CHOICES["monitor"][0]
         return DEVICE_CHOICES["playback"][0]
@@ -157,7 +157,7 @@ class ChannelWidget(QFrame):
         frame.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
 
         row = QHBoxLayout(frame)
-        row.setContentsMargins(8, 4, 8, 4)
+        row.setContentsMargins(10, 4, 10, 4)
         row.setSpacing(0)
 
         combo.setObjectName("selectorCombo")
@@ -167,6 +167,21 @@ class ChannelWidget(QFrame):
 
         return frame
 
+    def _selector_column(self, title: str | None, combo: CenteredComboBox, *, frame_width: int) -> QWidget:
+        box = QWidget()
+        col = QVBoxLayout(box)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(4)
+
+        if title:
+            title_label = QLabel(title)
+            title_label.setObjectName("mutedLabel")
+            title_label.setAlignment(Qt.AlignCenter)
+            col.addWidget(title_label, 0, Qt.AlignHCenter)
+
+        col.addWidget(self._selector_frame(combo, frame_width=frame_width), 0, Qt.AlignHCenter)
+        return box
+
     def _build_primary_controls(self) -> QWidget | None:
         self.channel.primary_target = self.channel.primary_target or self._default_primary_target()
         self.channel.secondary_target = self.channel.secondary_target or self._default_secondary_target()
@@ -175,7 +190,7 @@ class ChannelWidget(QFrame):
             box = QWidget()
             outer = QHBoxLayout(box)
             outer.setContentsMargins(0, 0, 0, 0)
-            outer.setSpacing(10)
+            outer.setSpacing(8)
             outer.addStretch(1)
 
             self.device_combo = CenteredComboBox()
@@ -183,26 +198,15 @@ class ChannelWidget(QFrame):
             self._prepare_combo(self.device_combo)
             self._set_combo_text(self.device_combo, self.channel.primary_target)
             self.device_combo.currentTextChanged.connect(self._on_primary_target_changed)
-            outer.addWidget(self._selector_frame(self.device_combo, frame_width=136), 0, Qt.AlignCenter)
-
-            input_group = QWidget()
-            input_row = QHBoxLayout(input_group)
-            input_row.setContentsMargins(0, 0, 0, 0)
-            input_row.setSpacing(6)
-
-            input_label = QLabel("Input")
-            input_label.setObjectName("mutedLabel")
-            input_label.setAlignment(Qt.AlignCenter)
-            input_row.addWidget(input_label, 0, Qt.AlignVCenter)
+            outer.addWidget(self._selector_frame(self.device_combo, frame_width=132), 0, Qt.AlignCenter)
 
             self.return_mode_combo = CenteredComboBox()
             self.return_mode_combo.addItems(RETURN_MODES)
             self._prepare_combo(self.return_mode_combo)
             self._set_combo_text(self.return_mode_combo, self.channel.secondary_target)
             self.return_mode_combo.currentTextChanged.connect(self._on_secondary_target_changed)
-            input_row.addWidget(self._selector_frame(self.return_mode_combo, frame_width=142), 0, Qt.AlignCenter)
+            outer.addWidget(self._selector_frame(self.return_mode_combo, frame_width=132), 0, Qt.AlignCenter)
 
-            outer.addWidget(input_group, 0, Qt.AlignCenter)
             outer.addStretch(1)
             return box
 
@@ -215,7 +219,7 @@ class ChannelWidget(QFrame):
         self.device_combo = CenteredComboBox()
         if self.channel.key == "micro":
             self.device_combo.addItems(MIC_INPUT_CHOICES)
-            frame_width = 158
+            frame_width = 148
         elif self.channel.kind == "monitor":
             self.device_combo.addItems(DEVICE_CHOICES["monitor"])
             frame_width = 136
@@ -236,7 +240,7 @@ class ChannelWidget(QFrame):
         combo.setCurrentIndex(idx if idx >= 0 else 0)
 
     def _prepare_combo(self, combo: CenteredComboBox) -> None:
-        combo.setMinimumWidth(56)
+        combo.setMinimumWidth(0)
         combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         combo.setSizeAdjustPolicy(CenteredComboBox.SizeAdjustPolicy.AdjustToContents)
         combo.setEditable(False)
@@ -363,11 +367,13 @@ class ChannelWidget(QFrame):
     def _sync_micro_checks_from_target(self) -> None:
         if self.channel.key != "micro" or not hasattr(self, "mic_input_checks"):
             return
-        target = self.channel.primary_target or "Both microphones"
+        target = self.channel.primary_target or "Both mics"
         mapping = {
             "Arctis Nova Pro Mic": [True, False],
+            "ANPW Mic": [True, False],
             "RODE NT-USB": [False, True],
             "Both microphones": [True, True],
+            "Both mics": [True, True],
         }
         states = mapping.get(target, [True, True])
         for check, state in zip(self.mic_input_checks, states, strict=False):
@@ -380,11 +386,11 @@ class ChannelWidget(QFrame):
             return
         states = [check.isChecked() for check in self.mic_input_checks]
         if states == [True, False]:
-            target = "Arctis Nova Pro Mic"
+            target = "ANPW Mic"
         elif states == [False, True]:
             target = "RODE NT-USB"
         elif states == [True, True]:
-            target = "Both microphones"
+            target = "Both mics"
         else:
             sender = self.sender()
             if sender in self.mic_input_checks:
