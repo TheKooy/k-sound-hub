@@ -6,11 +6,13 @@ from PySide6.QtWidgets import (
     QComboBox,
     QFormLayout,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QListWidget,
     QListWidgetItem,
     QPushButton,
+    QSizePolicy,
     QSlider,
     QSpinBox,
     QVBoxLayout,
@@ -18,7 +20,25 @@ from PySide6.QtWidgets import (
 )
 
 from ..models import ChannelConfig, EqBand, EqProfile
-from .widgets import LevelMeterWidget
+from .widgets import CollapsibleSection, EqBandSlider, HeaderBadge, LevelMeterWidget
+
+CHANNEL_META = {
+    "all": {"icon": "🌍", "device": "Main output", "apps": ["Default desktop audio", "Browser", "System sounds"]},
+    "game": {"icon": "🎮", "device": "Gaming device", "apps": ["Steam game", "FMOD stream"]},
+    "chat": {"icon": "💬", "device": "Chat device", "apps": ["Discord voice", "Team chat"]},
+    "media": {"icon": "🎵", "device": "Media device", "apps": ["Firefox media", "Music player"]},
+    "more": {"icon": "🔊", "device": "Extra output", "apps": ["Utility output"]},
+    "micro": {"icon": "🎤", "device": "Voice output bus", "apps": ["Voice apps", "Injected playback sends"]},
+    "return-mic": {"icon": "🎧", "device": "Local monitoring", "apps": ["Post-EasyEffects", "Final micro mix"]},
+}
+
+DEVICE_CHOICES = {
+    "playback": ["Arctis Nova Pro", "USB Audio S/PDIF", "Temporary output"],
+    "monitor": ["Arctis Nova Pro", "USB Audio S/PDIF"],
+}
+
+RETURN_MODES = ["Post-EasyEffects", "Final micro mix"]
+MIC_INPUTS = ["Arctis Nova Pro Mic", "RODE NT-USB"]
 
 
 class ChannelWidget(QFrame):
@@ -28,91 +48,235 @@ class ChannelWidget(QFrame):
         super().__init__(parent)
         self.channel = channel
         self.global_visualizer_enabled = global_visualizer_enabled
+        self.setObjectName("channelCard")
         self.setFrameShape(QFrame.StyledPanel)
+        self.setMinimumWidth(208)
+        self.setMaximumWidth(220)
+        self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
 
         root = QVBoxLayout(self)
+        root.setContentsMargins(10, 10, 10, 10)
+        root.setSpacing(8)
+
+        meta = CHANNEL_META.get(channel.key, {"icon": "🎚️", "device": "Custom channel", "apps": ["No routed apps yet"]})
+
+        header = QVBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(2)
+
+        icon_label = QLabel(meta["icon"])
+        icon_label.setAlignment(Qt.AlignCenter)
+        icon_label.setStyleSheet("font-size: 22px;")
+        header.addWidget(icon_label)
 
         title = QLabel(channel.name)
-        title.setStyleSheet("font-size: 18px; font-weight: 700;")
-        root.addWidget(title)
+        title.setAlignment(Qt.AlignCenter)
+        title.setStyleSheet("font-size: 15px; font-weight: 800;")
+        header.addWidget(title)
 
-        self.enabled_check = QCheckBox("Channel enabled")
-        self.enabled_check.setChecked(channel.enabled)
-        self.enabled_check.toggled.connect(self._on_enabled_changed)
-        root.addWidget(self.enabled_check)
+        self.subtitle = QLabel(self._subtitle_text(meta["device"]))
+        self.subtitle.setAlignment(Qt.AlignCenter)
+        self.subtitle.setObjectName("mutedLabel")
+        self.subtitle.setWordWrap(True)
+        header.addWidget(self.subtitle)
 
-        vol_row = QHBoxLayout()
-        self.volume_slider = QSlider(Qt.Horizontal)
-        self.volume_slider.setRange(0, 100)
-        self.volume_slider.setValue(channel.volume)
-        self.volume_slider.valueChanged.connect(self._on_volume_changed)
-        self.volume_label = QLabel(f"{channel.volume}%")
-        vol_row.addWidget(QLabel("Volume"))
-        vol_row.addWidget(self.volume_slider, 1)
-        vol_row.addWidget(self.volume_label)
-        root.addLayout(vol_row)
+        root.addLayout(header)
 
-        self.mute_check = QCheckBox("Muted")
-        self.mute_check.setChecked(channel.muted)
-        self.mute_check.toggled.connect(self._on_muted_changed)
-        root.addWidget(self.mute_check)
+        self.device_button = QPushButton(self._device_button_text())
+        self.device_button.setObjectName("deviceButton")
+        self.device_button.clicked.connect(self._rotate_device_choice)
+        root.addWidget(self.device_button)
 
-        self.visualizer_check = QCheckBox("Visualizer enabled on this channel")
-        self.visualizer_check.setChecked(channel.visualizer_enabled)
-        self.visualizer_check.toggled.connect(self._on_visualizer_changed)
-        root.addWidget(self.visualizer_check)
+        if self.channel.key == "return-mic":
+            self.return_mode_button = QPushButton(RETURN_MODES[0])
+            self.return_mode_button.setObjectName("deviceButton")
+            self.return_mode_button.clicked.connect(self._toggle_return_mode)
+            root.addWidget(self.return_mode_button)
+        else:
+            self.return_mode_button = None
+
+        self.volume_percent = QLabel(f"{self.channel.volume}%")
+        self.volume_percent.setAlignment(Qt.AlignCenter)
+        self.volume_percent.setStyleSheet("font-size: 20px; font-weight: 900;")
+        root.addWidget(self.volume_percent)
 
         self.meter = LevelMeterWidget()
         self.meter.setVisible(global_visualizer_enabled and channel.visualizer_enabled)
         root.addWidget(self.meter)
 
-        eq_box = QFrame()
-        eq_box.setFrameShape(QFrame.StyledPanel)
-        eq_layout = QVBoxLayout(eq_box)
-        eq_layout.addWidget(QLabel("EQ profiles"))
+        self.slider = QSlider(Qt.Vertical)
+        self.slider.setRange(0, 100)
+        self.slider.setValue(channel.volume)
+        self.slider.valueChanged.connect(self._on_volume_changed)
+        self.slider.setFixedHeight(180)
+        root.addWidget(self.slider, alignment=Qt.AlignHCenter)
 
-        profile_row = QHBoxLayout()
+        controls = QHBoxLayout()
+        controls.setSpacing(4)
+        self.down_btn = QPushButton("−")
+        self.down_btn.setObjectName("tinyButton")
+        self.down_btn.clicked.connect(lambda: self.slider.setValue(max(0, self.slider.value() - 5)))
+        controls.addWidget(self.down_btn)
+
+        self.mute_btn = QPushButton("Mute")
+        self.mute_btn.setObjectName("muteButton")
+        self.mute_btn.setCheckable(True)
+        self.mute_btn.setChecked(channel.muted)
+        self.mute_btn.toggled.connect(self._on_muted_changed)
+        controls.addWidget(self.mute_btn, 1)
+
+        self.up_btn = QPushButton("+")
+        self.up_btn.setObjectName("tinyButton")
+        self.up_btn.clicked.connect(lambda: self.slider.setValue(min(100, self.slider.value() + 5)))
+        controls.addWidget(self.up_btn)
+        root.addLayout(controls)
+
+        self.apps_section = CollapsibleSection("Apps")
+        self._populate_apps_section(meta["apps"])
+        root.addWidget(self.apps_section)
+
+        self.eq_section = CollapsibleSection("EQ")
+        self._populate_eq_section()
+        root.addWidget(self.eq_section)
+
+        self.details_section = CollapsibleSection("Info / Options")
+        self._populate_details_section()
+        root.addWidget(self.details_section)
+
+        root.addStretch(1)
+
+    def _subtitle_text(self, base: str) -> str:
+        kind_label = {
+            "playback": "Playback channel",
+            "micro": "Voice output bus",
+            "monitor": "Monitoring bus",
+        }.get(self.channel.kind, "Custom channel")
+        return f"{base} • {kind_label}"
+
+    def _device_button_text(self) -> str:
+        if self.channel.key == "micro":
+            return "Inputs: 2 selected"
+        if self.channel.kind == "monitor":
+            return "Device: Arctis Nova Pro"
+        return "Device: Arctis Nova Pro"
+
+    def _rotate_device_choice(self) -> None:
+        if self.channel.key == "micro":
+            choices = ["Inputs: 1 selected", "Inputs: 2 selected"]
+            current = self.device_button.text()
+            idx = (choices.index(current) + 1) % len(choices) if current in choices else 0
+            self.device_button.setText(choices[idx])
+        else:
+            choices = DEVICE_CHOICES.get(self.channel.kind, DEVICE_CHOICES["playback"])
+            current = self.device_button.text().replace("Device: ", "")
+            idx = (choices.index(current) + 1) % len(choices) if current in choices else 0
+            self.device_button.setText(f"Device: {choices[idx]}")
+        self.changed.emit()
+
+    def _toggle_return_mode(self) -> None:
+        if self.return_mode_button is None:
+            return
+        current = self.return_mode_button.text()
+        idx = (RETURN_MODES.index(current) + 1) % len(RETURN_MODES)
+        self.return_mode_button.setText(RETURN_MODES[idx])
+        self.changed.emit()
+
+    def _populate_apps_section(self, app_names: list[str]) -> None:
+        badge_row = QHBoxLayout()
+        badge_row.addWidget(HeaderBadge("Active"))
+        badge_row.addStretch(1)
+        self.apps_section.content_layout.addLayout(badge_row)
+
+        app_list = QListWidget()
+        app_list.setMinimumHeight(110)
+        for app_name in app_names:
+            app_list.addItem(QListWidgetItem(app_name))
+        self.apps_section.content_layout.addWidget(app_list)
+
+        actions = QHBoxLayout()
+        add_btn = QPushButton("+")
+        add_btn.setObjectName("tinyButton")
+        remove_btn = QPushButton("🗑")
+        remove_btn.setObjectName("tinyButton")
+        actions.addWidget(add_btn)
+        actions.addStretch(1)
+        actions.addWidget(remove_btn)
+        self.apps_section.content_layout.addLayout(actions)
+
+    def _populate_eq_section(self) -> None:
+        top_row = QHBoxLayout()
         self.profile_combo = QComboBox()
         self._reload_profiles()
         self.profile_combo.currentTextChanged.connect(self._on_profile_selected)
-        profile_row.addWidget(self.profile_combo, 1)
+        top_row.addWidget(self.profile_combo, 1)
 
-        self.add_profile_btn = QPushButton("Add")
-        self.add_profile_btn.clicked.connect(self._add_profile)
-        profile_row.addWidget(self.add_profile_btn)
+        add_profile_btn = QPushButton("+")
+        add_profile_btn.setObjectName("tinyButton")
+        add_profile_btn.clicked.connect(self._add_profile)
+        top_row.addWidget(add_profile_btn)
 
-        self.remove_profile_btn = QPushButton("Remove")
-        self.remove_profile_btn.clicked.connect(self._remove_profile)
-        profile_row.addWidget(self.remove_profile_btn)
+        remove_profile_btn = QPushButton("−")
+        remove_profile_btn.setObjectName("tinyButton")
+        remove_profile_btn.clicked.connect(self._remove_profile)
+        top_row.addWidget(remove_profile_btn)
 
-        eq_layout.addLayout(profile_row)
+        self.eq_section.content_layout.addLayout(top_row)
 
-        self.band_list = QListWidget()
-        self.band_list.currentRowChanged.connect(self._on_band_selected)
-        eq_layout.addWidget(self.band_list)
+        bands_row = QHBoxLayout()
+        bands_row.setSpacing(6)
+        self.band_sliders: list[EqBandSlider] = []
+        profile = self._current_profile()
+        for band in profile.bands:
+            slider = EqBandSlider(self._band_label(band.frequency), int(band.gain_db))
+            slider.slider.valueChanged.connect(self._update_bands_from_ui)
+            self.band_sliders.append(slider)
+            bands_row.addWidget(slider)
+        self.eq_section.content_layout.addLayout(bands_row)
 
-        form = QFormLayout()
-        self.freq_spin = QSpinBox()
-        self.freq_spin.setRange(20, 20000)
-        self.freq_spin.valueChanged.connect(self._update_selected_band)
+        advanced_row = QHBoxLayout()
+        advanced_row.addWidget(HeaderBadge("Simple EQ"))
+        advanced_row.addStretch(1)
+        adv_btn = QPushButton("Advanced mode later")
+        adv_btn.setObjectName("titleButton")
+        adv_btn.setEnabled(False)
+        advanced_row.addWidget(adv_btn)
+        self.eq_section.content_layout.addLayout(advanced_row)
 
-        self.gain_spin = QSpinBox()
-        self.gain_spin.setRange(-24, 24)
-        self.gain_spin.valueChanged.connect(self._update_selected_band)
+    def _populate_details_section(self) -> None:
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(8)
+        grid.setVerticalSpacing(6)
 
-        self.q_spin = QSpinBox()
-        self.q_spin.setRange(1, 100)
-        self.q_spin.valueChanged.connect(self._update_selected_band)
+        self.enabled_check = QCheckBox("Channel enabled")
+        self.enabled_check.setChecked(self.channel.enabled)
+        self.enabled_check.toggled.connect(self._on_enabled_changed)
+        grid.addWidget(self.enabled_check, 0, 0, 1, 2)
 
-        form.addRow("Frequency (Hz)", self.freq_spin)
-        form.addRow("Gain (dB)", self.gain_spin)
-        form.addRow("Q x100", self.q_spin)
-        eq_layout.addLayout(form)
+        self.visualizer_check = QCheckBox("Visualizer on this channel")
+        self.visualizer_check.setChecked(self.channel.visualizer_enabled)
+        self.visualizer_check.toggled.connect(self._on_visualizer_changed)
+        grid.addWidget(self.visualizer_check, 1, 0, 1, 2)
 
-        root.addWidget(eq_box)
-        root.addStretch(1)
+        kind_title = QLabel("Kind")
+        kind_title.setObjectName("mutedLabel")
+        grid.addWidget(kind_title, 2, 0)
+        grid.addWidget(QLabel(self.channel.kind.upper()), 2, 1)
 
-        self._reload_bands()
+        status_title = QLabel("Status")
+        status_title.setObjectName("mutedLabel")
+        grid.addWidget(status_title, 3, 0)
+        grid.addWidget(QLabel("UI layout preview"), 3, 1)
+
+        self.details_section.content_layout.addLayout(grid)
+
+        if self.channel.key == "micro":
+            inputs = QListWidget()
+            inputs.setMinimumHeight(72)
+            for name in MIC_INPUTS:
+                item = QListWidgetItem(name)
+                inputs.addItem(item)
+            self.details_section.content_layout.addWidget(QLabel("Micro inputs"))
+            self.details_section.content_layout.addWidget(inputs)
 
     def set_global_visualizer_enabled(self, enabled: bool) -> None:
         self.global_visualizer_enabled = enabled
@@ -136,53 +300,19 @@ class ChannelWidget(QFrame):
         self.profile_combo.setCurrentIndex(index)
         self.profile_combo.blockSignals(False)
 
-    def _reload_bands(self) -> None:
-        self.band_list.blockSignals(True)
-        self.band_list.clear()
-        profile = self._current_profile()
-        for band in profile.bands:
-            text = f"{int(band.frequency)} Hz • {band.gain_db:+.1f} dB • Q {band.q:.2f}"
-            self.band_list.addItem(QListWidgetItem(text))
-        self.band_list.blockSignals(False)
-        if profile.bands:
-            self.band_list.setCurrentRow(0)
-        else:
-            self._set_band_editor_enabled(False)
+    def _band_label(self, frequency: float) -> str:
+        if frequency >= 1000:
+            return f"{int(frequency / 1000)}k"
+        return f"{int(frequency)}"
 
-    def _set_band_editor_enabled(self, enabled: bool) -> None:
-        self.freq_spin.setEnabled(enabled)
-        self.gain_spin.setEnabled(enabled)
-        self.q_spin.setEnabled(enabled)
-
-    def _on_band_selected(self, row: int) -> None:
+    def _update_bands_from_ui(self) -> None:
         profile = self._current_profile()
-        if row < 0 or row >= len(profile.bands):
-            self._set_band_editor_enabled(False)
+        if len(profile.bands) != len(self.band_sliders):
             return
-        band = profile.bands[row]
-        self._set_band_editor_enabled(True)
-        self.freq_spin.blockSignals(True)
-        self.gain_spin.blockSignals(True)
-        self.q_spin.blockSignals(True)
-        self.freq_spin.setValue(int(band.frequency))
-        self.gain_spin.setValue(int(band.gain_db))
-        self.q_spin.setValue(int(band.q * 100))
-        self.freq_spin.blockSignals(False)
-        self.gain_spin.blockSignals(False)
-        self.q_spin.blockSignals(False)
-
-    def _update_selected_band(self) -> None:
-        profile = self._current_profile()
-        row = self.band_list.currentRow()
-        if row < 0 or row >= len(profile.bands):
-            return
-        profile.bands[row] = EqBand(
-            frequency=float(self.freq_spin.value()),
-            gain_db=float(self.gain_spin.value()),
-            q=float(self.q_spin.value()) / 100.0,
-        )
-        self._reload_bands()
-        self.band_list.setCurrentRow(row)
+        new_bands: list[EqBand] = []
+        for old_band, slider in zip(profile.bands, self.band_sliders, strict=False):
+            new_bands.append(EqBand(frequency=old_band.frequency, gain_db=float(slider.value()), q=old_band.q))
+        profile.bands = new_bands
         self.changed.emit()
 
     def _on_enabled_changed(self, checked: bool) -> None:
@@ -191,11 +321,12 @@ class ChannelWidget(QFrame):
 
     def _on_volume_changed(self, value: int) -> None:
         self.channel.volume = value
-        self.volume_label.setText(f"{value}%")
+        self.volume_percent.setText(f"{value}%")
         self.changed.emit()
 
     def _on_muted_changed(self, checked: bool) -> None:
         self.channel.muted = checked
+        self.mute_btn.setText("Muted" if checked else "Mute")
         self.changed.emit()
 
     def _on_visualizer_changed(self, checked: bool) -> None:
@@ -205,7 +336,9 @@ class ChannelWidget(QFrame):
 
     def _on_profile_selected(self, profile_name: str) -> None:
         self.channel.selected_eq_profile = profile_name
-        self._reload_bands()
+        profile = self._current_profile()
+        for slider, band in zip(self.band_sliders, profile.bands, strict=False):
+            slider.setValue(int(band.gain_db))
         self.changed.emit()
 
     def _add_profile(self) -> None:
@@ -218,7 +351,7 @@ class ChannelWidget(QFrame):
         self.channel.eq_profiles.append(new_profile)
         self.channel.selected_eq_profile = new_profile.name
         self._reload_profiles()
-        self._reload_bands()
+        self._on_profile_selected(new_profile.name)
         self.changed.emit()
 
     def _remove_profile(self) -> None:
@@ -228,5 +361,5 @@ class ChannelWidget(QFrame):
         self.channel.eq_profiles = [profile for profile in self.channel.eq_profiles if profile.name != selected]
         self.channel.selected_eq_profile = self.channel.eq_profiles[0].name
         self._reload_profiles()
-        self._reload_bands()
+        self._on_profile_selected(self.channel.selected_eq_profile)
         self.changed.emit()

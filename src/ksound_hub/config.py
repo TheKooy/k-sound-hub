@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 APP_NAME = "K-Sound Hub"
-APP_VERSION = "0.1.0"
+APP_VERSION = "0.2.0"
 ORG_NAME = "K-Sound Hub"
 ORG_DOMAIN = "local.ksoundhub"
 
@@ -18,7 +18,7 @@ DEFAULT_CHANNELS = [
     {"key": "media", "name": "MEDIA", "enabled": True, "kind": "playback"},
     {"key": "more", "name": "MORE", "enabled": True, "kind": "playback"},
     {"key": "micro", "name": "MICRO", "enabled": True, "kind": "micro"},
-    {"key": "return-mic", "name": "RETURN-MIC", "enabled": True, "kind": "monitor"},
+    {"key": "return-mic", "name": "RETOUR-MIC", "enabled": True, "kind": "monitor"},
 ]
 
 DEFAULT_EQ_BANDS = [
