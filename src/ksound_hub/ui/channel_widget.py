@@ -27,14 +27,14 @@ CHANNEL_META = {
     "media": {"icon": "🎵", "apps": ["Firefox media", "Music player"]},
     "more": {"icon": "🔊", "apps": ["Utility output"]},
     "micro": {"icon": "🎤", "apps": ["Voice apps", "Injected playback sends"]},
-    "return-mic": {"icon": "🎧", "apps": ["Post-EasyEffects", "Final micro mix"]},
+    "return-mic": {"icon": "🎧", "apps": ["Post-EE", "Final Mix"]},
 }
 
 DEVICE_CHOICES = {
-    "playback": ["Arctis Nova Pro", "USB Audio S/PDIF", "Temporary output"],
-    "monitor": ["Arctis Nova Pro", "USB Audio S/PDIF"],
+    "playback": ["ANPW", "USB Audio S/PDIF", "Temporary output"],
+    "monitor": ["ANPW", "USB Audio S/PDIF"],
 }
-RETURN_MODES = ["Post-EasyEffects", "Final micro mix"]
+RETURN_MODES = ["Post-EE", "Final Mix"]
 MIC_INPUT_CHOICES = ["Arctis Nova Pro Mic", "RODE NT-USB", "Both microphones"]
 
 
@@ -165,16 +165,16 @@ class ChannelWidget(QFrame):
             out_wrap = QWidget()
             out_row = QHBoxLayout(out_wrap)
             out_row.setContentsMargins(0, 0, 0, 0)
-            out_row.setSpacing(4)
+            out_row.setSpacing(3)
 
             out_badge = QLabel("O")
             out_badge.setAlignment(Qt.AlignCenter)
             out_badge.setStyleSheet("font-size: 13px; font-weight: 900; color: #ffd166; background: transparent;")
-            out_badge.setFixedWidth(12)
+            out_badge.setFixedWidth(10)
             out_row.addWidget(out_badge, 0)
 
             self.device_combo = QComboBox()
-            self.device_combo.setMinimumWidth(154)
+            self.device_combo.setMinimumWidth(160)
             self.device_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
             self.device_combo.addItems(DEVICE_CHOICES["monitor"])
             self._set_combo_text(self.device_combo, self.channel.primary_target)
@@ -186,16 +186,16 @@ class ChannelWidget(QFrame):
             in_wrap = QWidget()
             in_row = QHBoxLayout(in_wrap)
             in_row.setContentsMargins(0, 0, 0, 0)
-            in_row.setSpacing(4)
+            in_row.setSpacing(3)
 
             in_badge = QLabel("I")
             in_badge.setAlignment(Qt.AlignCenter)
             in_badge.setStyleSheet("font-size: 13px; font-weight: 900; color: #34d3ff; background: transparent;")
-            in_badge.setFixedWidth(12)
+            in_badge.setFixedWidth(10)
             in_row.addWidget(in_badge, 0)
 
             self.return_mode_combo = QComboBox()
-            self.return_mode_combo.setMinimumWidth(176)
+            self.return_mode_combo.setMinimumWidth(160)
             self.return_mode_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
             self.return_mode_combo.addItems(RETURN_MODES)
             self._set_combo_text(self.return_mode_combo, self.channel.secondary_target)
@@ -230,7 +230,7 @@ class ChannelWidget(QFrame):
 
     def set_card_width(self, width: int) -> None:
         if self.channel.key == "return-mic":
-            self._card_width = max(258, min(286, int(width) + 84))
+            self._card_width = max(272, min(300, int(width) + 92))
         elif self.channel.key == "micro":
             self._card_width = max(150, min(178, int(width) + 8))
         else:
