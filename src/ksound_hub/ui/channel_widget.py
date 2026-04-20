@@ -81,7 +81,7 @@ class ChannelWidget(QFrame):
 
         self.volume_percent = QLabel(f"{self.channel.volume}%")
         self.volume_percent.setAlignment(Qt.AlignCenter)
-        self.volume_percent.setStyleSheet("font-size: 13px; font-weight: 800;")
+        self.volume_percent.setStyleSheet("font-size: 12px; font-weight: 800;")
         root.addWidget(self.volume_percent)
 
         self.left_meter = StereoLevelMeterWidget("L")
@@ -156,47 +156,52 @@ class ChannelWidget(QFrame):
         self.channel.secondary_target = self.channel.secondary_target or self._default_secondary_target()
 
         if self.channel.key == "return-mic":
-            box = QFrame()
-            box.setObjectName("appRuleRow")
+            box = QWidget()
             layout = QGridLayout(box)
-            layout.setContentsMargins(8, 7, 8, 7)
-            layout.setHorizontalSpacing(10)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setHorizontalSpacing(8)
             layout.setVerticalSpacing(0)
 
             out_wrap = QWidget()
             out_row = QHBoxLayout(out_wrap)
             out_row.setContentsMargins(0, 0, 0, 0)
-            out_row.setSpacing(5)
+            out_row.setSpacing(4)
+
             out_badge = QLabel("O")
             out_badge.setAlignment(Qt.AlignCenter)
-            out_badge.setStyleSheet("font-size: 12px; font-weight: 900; color: #ffd166;")
+            out_badge.setStyleSheet("font-size: 13px; font-weight: 900; color: #ffd166; background: transparent;")
             out_badge.setFixedWidth(12)
-            out_row.addWidget(out_badge)
+            out_row.addWidget(out_badge, 0)
 
             self.device_combo = QComboBox()
-            self.device_combo.setMinimumWidth(132)
+            self.device_combo.setMinimumWidth(154)
+            self.device_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
             self.device_combo.addItems(DEVICE_CHOICES["monitor"])
             self._set_combo_text(self.device_combo, self.channel.primary_target)
             self.device_combo.currentTextChanged.connect(self._on_primary_target_changed)
             out_row.addWidget(self.device_combo, 1)
+
             layout.addWidget(out_wrap, 0, 0)
 
             in_wrap = QWidget()
             in_row = QHBoxLayout(in_wrap)
             in_row.setContentsMargins(0, 0, 0, 0)
-            in_row.setSpacing(5)
+            in_row.setSpacing(4)
+
             in_badge = QLabel("I")
             in_badge.setAlignment(Qt.AlignCenter)
-            in_badge.setStyleSheet("font-size: 12px; font-weight: 900; color: #34d3ff;")
+            in_badge.setStyleSheet("font-size: 13px; font-weight: 900; color: #34d3ff; background: transparent;")
             in_badge.setFixedWidth(12)
-            in_row.addWidget(in_badge)
+            in_row.addWidget(in_badge, 0)
 
             self.return_mode_combo = QComboBox()
-            self.return_mode_combo.setMinimumWidth(148)
+            self.return_mode_combo.setMinimumWidth(176)
+            self.return_mode_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
             self.return_mode_combo.addItems(RETURN_MODES)
             self._set_combo_text(self.return_mode_combo, self.channel.secondary_target)
             self.return_mode_combo.currentTextChanged.connect(self._on_secondary_target_changed)
             in_row.addWidget(self.return_mode_combo, 1)
+
             layout.addWidget(in_wrap, 0, 1)
 
             return box
@@ -207,7 +212,7 @@ class ChannelWidget(QFrame):
         layout.setSpacing(0)
 
         self.device_combo = QComboBox()
-        self.device_combo.setMinimumWidth(128)
+        self.device_combo.setMinimumWidth(136)
         if self.channel.key == "micro":
             self.device_combo.addItems(MIC_INPUT_CHOICES)
         elif self.channel.kind == "monitor":
@@ -225,7 +230,7 @@ class ChannelWidget(QFrame):
 
     def set_card_width(self, width: int) -> None:
         if self.channel.key == "return-mic":
-            self._card_width = max(222, min(246, int(width) + 54))
+            self._card_width = max(258, min(286, int(width) + 84))
         elif self.channel.key == "micro":
             self._card_width = max(150, min(178, int(width) + 8))
         else:

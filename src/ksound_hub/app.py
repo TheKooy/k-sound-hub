@@ -88,7 +88,8 @@ QComboBox, QSpinBox, QLineEdit {
     background: rgba(8, 12, 19, 220);
     border: 1px solid rgba(62, 216, 255, 95);
     border-radius: 8px;
-    padding: 4px 6px;
+    padding: 4px 8px;
+    min-height: 26px;
 }
 QComboBox::drop-down {
     border: none;

@@ -46,7 +46,7 @@ class MainWindow(QMainWindow):
         self.columns_layout = QHBoxLayout(self.columns_host)
         self.columns_layout.setContentsMargins(0, 0, 0, 0)
         self.columns_layout.setSpacing(12)
-        self.columns_layout.setAlignment(Qt.AlignTop)
+        self.columns_layout.setAlignment(Qt.AlignTop | Qt.AlignHCenter)
         self.scroll.setWidget(self.columns_host)
 
         self.footer_bar = QFrame()
@@ -97,8 +97,7 @@ class MainWindow(QMainWindow):
         available = max(600, self.scroll.viewport().width())
         count = len(widgets)
         min_spacing = 10
-        max_spacing = 28
-        edge_margin = 0
+        max_spacing = 72
         base_width = max(136, min(152, (available - min_spacing * max(0, count - 1)) // count))
 
         for widget in widgets:
@@ -109,9 +108,10 @@ class MainWindow(QMainWindow):
 
         if count > 1:
             free_space = max(0, available - total_widget_width)
-            slot = free_space // (count + 1)
-            spacing = max(min_spacing, min(max_spacing, slot))
-            edge_margin = max(0, (available - total_widget_width - spacing * (count - 1)) // 2)
+            spacing = max(min_spacing, min(max_spacing, free_space // (count - 1)))
+            used = total_widget_width + spacing * (count - 1)
+            remaining = max(0, available - used)
+            edge_margin = remaining // 2
         else:
             spacing = 0
             edge_margin = max(0, (available - total_widget_width) // 2)
