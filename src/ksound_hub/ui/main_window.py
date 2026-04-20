@@ -45,7 +45,7 @@ class MainWindow(QMainWindow):
         self.columns_host = QWidget()
         self.columns_layout = QHBoxLayout(self.columns_host)
         self.columns_layout.setContentsMargins(0, 0, 0, 0)
-        self.columns_layout.setSpacing(10)
+        self.columns_layout.setSpacing(12)
         self.columns_layout.setAlignment(Qt.AlignTop)
         self.scroll.setWidget(self.columns_host)
 
@@ -97,23 +97,22 @@ class MainWindow(QMainWindow):
         available = max(600, self.scroll.viewport().width())
         count = len(widgets)
         min_spacing = 10
-        min_width = 146
-        max_width = 160
+        base_width = max(138, min(156, (available - min_spacing * max(0, count - 1)) // count))
 
-        width = (available - min_spacing * max(0, count - 1)) // count
-        width = max(min_width, min(max_width, width))
+        for widget in widgets:
+            widget.set_card_width(base_width)
+
+        widths = [widget.width() for widget in widgets]
+        total_widget_width = sum(widths)
 
         if count > 1:
-            spacing = max(min_spacing, (available - count * width) // (count - 1))
+            spacing = max(min_spacing, (available - total_widget_width) // (count - 1))
+            spacing = min(spacing, 34)
         else:
             spacing = 0
 
         self.columns_layout.setSpacing(spacing)
-
-        for widget in widgets:
-            widget.set_card_width(width)
-
-        total = count * width + spacing * max(0, count - 1)
+        total = total_widget_width + spacing * max(0, count - 1)
         self.columns_host.setMinimumWidth(max(available, total))
 
     def _reload_channels(self) -> None:

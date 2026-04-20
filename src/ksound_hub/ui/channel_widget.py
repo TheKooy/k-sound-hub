@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QSlider,
     QVBoxLayout,
     QFrame,
+    QWidget,
 )
 
 from ..models import ChannelConfig, EqBand, EqProfile
@@ -33,9 +34,8 @@ DEVICE_CHOICES = {
     "playback": ["Arctis Nova Pro", "USB Audio S/PDIF", "Temporary output"],
     "monitor": ["Arctis Nova Pro", "USB Audio S/PDIF"],
 }
-
 RETURN_MODES = ["Post-EasyEffects", "Final micro mix"]
-MIC_INPUTS = ["Arctis Nova Pro Mic", "RODE NT-USB"]
+MIC_INPUT_CHOICES = ["Arctis Nova Pro Mic", "RODE NT-USB", "Both microphones"]
 
 
 class ChannelWidget(QFrame):
@@ -46,7 +46,6 @@ class ChannelWidget(QFrame):
         self.channel = channel
         self.global_visualizer_enabled = global_visualizer_enabled
         self.setObjectName("channelCard")
-        self.setFrameShape(QFrame.StyledPanel)
         self._card_width = 156
         self.setFixedWidth(self._card_width)
         self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
@@ -73,22 +72,16 @@ class ChannelWidget(QFrame):
 
         root.addLayout(header)
 
-        self.device_button = QPushButton(self._device_button_text())
-        self.device_button.setObjectName("deviceButton")
-        self.device_button.clicked.connect(self._rotate_device_choice)
-        root.addWidget(self.device_button)
+        self.device_combo: QComboBox | None = None
+        self.return_mode_combo: QComboBox | None = None
 
-        if self.channel.key == "return-mic":
-            self.return_mode_button = QPushButton(RETURN_MODES[0])
-            self.return_mode_button.setObjectName("deviceButton")
-            self.return_mode_button.clicked.connect(self._toggle_return_mode)
-            root.addWidget(self.return_mode_button)
-        else:
-            self.return_mode_button = None
+        controls_row = self._build_primary_controls()
+        if controls_row is not None:
+            root.addWidget(controls_row)
 
         self.volume_percent = QLabel(f"{self.channel.volume}%")
         self.volume_percent.setAlignment(Qt.AlignCenter)
-        self.volume_percent.setStyleSheet("font-size: 15px; font-weight: 800;")
+        self.volume_percent.setStyleSheet("font-size: 13px; font-weight: 800;")
         root.addWidget(self.volume_percent)
 
         self.left_meter = StereoLevelMeterWidget("L")
@@ -104,7 +97,7 @@ class ChannelWidget(QFrame):
         self.slider.setRange(0, 100)
         self.slider.setValue(channel.volume)
         self.slider.valueChanged.connect(self._on_volume_changed)
-        self.slider.setFixedHeight(160)
+        self.slider.setFixedHeight(156)
         slider_row.addWidget(self.slider, 0, Qt.AlignHCenter)
 
         slider_row.addWidget(self.right_meter, 0, Qt.AlignBottom)
@@ -146,41 +139,88 @@ class ChannelWidget(QFrame):
         root.addStretch(1)
         self._set_meter_visibility()
 
+    def _default_primary_target(self) -> str:
+        if self.channel.key == "micro":
+            return "Both microphones"
+        if self.channel.kind == "monitor":
+            return DEVICE_CHOICES["monitor"][0]
+        return DEVICE_CHOICES["playback"][0]
+
+    def _default_secondary_target(self) -> str:
+        if self.channel.key == "return-mic":
+            return RETURN_MODES[0]
+        return ""
+
+    def _build_primary_controls(self) -> QWidget | None:
+        self.channel.primary_target = self.channel.primary_target or self._default_primary_target()
+        self.channel.secondary_target = self.channel.secondary_target or self._default_secondary_target()
+
+        if self.channel.key == "return-mic":
+            box = QFrame()
+            box.setObjectName("appRuleRow")
+            layout = QGridLayout(box)
+            layout.setContentsMargins(8, 7, 8, 7)
+            layout.setHorizontalSpacing(6)
+            layout.setVerticalSpacing(3)
+
+            output_label = QLabel("Output")
+            output_label.setObjectName("mutedLabel")
+            output_label.setAlignment(Qt.AlignCenter)
+            layout.addWidget(output_label, 0, 0)
+
+            input_label = QLabel("Input")
+            input_label.setObjectName("mutedLabel")
+            input_label.setAlignment(Qt.AlignCenter)
+            layout.addWidget(input_label, 0, 1)
+
+            self.device_combo = QComboBox()
+            self.device_combo.addItems(DEVICE_CHOICES["monitor"])
+            self._set_combo_text(self.device_combo, self.channel.primary_target)
+            self.device_combo.currentTextChanged.connect(self._on_primary_target_changed)
+            layout.addWidget(self.device_combo, 1, 0)
+
+            self.return_mode_combo = QComboBox()
+            self.return_mode_combo.addItems(RETURN_MODES)
+            self._set_combo_text(self.return_mode_combo, self.channel.secondary_target)
+            self.return_mode_combo.currentTextChanged.connect(self._on_secondary_target_changed)
+            layout.addWidget(self.return_mode_combo, 1, 1)
+
+            return box
+
+        box = QWidget()
+        layout = QVBoxLayout(box)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        self.device_combo = QComboBox()
+        if self.channel.key == "micro":
+            self.device_combo.addItems(MIC_INPUT_CHOICES)
+        elif self.channel.kind == "monitor":
+            self.device_combo.addItems(DEVICE_CHOICES["monitor"])
+        else:
+            self.device_combo.addItems(DEVICE_CHOICES["playback"])
+        self._set_combo_text(self.device_combo, self.channel.primary_target)
+        self.device_combo.currentTextChanged.connect(self._on_primary_target_changed)
+        layout.addWidget(self.device_combo)
+        return box
+
+    def _set_combo_text(self, combo: QComboBox, value: str) -> None:
+        idx = combo.findText(value)
+        combo.setCurrentIndex(idx if idx >= 0 else 0)
+
     def set_card_width(self, width: int) -> None:
-        self._card_width = max(142, min(168, int(width)))
+        if self.channel.key == "return-mic":
+            self._card_width = max(180, min(198, int(width) + 26))
+        elif self.channel.key == "micro":
+            self._card_width = max(150, min(178, int(width) + 8))
+        else:
+            self._card_width = max(138, min(160, int(width)))
         self.setFixedWidth(self._card_width)
 
     def _set_meter_visibility(self) -> None:
         visible = self.global_visualizer_enabled and self.channel.visualizer_enabled
         self.left_meter.setVisible(visible)
         self.right_meter.setVisible(visible)
-
-    def _device_button_text(self) -> str:
-        if self.channel.key == "micro":
-            return "2 inputs selected"
-        return "Arctis Nova Pro"
-
-    def _rotate_device_choice(self) -> None:
-        if self.channel.key == "micro":
-            choices = ["1 input selected", "2 inputs selected"]
-            current = self.device_button.text()
-            idx = (choices.index(current) + 1) % len(choices) if current in choices else 0
-            self.device_button.setText(choices[idx])
-        else:
-            choices = DEVICE_CHOICES.get(self.channel.kind, DEVICE_CHOICES["playback"])
-            current = self.device_button.text()
-            idx = (choices.index(current) + 1) % len(choices) if current in choices else 0
-            picked = choices[idx]
-            self.device_button.setText(picked)
-        self.changed.emit()
-
-    def _toggle_return_mode(self) -> None:
-        if self.return_mode_button is None:
-            return
-        current = self.return_mode_button.text()
-        idx = (RETURN_MODES.index(current) + 1) % len(RETURN_MODES)
-        self.return_mode_button.setText(RETURN_MODES[idx])
-        self.changed.emit()
 
     def _populate_apps_section(self, app_names: list[str]) -> None:
         badge_row = QHBoxLayout()
@@ -271,13 +311,59 @@ class ChannelWidget(QFrame):
         self.details_section.content_layout.addLayout(grid)
 
         if self.channel.key == "micro":
-            inputs = QListWidget()
-            inputs.setMinimumHeight(68)
-            for name in MIC_INPUTS:
-                item = QListWidgetItem(name)
-                inputs.addItem(item)
-            self.details_section.content_layout.addWidget(QLabel("Micro inputs"))
-            self.details_section.content_layout.addWidget(inputs)
+            self.details_section.content_layout.addWidget(QLabel("Selected inputs"))
+            inputs_box = QFrame()
+            inputs_box.setObjectName("appRuleRow")
+            inputs_layout = QVBoxLayout(inputs_box)
+            inputs_layout.setContentsMargins(8, 8, 8, 8)
+            inputs_layout.setSpacing(4)
+
+            self.mic_input_checks: list[QCheckBox] = []
+            for name in MIC_INPUT_CHOICES[:-1]:
+                check = QCheckBox(name)
+                check.toggled.connect(self._sync_micro_inputs_from_checks)
+                inputs_layout.addWidget(check)
+                self.mic_input_checks.append(check)
+            self.details_section.content_layout.addWidget(inputs_box)
+            self._sync_micro_checks_from_target()
+
+    def _sync_micro_checks_from_target(self) -> None:
+        if self.channel.key != "micro" or not hasattr(self, "mic_input_checks"):
+            return
+        target = self.channel.primary_target or "Both microphones"
+        mapping = {
+            "Arctis Nova Pro Mic": [True, False],
+            "RODE NT-USB": [False, True],
+            "Both microphones": [True, True],
+        }
+        states = mapping.get(target, [True, True])
+        for check, state in zip(self.mic_input_checks, states, strict=False):
+            check.blockSignals(True)
+            check.setChecked(state)
+            check.blockSignals(False)
+
+    def _sync_micro_inputs_from_checks(self) -> None:
+        if self.channel.key != "micro" or not hasattr(self, "mic_input_checks"):
+            return
+        states = [check.isChecked() for check in self.mic_input_checks]
+        if states == [True, False]:
+            target = "Arctis Nova Pro Mic"
+        elif states == [False, True]:
+            target = "RODE NT-USB"
+        elif states == [True, True]:
+            target = "Both microphones"
+        else:
+            # keep at least one selected
+            sender = self.sender()
+            if sender in self.mic_input_checks:
+                sender.blockSignals(True)
+                sender.setChecked(True)
+                sender.blockSignals(False)
+            return
+        self.channel.primary_target = target
+        if self.device_combo is not None:
+            self._set_combo_text(self.device_combo, target)
+        self.changed.emit()
 
     def set_global_visualizer_enabled(self, enabled: bool) -> None:
         self.global_visualizer_enabled = enabled
@@ -340,6 +426,16 @@ class ChannelWidget(QFrame):
         profile = self._current_profile()
         for slider, band in zip(self.band_sliders, profile.bands, strict=False):
             slider.setValue(int(band.gain_db))
+        self.changed.emit()
+
+    def _on_primary_target_changed(self, value: str) -> None:
+        self.channel.primary_target = value
+        if self.channel.key == "micro":
+            self._sync_micro_checks_from_target()
+        self.changed.emit()
+
+    def _on_secondary_target_changed(self, value: str) -> None:
+        self.channel.secondary_target = value
         self.changed.emit()
 
     def _add_profile(self) -> None:

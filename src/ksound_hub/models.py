@@ -53,6 +53,8 @@ class ChannelConfig:
     volume: int = 100
     muted: bool = False
     visualizer_enabled: bool = True
+    primary_target: str = ""
+    secondary_target: str = ""
     eq_profiles: list[EqProfile] = field(default_factory=lambda: [EqProfile.default()])
     selected_eq_profile: str = "Default"
 
@@ -73,6 +75,8 @@ class ChannelConfig:
             volume=int(data.get("volume", 100)),
             muted=bool(data.get("muted", False)),
             visualizer_enabled=bool(data.get("visualizer_enabled", True)),
+            primary_target=str(data.get("primary_target", "")),
+            secondary_target=str(data.get("secondary_target", "")),
             eq_profiles=profiles,
             selected_eq_profile=selected,
         )
@@ -86,6 +90,8 @@ class ChannelConfig:
             "volume": self.volume,
             "muted": self.muted,
             "visualizer_enabled": self.visualizer_enabled,
+            "primary_target": self.primary_target,
+            "secondary_target": self.secondary_target,
             "eq_profiles": [profile.to_dict() for profile in self.eq_profiles],
             "selected_eq_profile": self.selected_eq_profile,
         }

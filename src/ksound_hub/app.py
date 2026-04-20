@@ -90,6 +90,16 @@ QComboBox, QSpinBox, QLineEdit {
     border-radius: 8px;
     padding: 4px 6px;
 }
+QComboBox::drop-down {
+    border: none;
+    width: 18px;
+}
+QComboBox QAbstractItemView {
+    background: rgba(8, 12, 19, 245);
+    border: 1px solid rgba(62, 216, 255, 95);
+    selection-background-color: rgba(255, 92, 199, 120);
+    selection-color: #edf4ff;
+}
 QSlider::groove:vertical {
     background: rgba(11, 16, 24, 235);
     width: 14px;
