@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import copy
+
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -20,8 +22,8 @@ class SettingsDialog(QDialog):
     def __init__(self, settings: AppSettings, parent=None):
         super().__init__(parent)
         self.setWindowTitle("K-Sound Hub Settings")
-        self.settings = settings
-        self.resize(520, 480)
+        self.settings = copy.deepcopy(settings)
+        self.resize(560, 520)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(14, 14, 14, 14)
@@ -32,12 +34,17 @@ class SettingsDialog(QDialog):
         root.addWidget(title)
 
         self.overlay_check = QCheckBox("Enable overlay")
-        self.overlay_check.setChecked(settings.overlay_enabled)
+        self.overlay_check.setChecked(self.settings.overlay_enabled)
         root.addWidget(self.overlay_check)
 
-        self.visualizer_check = QCheckBox("Enable visualizer widgets")
-        self.visualizer_check.setChecked(settings.visualizer_enabled)
+        self.visualizer_check = QCheckBox("Enable signal meter widgets")
+        self.visualizer_check.setChecked(self.settings.visualizer_enabled)
         root.addWidget(self.visualizer_check)
+
+        hint = QLabel("Channel changes are stored in global settings. The hub itself auto-saves after changes.")
+        hint.setObjectName("mutedLabel")
+        hint.setWordWrap(True)
+        root.addWidget(hint)
 
         root.addWidget(QLabel("Channels"))
         self.channel_list = QListWidget()
@@ -97,6 +104,7 @@ class SettingsDialog(QDialog):
         self.settings.channels[row].enabled = not self.settings.channels[row].enabled
         self._reload()
 
-    def apply_changes(self) -> None:
+    def build_result(self) -> AppSettings:
         self.settings.overlay_enabled = self.overlay_check.isChecked()
         self.settings.visualizer_enabled = self.visualizer_check.isChecked()
+        return self.settings

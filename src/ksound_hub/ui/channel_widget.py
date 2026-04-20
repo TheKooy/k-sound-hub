@@ -4,8 +4,6 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
-    QFormLayout,
-    QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -14,9 +12,8 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QSlider,
-    QSpinBox,
     QVBoxLayout,
-    QWidget,
+    QFrame,
 )
 
 from ..models import ChannelConfig, EqBand, EqProfile
@@ -50,8 +47,8 @@ class ChannelWidget(QFrame):
         self.global_visualizer_enabled = global_visualizer_enabled
         self.setObjectName("channelCard")
         self.setFrameShape(QFrame.StyledPanel)
-        self.setMinimumWidth(208)
-        self.setMaximumWidth(220)
+        self.setMinimumWidth(216)
+        self.setMaximumWidth(232)
         self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
 
         root = QVBoxLayout(self)
@@ -156,8 +153,6 @@ class ChannelWidget(QFrame):
     def _device_button_text(self) -> str:
         if self.channel.key == "micro":
             return "Inputs: 2 selected"
-        if self.channel.kind == "monitor":
-            return "Device: Arctis Nova Pro"
         return "Device: Arctis Nova Pro"
 
     def _rotate_device_choice(self) -> None:
@@ -252,7 +247,7 @@ class ChannelWidget(QFrame):
         self.enabled_check.toggled.connect(self._on_enabled_changed)
         grid.addWidget(self.enabled_check, 0, 0, 1, 2)
 
-        self.visualizer_check = QCheckBox("Visualizer on this channel")
+        self.visualizer_check = QCheckBox("Signal meter on this channel")
         self.visualizer_check.setChecked(self.channel.visualizer_enabled)
         self.visualizer_check.toggled.connect(self._on_visualizer_changed)
         grid.addWidget(self.visualizer_check, 1, 0, 1, 2)
@@ -262,10 +257,10 @@ class ChannelWidget(QFrame):
         grid.addWidget(kind_title, 2, 0)
         grid.addWidget(QLabel(self.channel.kind.upper()), 2, 1)
 
-        status_title = QLabel("Status")
+        status_title = QLabel("Meter")
         status_title.setObjectName("mutedLabel")
         grid.addWidget(status_title, 3, 0)
-        grid.addWidget(QLabel("UI layout preview"), 3, 1)
+        grid.addWidget(QLabel("Waiting for backend signal"), 3, 1)
 
         self.details_section.content_layout.addLayout(grid)
 

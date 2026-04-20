@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-from collections import deque
 from typing import Iterable
 
-from PySide6.QtCore import QEasingCurve, Property, QPropertyAnimation, QTimer, Qt
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (
     QFrame,
@@ -19,66 +18,60 @@ from PySide6.QtWidgets import (
 class LevelMeterWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._values: deque[float] = deque([0.0] * 14, maxlen=14)
-        self._phase = 0
-        self._running = True
-
-        self._timer = QTimer(self)
-        self._timer.setInterval(95)
-        self._timer.timeout.connect(self._tick)
-        self._timer.start()
-
+        self._levels = [0.0] * 14
         self.setMinimumHeight(54)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.setToolTip("Real signal meter. It stays idle until backend level values are wired.")
 
-    def set_running(self, running: bool) -> None:
-        self._running = running
+    def clear(self) -> None:
+        self.set_levels([0.0] * len(self._levels))
+
+    def set_level(self, value: float) -> None:
+        value = max(0.0, min(1.0, float(value)))
+        self._levels = [value] * len(self._levels)
         self.update()
 
-    def _tick(self) -> None:
-        if not self._running:
-            self._values.append(0.0)
-            self.update()
-            return
-        self._phase = (self._phase + 1) % 18
-        level = ((self._phase * 11) % 13) / 12.0
-        self._values.append(level)
+    def set_levels(self, values: Iterable[float]) -> None:
+        levels = [max(0.0, min(1.0, float(v))) for v in values]
+        if not levels:
+            levels = [0.0] * len(self._levels)
+        self._levels = levels[:14]
+        if len(self._levels) < 14:
+            self._levels.extend([0.0] * (14 - len(self._levels)))
         self.update()
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing, False)
-        painter.fillRect(self.rect(), QColor("#141821"))
-
-        if not self._values:
-            return
+        painter.fillRect(self.rect(), QColor("#18121f"))
 
         width = max(1, self.width())
         height = max(1, self.height())
         gap = 2
-        bar_count = len(self._values)
+        bar_count = len(self._levels)
         bar_width = max(3, (width - gap * (bar_count - 1)) // bar_count)
 
         x = 0
-        for value in self._values:
-            bar_height = max(2, int((height - 8) * value))
+        for value in self._levels:
+            clamped = max(0.0, min(1.0, value))
+            bar_height = max(2, int((height - 8) * clamped)) if clamped > 0 else 2
             y = height - bar_height - 4
-            if value < 0.55:
-                color = QColor("#4ea1ff")
-            elif value < 0.85:
-                color = QColor("#8fd16a")
+            if clamped <= 0.0:
+                color = QColor("#33283f")
+            elif clamped < 0.55:
+                color = QColor("#c484ff")
+            elif clamped < 0.85:
+                color = QColor("#ff9cd6")
             else:
-                color = QColor("#f6c945")
+                color = QColor("#ffd36a")
             painter.fillRect(x, y, bar_width, bar_height, color)
             x += bar_width + gap
 
-        painter.setPen(QPen(QColor("#31405d")))
+        painter.setPen(QPen(QColor("#5f4b77")))
         painter.drawRect(self.rect().adjusted(0, 0, -1, -1))
 
 
 class EqBandSlider(QWidget):
-    valueChanged = Property(int)
-
     def __init__(self, label: str, value: int = 0, parent=None):
         super().__init__(parent)
         self._label_text = label
@@ -167,5 +160,5 @@ class HeaderBadge(QLabel):
         super().__init__(text, parent)
         self.setAlignment(Qt.AlignCenter)
         self.setStyleSheet(
-            "background: rgba(77, 120, 173, 70); border: 1px solid rgba(128, 170, 255, 80); border-radius: 8px; padding: 3px 7px;"
+            "background: rgba(196, 132, 255, 45); border: 1px solid rgba(216, 170, 255, 85); border-radius: 8px; padding: 3px 7px;"
         )
