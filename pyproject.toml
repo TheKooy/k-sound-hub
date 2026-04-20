@@ -24,6 +24,7 @@ dev = [
 
 [project.scripts]
 ksound-hub = "ksound_hub.app:main"
+ksound-control = "ksound_hub.control:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

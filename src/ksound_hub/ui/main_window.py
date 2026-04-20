@@ -13,10 +13,36 @@ from PySide6.QtWidgets import (
 )
 
 from ..audio.pipewire import PipeWireAudioEngine
-from ..config import APP_NAME, APP_VERSION
+from ..config import APP_NAME, APP_VERSION, IPC_SOCKET_PATH
+from ..ipc import AudioIpcServer
 from ..settings_store import SettingsStore
 from .channel_widget import ChannelWidget
+from .overlay import OverlayManager
 from .settings_dialog import SettingsDialog
+
+
+CHANNEL_OVERLAY_META = {
+    "all": ("🌍", "ALL"),
+    "game": ("🎮", "GAME"),
+    "chat": ("💬", "CHAT"),
+    "media": ("🎵", "MEDIA"),
+    "more": ("🔊", "MORE"),
+    "micro": ("🎤", "MICRO"),
+    "return-mic": ("🎧", "RETOUR-MIC"),
+}
+
+CHANNEL_KEY_ALIASES = {
+    "all": "all",
+    "game": "game",
+    "chat": "chat",
+    "media": "media",
+    "more": "more",
+    "micro": "micro",
+    "retour": "return-mic",
+    "retourmic": "return-mic",
+    "return-mic": "return-mic",
+    "return_mic": "return-mic",
+}
 
 
 class MainWindow(QMainWindow):
@@ -43,6 +69,13 @@ class MainWindow(QMainWindow):
         self._apply_timer.timeout.connect(self._flush_pending_channel_apply)
 
         self._link_shared_eq_library()
+
+        self.overlay = OverlayManager(self)
+        self.overlay.set_enabled(self.settings.overlay_enabled)
+
+        self.ipc_server = AudioIpcServer(IPC_SOCKET_PATH, self)
+        self.ipc_server.message_received.connect(self.handle_ipc_message)
+        self.ipc_server.start()
 
         self.setWindowTitle(f"{APP_NAME} {APP_VERSION}")
         self.resize(1440, 860)
@@ -115,11 +148,91 @@ class MainWindow(QMainWindow):
             if channel.selected_eq_profile not in valid_names:
                 channel.selected_eq_profile = default_name
 
+    def _find_channel(self, key: str):
+        for channel in self.settings.channels:
+            if channel.key == key:
+                return channel
+        return None
+
+    def _normalize_channel_key(self, value: str) -> str:
+        raw = str(value or "").strip().lower().replace(" ", "-")
+        return CHANNEL_KEY_ALIASES.get(raw, raw)
+
+    def _overlay_text(self, channel, hint: str) -> str:
+        icon, label = CHANNEL_OVERLAY_META.get(channel.key, ("🎚", channel.name))
+        volume_text = f"{channel.volume}%"
+        if hint == "mute":
+            if channel.muted:
+                return f"{icon} {label}  MUTE ON  —  {volume_text}"
+            return f"{icon} {label}  MUTE OFF  —  {volume_text}"
+        return f"{icon} {label} {volume_text}"
+
+    def _show_overlay_for_change(self, channel, hint: str) -> None:
+        if hint not in {"volume", "mute"}:
+            return
+        self.overlay.show_message(self._overlay_text(channel, hint))
+
+    def _sync_widget_for_channel(self, channel_key: str) -> None:
+        widget = self.channel_widgets.get(channel_key)
+        channel = self._find_channel(channel_key)
+        if widget is None or channel is None:
+            return
+
+        widget.slider.blockSignals(True)
+        widget.slider.setValue(int(channel.volume))
+        widget.slider.blockSignals(False)
+        widget.volume_percent.setText(f"{channel.volume}%")
+
+        widget.mute_btn.blockSignals(True)
+        widget.mute_btn.setChecked(bool(channel.muted))
+        widget.mute_btn.setText("Muted" if channel.muted else "Mute")
+        widget.mute_btn.blockSignals(False)
+
+    def handle_ipc_message(self, payload: dict) -> None:
+        channel_key = self._normalize_channel_key(payload.get("channel", ""))
+        channel = self._find_channel(channel_key)
+        if channel is None:
+            return
+
+        action = str(payload.get("action", "")).strip().lower()
+        hint = "generic"
+        changed = False
+
+        if action == "volup":
+            channel.volume = min(100, int(channel.volume) + 5)
+            hint = "volume"
+            changed = True
+        elif action == "voldown":
+            channel.volume = max(0, int(channel.volume) - 5)
+            hint = "volume"
+            changed = True
+        elif action == "mute":
+            channel.muted = not bool(channel.muted)
+            hint = "mute"
+            changed = True
+        elif action == "set-volume":
+            try:
+                channel.volume = max(0, min(100, int(payload.get("volume", channel.volume))))
+            except Exception:
+                return
+            hint = "volume"
+            changed = True
+
+        if not changed:
+            return
+
+        self._sync_widget_for_channel(channel.key)
+        self._autosave()
+        self.audio_engine.apply_channel(self.settings, channel.key)
+        self._show_overlay_for_change(channel, hint)
+        self._status_timer.start()
+
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._apply_column_widths()
 
     def closeEvent(self, event):
+        self.ipc_server.stop()
         self.audio_engine.shutdown()
         super().closeEvent(event)
 
@@ -213,10 +326,12 @@ class MainWindow(QMainWindow):
 
         if hint == "volume":
             self._queue_channel_apply(source_channel.key, 30)
+            self._show_overlay_for_change(source_channel, hint)
         elif hint == "eq_preview":
             self._queue_channel_apply(source_channel.key, 95)
         elif hint == "mute":
             self.audio_engine.apply_channel(self.settings, source_channel.key)
+            self._show_overlay_for_change(source_channel, hint)
             self._status_timer.start()
         else:
             self.audio_engine.apply_channel(self.settings, source_channel.key)
@@ -229,6 +344,7 @@ class MainWindow(QMainWindow):
         total_channels = len(self.settings.channels)
         overlay = "on" if self.settings.overlay_enabled else "off"
         visualizer = "on" if self.settings.visualizer_enabled else "off"
+        self.overlay.set_enabled(self.settings.overlay_enabled)
         self.backend_status.setText(
             self.audio_engine.status_text()
             + f" • channels: {enabled_channels}/{total_channels} • overlay: {overlay} • meter: {visualizer}"
@@ -243,6 +359,7 @@ class MainWindow(QMainWindow):
         if dialog.exec():
             self.settings = dialog.build_result()
             self._link_shared_eq_library()
+            self.overlay.set_enabled(self.settings.overlay_enabled)
             self._autosave()
             self._reload_channels()
             self.audio_engine.apply_settings(self.settings)

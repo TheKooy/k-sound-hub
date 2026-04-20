@@ -26,6 +26,16 @@ PLAYBACK_EQ_CHANNELS = {
     "more": "more",
 }
 
+CONTROL_NODE_BY_CHANNEL: dict[str, tuple[str, str]] = {
+    "all": ("sink", "all"),
+    "game": ("sink", "game"),
+    "chat": ("sink", "chat"),
+    "media": ("sink", "media"),
+    "more": ("sink", "more"),
+    "return-mic": ("sink", "retour"),
+    "micro": ("source", "micro"),
+}
+
 STATUS_ORDER = ["all", "game", "chat", "media", "more"]
 STATUS_LABELS = {
     "all": "all-eq",
@@ -143,6 +153,16 @@ class PipeWireAudioEngine(AudioEngine):
     def _sink_exists(self, sink_name: str) -> bool:
         return any(node.name == sink_name for node in self.list_sinks())
 
+    def _source_exists(self, source_name: str) -> bool:
+        return any(node.name == source_name for node in self.list_sources())
+
+    def _node_exists(self, node_type: str, node_name: str) -> bool:
+        if node_type == "sink":
+            return self._sink_exists(node_name)
+        if node_type == "source":
+            return self._source_exists(node_name)
+        return False
+
     def _render_filters(self, profile: EqProfile) -> str:
         lines = []
         for band in profile.bands:
@@ -232,12 +252,17 @@ class PipeWireAudioEngine(AudioEngine):
             return ""
         return lines[-1].strip() if lines else ""
 
-    def _apply_channel_controls(self, channel: ChannelConfig, logical_sink: str) -> None:
-        if not self._sink_exists(logical_sink):
+    def _apply_node_controls(self, channel: ChannelConfig, *, node_type: str, node_name: str) -> None:
+        if not self._node_exists(node_type, node_name):
             return
+
         volume = max(0, min(150, int(channel.volume)))
-        self._run_no_fail(["pactl", "set-sink-volume", logical_sink, f"{volume}%"])
-        self._run_no_fail(["pactl", "set-sink-mute", logical_sink, "1" if channel.muted else "0"])
+        if node_type == "sink":
+            self._run_no_fail(["pactl", "set-sink-volume", node_name, f"{volume}%"])
+            self._run_no_fail(["pactl", "set-sink-mute", node_name, "1" if channel.muted else "0"])
+        elif node_type == "source":
+            self._run_no_fail(["pactl", "set-source-volume", node_name, f"{volume}%"])
+            self._run_no_fail(["pactl", "set-source-mute", node_name, "1" if channel.muted else "0"])
 
     def _apply_eq_slot(self, settings: AppSettings, key: str) -> None:
         slot = self.eq_slots[key]
@@ -249,7 +274,7 @@ class PipeWireAudioEngine(AudioEngine):
             slot.status = f"{key.upper()} channel missing"
             return
 
-        self._apply_channel_controls(channel, logical_sink)
+        self._apply_node_controls(channel, node_type="sink", node_name=logical_sink)
 
         if not channel.enabled:
             self._stop_slot(slot)
@@ -312,12 +337,26 @@ class PipeWireAudioEngine(AudioEngine):
         slot.status = f"failed ({tail or 'see log'})"
 
     def apply_channel(self, settings: AppSettings, channel_key: str) -> None:
+        channel = self._find_channel(settings, channel_key)
+        if channel is None:
+            return
+
         if channel_key in PLAYBACK_EQ_CHANNELS:
             self._apply_eq_slot(settings, channel_key)
+            return
+
+        control = CONTROL_NODE_BY_CHANNEL.get(channel_key)
+        if control is None:
+            return
+
+        node_type, node_name = control
+        self._apply_node_controls(channel, node_type=node_type, node_name=node_name)
 
     def apply_settings(self, settings: AppSettings) -> None:
         for key in PLAYBACK_EQ_CHANNELS:
             self._apply_eq_slot(settings, key)
+        for key in ("return-mic", "micro"):
+            self.apply_channel(settings, key)
 
     def _sink_index_to_name(self) -> dict[int, str]:
         mapping: dict[int, str] = {}
@@ -367,7 +406,7 @@ class PipeWireAudioEngine(AudioEngine):
 
         for raw_line in proc.stdout.splitlines():
             line = raw_line.rstrip()
-            match = re.match(r"^Sink Input #(\d+)", line)
+            match = re.match(r"^Sink Input #(\\d+)", line)
             if match:
                 flush()
                 current_id = int(match.group(1))

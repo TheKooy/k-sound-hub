@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+import os
 
 APP_NAME = "K-Sound Hub"
-APP_VERSION = "0.3.0"
+APP_VERSION = "0.3.1"
 ORG_NAME = "K-Sound Hub"
 ORG_DOMAIN = "local.ksoundhub"
 
@@ -18,6 +19,14 @@ MEDIA_EQ_LOG_PATH = LOG_DIR / "ksh-media-eq.log"
 MEDIA_EQ_CAPTURE_TARGET = "media"
 
 PIPEWIRE_REMOTE_NAME = "pipewire-0"
+IPC_SOCKET_PATH = f"/tmp/ksound_hub_audio_{os.getuid()}.sock"
+
+OVERLAY_DURATION_MS = 900
+OVERLAY_WIDTH = 380
+OVERLAY_HEIGHT = 92
+OVERLAY_MARGIN_TOP = 22
+OVERLAY_MARGIN_RIGHT = 22
+OVERLAY_PANEL_OPACITY = 0.82
 
 OUTPUT_TARGET_HINTS: dict[str, list[str]] = {
     "ANPW": [
