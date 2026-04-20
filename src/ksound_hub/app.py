@@ -99,6 +99,29 @@ QComboBox::drop-down {
     border: none;
     width: 18px;
 }
+QFrame#selectorFrame {
+    background: rgba(8, 12, 19, 220);
+    border: 1px solid rgba(62, 216, 255, 95);
+    border-radius: 10px;
+}
+QLabel#selectorBadge {
+    background: transparent;
+    border: none;
+    font-size: 12px;
+    font-weight: 900;
+    padding: 0px;
+    margin: 0px;
+}
+QComboBox#selectorCombo {
+    background: transparent;
+    border: none;
+    min-height: 26px;
+    padding: 0px 16px 0px 0px;
+}
+QComboBox#selectorCombo::drop-down {
+    border: none;
+    width: 16px;
+}
 QComboBox QAbstractItemView {
     background: rgba(8, 12, 19, 245);
     border: 1px solid rgba(62, 216, 255, 95);
