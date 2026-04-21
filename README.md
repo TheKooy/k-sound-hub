@@ -1,128 +1,158 @@
 # K-Sound Hub
 
-K-Sound Hub is the successor to the original **Carla Hub** experiment.
-
-The first project started as a personal Linux audio control panel built around Carla, qpwgraph, PipeWire and custom scripts. This rewrite moves the project toward a cleaner, installable and reusable open-source application with a stronger focus on:
-
-- PipeWire-first routing
-- a self-contained control UI
-- modular channels
-- persistent settings
-- optional overlay and visual widgets
-- per-channel EQ profiles
-- deployability on another PC without the old ad-hoc project layout
+K-Sound Hub is a PipeWire-first modular Linux audio hub focused on a clean UI, persistent settings, per-channel control, app routing, EQ profiles, overlay feedback, and optional wallpaper background support.
 
 > This project is being developed with AI assistance.
 
-## Current status
+## Target platform
 
-This repository is the **bootstrap for the rewrite**.
+Primary target:
 
-It already includes:
-
-- a proper Python package layout
-- an installable desktop application entry point
-- persistent settings storage
-- modular channels that can be added, removed, enabled and disabled
-- optional overlay / visualizer settings
-- per-channel EQ profile data management
-- a simple channel UI with a lightweight VU-style visualizer widget
-- a PipeWire backend abstraction layer prepared for the next implementation phases
-- a project structure ready for Git, GitHub and CI
-
-What it does **not** implement yet:
-
-- the full production PipeWire routing engine that replaces the old Carla-based chain
-- the final no-Carla EQ processing backend
-- the optional external overlay process
-- app routing and microphone routing parity with the current Carla Hub 4.2.0 setup
-
-The goal is to build that in clean phases instead of copying the current ad-hoc stack directly.
-
-## Design goals
-
-- no dependency on Carla for the new engine
-- qpwgraph only for visualization and debugging
-- persistent, deterministic backend state
-- modular channels controlled by the UI
-- easy deployment on another Linux PC
-- source-controlled project with documented installation steps
-
-## Planned phases
-
-### Phase 0
-Repository bootstrap, package layout, settings model, installable GUI shell.
-
-### Phase 1
-PipeWire device/channel discovery and persistence.
-
-### Phase 2
-Channel routing engine without Carla.
-
-### Phase 3
-Per-channel EQ backend without Carla.
-
-### Phase 4
-Microphone / return-monitoring / app-send parity with the old project.
-
-### Phase 5
-Optional overlay and additional polish.
-
-## Requirements
-
-Target platform for the first iterations:
-
-- Linux
-- PipeWire / WirePlumber
-- KDE Plasma / Wayland is the expected first target
+- EndeavourOS / Arch Linux
+- PipeWire + WirePlumber
+- KDE Plasma / Wayland
 - Python 3.11+
 
-## Python dependencies
+## Runtime dependencies
 
-Main runtime dependency:
+### System packages
+
+Install or update the required Arch packages:
+
+```bash
+sudo pacman -Syu --needed git python python-pip python-virtualenv pipewire pipewire-pulse wireplumber
+```
+
+These cover the expected runtime base for K-Sound Hub on Arch-family systems:
+
+- `git`
+- `python`
+- `python-pip`
+- `python-virtualenv`
+- `pipewire`
+- `pipewire-pulse`
+- `wireplumber`
+
+### Python packages
+
+The project installs its Python-side dependencies from `pyproject.toml`:
 
 - `PySide6`
+- `numpy`
 
 Optional development tools:
 
 - `pytest`
 - `ruff`
 
-## Installation
+## Quick install on another PC
 
-### 1. Clone the repository
-
-```bash
-git clone <YOUR-REPO-URL>
-cd k-sound-hub
-```
-
-### 2. Create a virtual environment
+From the repository root:
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
+python -m pip install --upgrade pip setuptools wheel
+python -m pip install -e .
 ```
 
-### 3. Install the app in editable mode
+If you also want the dev tools:
 
 ```bash
-pip install -e .
+python -m pip install -e .[dev]
 ```
 
-### 4. Run it
+## Verify the environment
+
+A helper script is included:
+
+```bash
+./scripts/check_k_sound_hub_env.sh
+```
+
+It checks the main commands and Python modules expected by the current project.
+
+## Run the application
+
+Preferred launcher from the repository root:
+
+```bash
+./scripts/start_ksound_hub.sh
+```
+
+You can also run it directly after install:
 
 ```bash
 ksound-hub
 ```
 
-## Development run
+Or from source:
 
 ```bash
-python -m ksound_hub.app
+PYTHONPATH=src python -m ksound_hub.app
 ```
 
-## Tests
+## Optional autostart
+
+Autostart is **not enabled automatically**.
+
+A template file is included here:
+
+```text
+packaging/linux/ksound-hub-autostart.desktop.template
+```
+
+To use it manually:
+
+1. Open the template.
+2. Replace `__REPO_DIR__` with the absolute path to your local repository.
+3. Save it as:
+
+```text
+~/.config/autostart/ksound-hub.desktop
+```
+
+Example:
+
+```bash
+mkdir -p ~/.config/autostart
+sed "s|__REPO_DIR__|$HOME/k-sound-hub|g" \
+  packaging/linux/ksound-hub-autostart.desktop.template \
+  > ~/.config/autostart/ksound-hub.desktop
+```
+
+That is only a manual setup step. Nothing in the project enables autostart by itself.
+
+## Included helper scripts
+
+### Start script
+
+```text
+scripts/start_ksound_hub.sh
+```
+
+This script:
+
+- resolves the repository root automatically
+- prefers the local virtualenv if present
+- starts the installed app or falls back to module execution from source
+
+### Environment check script
+
+```text
+scripts/check_k_sound_hub_env.sh
+```
+
+This script prints the state of:
+
+- PipeWire-related commands
+- Python
+- virtualenv
+- required Python modules
+
+## Development
+
+Run tests:
 
 ```bash
 pytest
@@ -136,6 +166,8 @@ src/ksound_hub/
   config.py
   models.py
   settings_store.py
+  control.py
+  ipc.py
   audio/
     engine.py
     pipewire.py
@@ -143,31 +175,24 @@ src/ksound_hub/
     main_window.py
     channel_widget.py
     settings_dialog.py
+    overlay.py
     widgets.py
+scripts/
+  start_ksound_hub.sh
+  check_k_sound_hub_env.sh
+packaging/linux/
+  ksound-hub-autostart.desktop.template
 ```
 
-## GitHub first push
+## Notes
 
-After you create the empty GitHub repository:
-
-```bash
-git init
-git branch -M main
-git add .
-git commit -m "Initial K-Sound Hub bootstrap"
-git remote add origin <YOUR-REPO-URL>
-git push -u origin main
-```
-
-## Roadmap notes
-
-The current working local project remains **Carla Hub 4.2.0** until K-Sound Hub becomes functionally ready.
-
-K-Sound Hub is intended to replace that project gradually, not by breaking the working setup first.
+- This project does **not** auto-register itself in autostart during installation.
+- The provided autostart file is only a ready-to-use manual template.
+- The local virtualenv approach is the recommended install method for now.
 
 ## Disclaimer
 
-This software is provided as-is. You are responsible for testing it on your own system before trusting it in production, streaming, voice chat, recording or live routing scenarios.
+This software is provided as-is. You are responsible for testing it on your own system before trusting it for production, streaming, voice chat, recording or live routing.
 
 See also `DISCLAIMER.md` and `LICENSE`.
 

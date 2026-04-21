@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "k-sound-hub"
-version = "0.1.0"
+version = "0.3.1"
 description = "PipeWire-first modular Linux audio hub"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -13,7 +13,8 @@ authors = [
   { name = "Kooy" }
 ]
 dependencies = [
-  "PySide6>=6.6"
+  "PySide6>=6.6",
+  "numpy>=1.26"
 ]
 
 [project.optional-dependencies]
@@ -28,9 +29,16 @@ ksound-control = "ksound_hub.control:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
+include-package-data = true
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+ksound_hub = [
+  "assets/*",
+  "assets/**/*"
+]
 
 [tool.ruff]
 line-length = 100

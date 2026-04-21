@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=K-Sound Hub
+Comment=Start K-Sound Hub on login
+Exec=__REPO_DIR__/scripts/start_ksound_hub.sh
+Icon=__REPO_DIR__/src/ksound_hub/assets/app_icon.png
+Terminal=false
+Categories=AudioVideo;Audio;
+StartupNotify=false
+X-KDE-StartupNotify=false
