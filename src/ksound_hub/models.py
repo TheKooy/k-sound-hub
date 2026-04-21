@@ -101,6 +101,10 @@ class ChannelConfig:
 class AppSettings:
     overlay_enabled: bool = False
     visualizer_enabled: bool = True
+    wallpaper_enabled: bool = False
+    wallpaper_path: str = ""
+    wallpaper_blur: int = 0
+    wallpaper_tint_strength: int = 40
     channels: list[ChannelConfig] = field(default_factory=list)
 
     @classmethod
@@ -125,6 +129,10 @@ class AppSettings:
         return cls(
             overlay_enabled=bool(data.get("overlay_enabled", False)),
             visualizer_enabled=bool(data.get("visualizer_enabled", True)),
+            wallpaper_enabled=bool(data.get("wallpaper_enabled", False)),
+            wallpaper_path=str(data.get("wallpaper_path", "")),
+            wallpaper_blur=max(0, min(32, int(data.get("wallpaper_blur", 0)))),
+            wallpaper_tint_strength=max(0, min(100, int(data.get("wallpaper_tint_strength", 40)))),
             channels=channels,
         )
 
@@ -132,5 +140,9 @@ class AppSettings:
         return {
             "overlay_enabled": self.overlay_enabled,
             "visualizer_enabled": self.visualizer_enabled,
+            "wallpaper_enabled": self.wallpaper_enabled,
+            "wallpaper_path": self.wallpaper_path,
+            "wallpaper_blur": self.wallpaper_blur,
+            "wallpaper_tint_strength": self.wallpaper_tint_strength,
             "channels": [channel.to_dict() for channel in self.channels],
         }

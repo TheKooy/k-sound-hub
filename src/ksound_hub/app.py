@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import sys
 
-from PySide6.QtGui import QColor, QPalette
+from PySide6.QtGui import QColor, QIcon, QPalette
 from PySide6.QtWidgets import QApplication
 
-from .config import APP_NAME, ORG_DOMAIN, ORG_NAME
+from .config import APP_ICON_PATH, APP_NAME, ORG_DOMAIN, ORG_NAME
 from .settings_store import SettingsStore
 from .ui.main_window import MainWindow
 
@@ -17,6 +17,15 @@ QWidget {
 }
 QMainWindow, QDialog {
     background: #0d1118;
+}
+QWidget#centralStack,
+QWidget#mainRoot,
+QWidget#columnsHost,
+QWidget#backgroundBase,
+QWidget#scrollViewport,
+QLabel#wallpaperLabel,
+QFrame#wallpaperTint {
+    background: transparent;
 }
 QLabel#pageTitle {
     font-size: 20px;
@@ -263,12 +272,19 @@ def main() -> int:
     app.setApplicationName(APP_NAME)
     app.setOrganizationName(ORG_NAME)
     app.setOrganizationDomain(ORG_DOMAIN)
+
+    app_icon = QIcon(str(APP_ICON_PATH)) if APP_ICON_PATH.is_file() else None
+    if app_icon is not None and not app_icon.isNull():
+        app.setWindowIcon(app_icon)
+
     app.setStyle("Fusion")
     _apply_palette(app)
     app.setStyleSheet(STYLE_SHEET)
 
     store = SettingsStore()
     window = MainWindow(store)
+    if app_icon is not None and not app_icon.isNull():
+        window.setWindowIcon(app_icon)
     window.show()
     return app.exec()
 

@@ -1,13 +1,18 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QTimer
+from pathlib import Path
+
+from PySide6.QtCore import QSize, Qt, QTimer
+from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QFrame,
+    QGraphicsBlurEffect,
     QHBoxLayout,
     QLabel,
     QMainWindow,
     QPushButton,
     QScrollArea,
+    QStackedLayout,
     QVBoxLayout,
     QWidget,
 )
@@ -69,7 +74,7 @@ class MainWindow(QMainWindow):
         self._apply_timer.timeout.connect(self._flush_pending_channel_apply)
 
         self._meter_timer = QTimer(self)
-        self._meter_timer.setInterval(45)
+        self._meter_timer.setInterval(90)
         self._meter_timer.timeout.connect(self._refresh_meters)
 
         self._link_shared_eq_library()
@@ -84,9 +89,45 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(f"{APP_NAME} {APP_VERSION}")
         self.resize(1440, 860)
 
+        self._wallpaper_source = QPixmap()
+        self._wallpaper_loaded_path = ""
+        self._wallpaper_scaled_size = QSize()
+        self._wallpaper_scaled_path = ""
+
         central = QWidget()
+        central.setObjectName("centralStack")
         self.setCentralWidget(central)
-        root = QVBoxLayout(central)
+
+        stack = QStackedLayout(central)
+        stack.setContentsMargins(0, 0, 0, 0)
+        stack.setStackingMode(QStackedLayout.StackAll)
+
+        self.background_base = QWidget()
+        self.background_base.setObjectName("backgroundBase")
+
+        self.background_label = QLabel(self.background_base)
+        self.background_label.setObjectName("wallpaperLabel")
+        self.background_label.setAlignment(Qt.AlignCenter)
+        self.background_label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.background_label.hide()
+
+        self.background_blur = QGraphicsBlurEffect(self.background_label)
+        self.background_blur.setBlurHints(QGraphicsBlurEffect.PerformanceHint)
+        self.background_label.setGraphicsEffect(self.background_blur)
+
+        self.background_tint = QFrame(self.background_base)
+        self.background_tint.setObjectName("wallpaperTint")
+        self.background_tint.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.background_tint.hide()
+
+        foreground = QWidget()
+        foreground.setObjectName("mainRoot")
+
+        stack.addWidget(self.background_base)
+        stack.addWidget(foreground)
+        stack.setCurrentWidget(foreground)
+
+        root = QVBoxLayout(foreground)
         root.setContentsMargins(8, 8, 8, 8)
         root.setSpacing(8)
 
@@ -94,9 +135,12 @@ class MainWindow(QMainWindow):
         self.scroll.setWidgetResizable(True)
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll.viewport().setObjectName("scrollViewport")
+        self.scroll.viewport().setAutoFillBackground(False)
         root.addWidget(self.scroll, 1)
 
         self.columns_host = QWidget()
+        self.columns_host.setObjectName("columnsHost")
         self.columns_layout = QHBoxLayout(self.columns_host)
         self.columns_layout.setContentsMargins(0, 0, 0, 0)
         self.columns_layout.setSpacing(12)
@@ -125,6 +169,9 @@ class MainWindow(QMainWindow):
         footer_layout.addWidget(self.refresh_btn)
 
         root.addWidget(self.footer_bar)
+
+        self._apply_wallpaper_settings()
+        self._update_background_layers()
 
         self._reload_channels()
         self.audio_engine.apply_settings(self.settings)
@@ -227,13 +274,98 @@ class MainWindow(QMainWindow):
             return
 
         self._sync_widget_for_channel(channel.key)
+        self._show_overlay_for_change(channel, hint)
+
+        if hint == "volume":
+            self._queue_channel_apply(channel.key, 30)
+            self._save_timer.start()
+            return
+
         self._autosave()
         self.audio_engine.apply_channel(self.settings, channel.key)
-        self._show_overlay_for_change(channel, hint)
         self._status_timer.start()
+
+    def _update_background_layers(self) -> None:
+        rect = self.background_base.rect()
+        self.background_label.setGeometry(rect)
+        self.background_tint.setGeometry(rect)
+        self._refresh_wallpaper_pixmap()
+
+    def _refresh_wallpaper_pixmap(self) -> None:
+        if self._wallpaper_source.isNull():
+            self._wallpaper_scaled_size = QSize()
+            self._wallpaper_scaled_path = ""
+            self.background_label.clear()
+            return
+
+        size = self.background_label.size()
+        if size.width() <= 0 or size.height() <= 0:
+            return
+
+        if size == self._wallpaper_scaled_size and self._wallpaper_loaded_path == self._wallpaper_scaled_path:
+            return
+
+        scaled = self._wallpaper_source.scaled(
+            size,
+            Qt.KeepAspectRatioByExpanding,
+            Qt.SmoothTransformation,
+        )
+        self.background_label.setPixmap(scaled)
+        self._wallpaper_scaled_size = QSize(size)
+        self._wallpaper_scaled_path = self._wallpaper_loaded_path
+
+    def _apply_wallpaper_settings(self, settings=None) -> None:
+        active_settings = self.settings if settings is None else settings
+        enabled = bool(getattr(active_settings, "wallpaper_enabled", False))
+        path = str(getattr(active_settings, "wallpaper_path", "") or "").strip()
+        valid = enabled and path and Path(path).is_file()
+
+        if valid:
+            if path != self._wallpaper_loaded_path or self._wallpaper_source.isNull():
+                pixmap = QPixmap(path)
+                if pixmap.isNull():
+                    valid = False
+                else:
+                    self._wallpaper_source = pixmap
+                    self._wallpaper_loaded_path = path
+                    self._wallpaper_scaled_size = QSize()
+                    self._wallpaper_scaled_path = ""
+
+        if not valid:
+            self._wallpaper_source = QPixmap()
+            self._wallpaper_loaded_path = ""
+            self._wallpaper_scaled_size = QSize()
+            self._wallpaper_scaled_path = ""
+            self.background_label.clear()
+            self.background_label.hide()
+            self.background_tint.hide()
+            self.background_tint.setStyleSheet("background: transparent;")
+            return
+
+        blur = max(0, min(32, int(getattr(active_settings, "wallpaper_blur", 0))))
+        tint = max(0, min(100, int(getattr(active_settings, "wallpaper_tint_strength", 0))))
+        alpha = int(180 * (tint / 100.0))
+
+        self.background_blur.setBlurRadius(float(blur))
+        self.background_tint.setStyleSheet(f"background: rgba(0, 0, 0, {alpha});")
+        self.background_label.show()
+        self.background_tint.show()
+        self._update_background_layers()
+
+    def _preview_wallpaper_settings(self, preview_settings) -> None:
+        self._apply_wallpaper_settings(preview_settings)
+
+    def _restore_wallpaper_preview(self) -> None:
+        self._apply_wallpaper_settings(self.settings)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        QTimer.singleShot(0, self._update_background_layers)
+        QTimer.singleShot(40, self._update_background_layers)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        self._update_background_layers()
         self._apply_column_widths()
 
     def closeEvent(self, event):
@@ -370,11 +502,17 @@ class MainWindow(QMainWindow):
             widget.set_meter_levels(left, right)
 
     def open_settings(self) -> None:
-        dialog = SettingsDialog(self.settings, self)
+        dialog = SettingsDialog(
+            self.settings,
+            self,
+            wallpaper_preview_callback=self._preview_wallpaper_settings,
+            wallpaper_reset_callback=self._restore_wallpaper_preview,
+        )
         if dialog.exec():
             self.settings = dialog.build_result()
             self._link_shared_eq_library()
             self.overlay.set_enabled(self.settings.overlay_enabled)
+            self._apply_wallpaper_settings()
             self._autosave()
             self._reload_channels()
             self.audio_engine.apply_settings(self.settings)

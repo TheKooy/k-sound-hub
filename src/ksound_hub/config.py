@@ -8,6 +8,10 @@ APP_VERSION = "0.3.1"
 ORG_NAME = "K-Sound Hub"
 ORG_DOMAIN = "local.ksoundhub"
 
+PACKAGE_DIR = Path(__file__).resolve().parent
+ASSETS_DIR = PACKAGE_DIR / "assets"
+APP_ICON_PATH = ASSETS_DIR / "app_icon.png"
+
 CONFIG_DIR = Path.home() / ".config" / "ksound-hub"
 SETTINGS_PATH = CONFIG_DIR / "settings.json"
 LOG_DIR = CONFIG_DIR / "logs"

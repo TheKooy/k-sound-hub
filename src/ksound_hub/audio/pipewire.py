@@ -215,6 +215,8 @@ class PipeWireAudioEngine(AudioEngine):
             for key, logical_sink in PLAYBACK_EQ_CHANNELS.items()
         }
         self._meter_probes: dict[str, SourceMeterProbe] = {}
+        self._meter_source_name_cache: set[str] = set()
+        self._meter_source_cache_at = 0.0
 
     def _run(self, args: list[str]) -> subprocess.CompletedProcess[str]:
         env = os.environ.copy()
@@ -246,6 +248,13 @@ class PipeWireAudioEngine(AudioEngine):
         if proc.returncode != 0:
             return []
         return self._parse_short(proc.stdout.splitlines(), "source")
+
+    def _cached_source_names(self, *, force: bool = False) -> set[str]:
+        now = time.monotonic()
+        if force or (now - self._meter_source_cache_at) >= 1.0:
+            self._meter_source_name_cache = {node.name for node in self.list_sources()}
+            self._meter_source_cache_at = now
+        return self._meter_source_name_cache
 
     def _status_base(self) -> str:
         sinks = len(self.list_sinks())
@@ -495,20 +504,19 @@ class PipeWireAudioEngine(AudioEngine):
         if not source_name:
             return (0.0, 0.0)
 
-        if not self._source_exists(source_name):
-            probe = self._meter_probes.pop(channel_key, None)
-            if probe is not None:
-                probe.stop()
+        probe = self._meter_probes.get(channel_key)
+        if probe is not None:
+            if probe.source_name == source_name:
+                return probe.levels()
+            probe.stop()
+            self._meter_probes.pop(channel_key, None)
+
+        if source_name not in self._cached_source_names():
             return (0.0, 0.0)
 
-        probe = self._meter_probes.get(channel_key)
-        if probe is None or probe.source_name != source_name:
-            if probe is not None:
-                probe.stop()
-            probe = SourceMeterProbe(source_name)
-            probe.start()
-            self._meter_probes[channel_key] = probe
-
+        probe = SourceMeterProbe(source_name)
+        probe.start()
+        self._meter_probes[channel_key] = probe
         return probe.levels()
 
     def apply_channel(self, settings: AppSettings, channel_key: str) -> None:

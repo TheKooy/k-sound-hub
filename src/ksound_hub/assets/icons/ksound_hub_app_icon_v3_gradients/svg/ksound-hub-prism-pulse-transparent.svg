@@ -1,0 +1,100 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bgGrad" x1="120" y1="80" x2="900" y2="940" gradientUnits="userSpaceOnUse">
+  <stop offset="0.000" stop-color="#08131A"/>
+  <stop offset="0.500" stop-color="#15122A"/>
+  <stop offset="1.000" stop-color="#070A13"/>
+</linearGradient>
+    <linearGradient id="rimGrad" x1="90" y1="120" x2="960" y2="900" gradientUnits="userSpaceOnUse">
+  <stop offset="0.000" stop-color="#44F0C7"/>
+  <stop offset="0.333" stop-color="#49C8FF"/>
+  <stop offset="0.667" stop-color="#8A5CFF"/>
+  <stop offset="1.000" stop-color="#FF5A8B"/>
+</linearGradient>
+    <linearGradient id="kGrad" x1="310" y1="210" x2="740" y2="820" gradientUnits="userSpaceOnUse">
+  <stop offset="0.000" stop-color="#4AFFC8"/>
+  <stop offset="0.250" stop-color="#49E3FF"/>
+  <stop offset="0.500" stop-color="#4D8FFF"/>
+  <stop offset="0.750" stop-color="#B55CFF"/>
+  <stop offset="1.000" stop-color="#FF5C96"/>
+</linearGradient>
+    <linearGradient id="waveGrad" x1="110" y1="250" x2="930" y2="760" gradientUnits="userSpaceOnUse">
+  <stop offset="0.000" stop-color="#49FFD7"/>
+  <stop offset="0.250" stop-color="#47D8FF"/>
+  <stop offset="0.500" stop-color="#6DF58E"/>
+  <stop offset="0.750" stop-color="#C85BFF"/>
+  <stop offset="1.000" stop-color="#FF6E79"/>
+</linearGradient>
+    <linearGradient id="sparkGrad" x1="480" y1="430" x2="790" y2="730" gradientUnits="userSpaceOnUse">
+  <stop offset="0.000" stop-color="#F7FF90"/>
+  <stop offset="1.000" stop-color="#FFB55A"/>
+</linearGradient>
+    <filter id="glowWide" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="24" result="blur"/>
+      <feColorMatrix in="blur" type="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 0.96 0"/>
+    </filter>
+    <filter id="glowSoft" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="14" result="blur"/>
+      <feColorMatrix in="blur" type="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 0.76 0"/>
+    </filter>
+    <filter id="shadow" x="-25%" y="-25%" width="180%" height="180%">
+      <feDropShadow dx="0" dy="18" stdDeviation="24" flood-color="#000000" flood-opacity="0.50"/>
+    </filter>
+    
+  </defs>
+
+  
+  <g>
+    <!-- outer side pulses -->
+    <g opacity="0.98">
+      <rect x="112" y="332" width="30" height="362" rx="15" fill="url(#waveGrad)" opacity="0.26" filter="url(#glowSoft)"/>
+      <rect x="112" y="332" width="30" height="362" rx="15" fill="url(#waveGrad)" opacity="0.97"/>
+
+      <rect x="182" y="244" width="30" height="536" rx="15" fill="url(#waveGrad)" opacity="0.26" filter="url(#glowSoft)"/>
+      <rect x="182" y="244" width="30" height="536" rx="15" fill="url(#waveGrad)" opacity="0.97"/>
+
+      <rect x="252" y="392" width="30" height="240" rx="15" fill="url(#waveGrad)" opacity="0.26" filter="url(#glowSoft)"/>
+      <rect x="252" y="392" width="30" height="240" rx="15" fill="url(#waveGrad)" opacity="0.97"/>
+
+      <rect x="742" y="304" width="30" height="390" rx="15" fill="url(#waveGrad)" opacity="0.26" filter="url(#glowSoft)"/>
+      <rect x="742" y="304" width="30" height="390" rx="15" fill="url(#waveGrad)" opacity="0.97"/>
+
+      <rect x="812" y="228" width="30" height="548" rx="15" fill="url(#waveGrad)" opacity="0.26" filter="url(#glowSoft)"/>
+      <rect x="812" y="228" width="30" height="548" rx="15" fill="url(#waveGrad)" opacity="0.97"/>
+
+      <rect x="882" y="380" width="30" height="252" rx="15" fill="url(#waveGrad)" opacity="0.26" filter="url(#glowSoft)"/>
+      <rect x="882" y="380" width="30" height="252" rx="15" fill="url(#waveGrad)" opacity="0.97"/>
+    </g>
+
+    <!-- ambient rings and trails -->
+    <path d="M152 512C236 428 330 438 400 512C472 588 546 590 622 512C694 438 790 430 872 512" stroke="url(#waveGrad)" stroke-width="22" stroke-linecap="round" opacity="0.16" filter="url(#glowWide)"/>
+    <path d="M155 512C238 432 330 440 400 512C472 584 546 588 622 512C694 440 786 432 868 512" stroke="url(#waveGrad)" stroke-width="11" stroke-linecap="round" opacity="0.78"/>
+    <path d="M178 614C246 558 306 558 364 614C430 676 564 676 636 614C702 554 758 556 820 614" stroke="url(#waveGrad)" stroke-width="10" stroke-linecap="round" opacity="0.48"/>
+    <path d="M210 420C276 374 320 374 374 420" stroke="url(#waveGrad)" stroke-width="8" stroke-linecap="round" opacity="0.26"/>
+    <path d="M650 420C708 374 754 374 822 420" stroke="url(#waveGrad)" stroke-width="8" stroke-linecap="round" opacity="0.26"/>
+
+    <!-- K glow -->
+    <g opacity="0.95" filter="url(#glowWide)">
+      <path d="M398 242V782" stroke="url(#kGrad)" stroke-width="72" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M428 512L646 262" stroke="url(#kGrad)" stroke-width="72" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M428 512L674 784" stroke="url(#kGrad)" stroke-width="72" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+
+    <!-- K main -->
+    <g filter="url(#shadow)">
+      <path d="M398 242V782" stroke="url(#kGrad)" stroke-width="56" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M428 512L646 262" stroke="url(#kGrad)" stroke-width="56" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M428 512L674 784" stroke="url(#kGrad)" stroke-width="56" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+
+    <!-- center pulse -->
+    <circle cx="428" cy="512" r="18" fill="#FFFFFF" opacity="0.98"/>
+    <circle cx="428" cy="512" r="42" fill="#FFFFFF" opacity="0.26" filter="url(#glowSoft)"/>
+
+    <!-- extra spark accents -->
+    <path d="M648 260L698 206" stroke="url(#sparkGrad)" stroke-width="16" stroke-linecap="round" opacity="0.96"/>
+    <path d="M682 296L748 238" stroke="url(#sparkGrad)" stroke-width="11" stroke-linecap="round" opacity="0.82"/>
+    <path d="M680 738L740 798" stroke="url(#sparkGrad)" stroke-width="14" stroke-linecap="round" opacity="0.88"/>
+    <path d="M306 250L342 212" stroke="url(#sparkGrad)" stroke-width="10" stroke-linecap="round" opacity="0.55"/>
+  </g>
+</svg>
