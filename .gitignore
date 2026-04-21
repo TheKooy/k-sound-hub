@@ -54,3 +54,12 @@ exports/
 *.json.bak
 *.local.json
 *.bak-*
+
+# K-Sound Hub local/runtime files
+.venv/
+__pycache__/
+*.pyc
+*.bak-*
+.settings/
+settings.json
+**/settings.json
