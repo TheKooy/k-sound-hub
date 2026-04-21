@@ -272,6 +272,8 @@ def main() -> int:
     app.setApplicationName(APP_NAME)
     app.setOrganizationName(ORG_NAME)
     app.setOrganizationDomain(ORG_DOMAIN)
+    if APP_ICON_PATH.is_file():
+        app.setWindowIcon(QIcon(str(APP_ICON_PATH)))
 
     app_icon = QIcon(str(APP_ICON_PATH)) if APP_ICON_PATH.is_file() else None
     if app_icon is not None and not app_icon.isNull():

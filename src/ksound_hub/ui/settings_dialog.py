@@ -53,6 +53,10 @@ class SettingsDialog(QDialog):
         self.visualizer_check.setChecked(self.settings.visualizer_enabled)
         root.addWidget(self.visualizer_check)
 
+        self.close_to_tray_check = QCheckBox("Clicking the window close button sends the app to the tray")
+        self.close_to_tray_check.setChecked(bool(getattr(self.settings, "close_to_tray", True)))
+        root.addWidget(self.close_to_tray_check)
+
         self.wallpaper_check = QCheckBox("Enable wallpaper background")
         self.wallpaper_check.setChecked(self.settings.wallpaper_enabled)
         root.addWidget(self.wallpaper_check)
@@ -227,5 +231,6 @@ class SettingsDialog(QDialog):
     def build_result(self) -> AppSettings:
         self.settings.overlay_enabled = self.overlay_check.isChecked()
         self.settings.visualizer_enabled = self.visualizer_check.isChecked()
+        self.settings.close_to_tray = self.close_to_tray_check.isChecked()
         self._sync_wallpaper_fields_to_settings()
         return self.settings

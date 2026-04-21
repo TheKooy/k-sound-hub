@@ -2,23 +2,25 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QSize, Qt, QTimer
-from PySide6.QtGui import QPixmap
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import (
     QFrame,
     QGraphicsBlurEffect,
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QMenu,
     QPushButton,
     QScrollArea,
     QStackedLayout,
+    QSystemTrayIcon,
     QVBoxLayout,
     QWidget,
 )
 
 from ..audio.pipewire import PipeWireAudioEngine
-from ..config import APP_NAME, APP_VERSION, IPC_SOCKET_PATH
+from ..config import APP_ICON_PATH, APP_NAME, APP_VERSION, IPC_SOCKET_PATH
 from ..ipc import AudioIpcServer
 from ..settings_store import SettingsStore
 from .channel_widget import ChannelWidget
@@ -59,6 +61,11 @@ class MainWindow(QMainWindow):
         self.channel_widgets: dict[str, ChannelWidget] = {}
         self._pending_apply_keys: set[str] = set()
 
+        self._force_close = False
+        self._tray_message_shown = False
+        self.tray_icon: QSystemTrayIcon | None = None
+        self.tray_menu: QMenu | None = None
+
         self._save_timer = QTimer(self)
         self._save_timer.setSingleShot(True)
         self._save_timer.setInterval(180)
@@ -74,7 +81,7 @@ class MainWindow(QMainWindow):
         self._apply_timer.timeout.connect(self._flush_pending_channel_apply)
 
         self._meter_timer = QTimer(self)
-        self._meter_timer.setInterval(90)
+        self._meter_timer.setInterval(45)
         self._meter_timer.timeout.connect(self._refresh_meters)
 
         self._link_shared_eq_library()
@@ -87,12 +94,11 @@ class MainWindow(QMainWindow):
         self.ipc_server.start()
 
         self.setWindowTitle(f"{APP_NAME} {APP_VERSION}")
+        if APP_ICON_PATH.is_file():
+            self.setWindowIcon(QIcon(str(APP_ICON_PATH)))
         self.resize(1440, 860)
 
         self._wallpaper_source = QPixmap()
-        self._wallpaper_loaded_path = ""
-        self._wallpaper_scaled_size = QSize()
-        self._wallpaper_scaled_path = ""
 
         central = QWidget()
         central.setObjectName("centralStack")
@@ -274,16 +280,59 @@ class MainWindow(QMainWindow):
             return
 
         self._sync_widget_for_channel(channel.key)
-        self._show_overlay_for_change(channel, hint)
-
-        if hint == "volume":
-            self._queue_channel_apply(channel.key, 30)
-            self._save_timer.start()
-            return
-
         self._autosave()
         self.audio_engine.apply_channel(self.settings, channel.key)
+        self._show_overlay_for_change(channel, hint)
         self._status_timer.start()
+
+    def _can_close_to_tray(self) -> bool:
+        return bool(getattr(self.settings, "close_to_tray", True)) and QSystemTrayIcon.isSystemTrayAvailable()
+
+    def _ensure_tray_icon(self) -> bool:
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            return False
+
+        if self.tray_icon is not None:
+            return True
+
+        icon = QIcon(str(APP_ICON_PATH)) if APP_ICON_PATH.is_file() else self.windowIcon()
+        tray = QSystemTrayIcon(icon, self)
+        tray.setToolTip(f"{APP_NAME} {APP_VERSION}")
+        tray.activated.connect(self._on_tray_activated)
+
+        menu = QMenu(self)
+        restore_action = menu.addAction("Restore")
+        restore_action.triggered.connect(self._restore_from_tray)
+
+        quit_action = menu.addAction("Quit")
+        quit_action.triggered.connect(self._quit_from_tray)
+
+        tray.setContextMenu(menu)
+
+        self.tray_icon = tray
+        self.tray_menu = menu
+        return True
+
+    def _restore_from_tray(self) -> None:
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+        if self.tray_icon is not None:
+            self.tray_icon.hide()
+
+    def _quit_from_tray(self) -> None:
+        self._force_close = True
+        if self.tray_icon is not None:
+            self.tray_icon.hide()
+        self.close()
+
+    def _on_tray_activated(self, reason) -> None:
+        if reason in (
+            QSystemTrayIcon.Trigger,
+            QSystemTrayIcon.DoubleClick,
+            QSystemTrayIcon.MiddleClick,
+        ):
+            self._restore_from_tray()
 
     def _update_background_layers(self) -> None:
         rect = self.background_base.rect()
@@ -293,16 +342,11 @@ class MainWindow(QMainWindow):
 
     def _refresh_wallpaper_pixmap(self) -> None:
         if self._wallpaper_source.isNull():
-            self._wallpaper_scaled_size = QSize()
-            self._wallpaper_scaled_path = ""
             self.background_label.clear()
             return
 
         size = self.background_label.size()
         if size.width() <= 0 or size.height() <= 0:
-            return
-
-        if size == self._wallpaper_scaled_size and self._wallpaper_loaded_path == self._wallpaper_scaled_path:
             return
 
         scaled = self._wallpaper_source.scaled(
@@ -311,8 +355,6 @@ class MainWindow(QMainWindow):
             Qt.SmoothTransformation,
         )
         self.background_label.setPixmap(scaled)
-        self._wallpaper_scaled_size = QSize(size)
-        self._wallpaper_scaled_path = self._wallpaper_loaded_path
 
     def _apply_wallpaper_settings(self, settings=None) -> None:
         active_settings = self.settings if settings is None else settings
@@ -321,21 +363,14 @@ class MainWindow(QMainWindow):
         valid = enabled and path and Path(path).is_file()
 
         if valid:
-            if path != self._wallpaper_loaded_path or self._wallpaper_source.isNull():
-                pixmap = QPixmap(path)
-                if pixmap.isNull():
-                    valid = False
-                else:
-                    self._wallpaper_source = pixmap
-                    self._wallpaper_loaded_path = path
-                    self._wallpaper_scaled_size = QSize()
-                    self._wallpaper_scaled_path = ""
+            pixmap = QPixmap(path)
+            if pixmap.isNull():
+                valid = False
+            else:
+                self._wallpaper_source = pixmap
 
         if not valid:
             self._wallpaper_source = QPixmap()
-            self._wallpaper_loaded_path = ""
-            self._wallpaper_scaled_size = QSize()
-            self._wallpaper_scaled_path = ""
             self.background_label.clear()
             self.background_label.hide()
             self.background_tint.hide()
@@ -358,18 +393,30 @@ class MainWindow(QMainWindow):
     def _restore_wallpaper_preview(self) -> None:
         self._apply_wallpaper_settings(self.settings)
 
-    def showEvent(self, event):
-        super().showEvent(event)
-        QTimer.singleShot(0, self._update_background_layers)
-        QTimer.singleShot(40, self._update_background_layers)
-
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._update_background_layers()
         self._apply_column_widths()
 
     def closeEvent(self, event):
+        if not self._force_close and self._can_close_to_tray() and self._ensure_tray_icon():
+            event.ignore()
+            self.hide()
+            if self.tray_icon is not None:
+                self.tray_icon.show()
+                if not self._tray_message_shown:
+                    self.tray_icon.showMessage(
+                        APP_NAME,
+                        "K-Sound Hub is still running in the system tray.",
+                        QSystemTrayIcon.Information,
+                        1800,
+                    )
+                    self._tray_message_shown = True
+            return
+
         self._meter_timer.stop()
+        if self.tray_icon is not None:
+            self.tray_icon.hide()
         self.ipc_server.stop()
         self.audio_engine.shutdown()
         super().closeEvent(event)
@@ -502,18 +549,24 @@ class MainWindow(QMainWindow):
             widget.set_meter_levels(left, right)
 
     def open_settings(self) -> None:
-        dialog = SettingsDialog(
-            self.settings,
-            self,
-            wallpaper_preview_callback=self._preview_wallpaper_settings,
-            wallpaper_reset_callback=self._restore_wallpaper_preview,
-        )
+        try:
+            dialog = SettingsDialog(
+                self.settings,
+                self,
+                wallpaper_preview_callback=self._preview_wallpaper_settings,
+                wallpaper_reset_callback=self._restore_wallpaper_preview,
+            )
+        except TypeError:
+            dialog = SettingsDialog(self.settings, self)
+
         if dialog.exec():
             self.settings = dialog.build_result()
             self._link_shared_eq_library()
             self.overlay.set_enabled(self.settings.overlay_enabled)
-            self._apply_wallpaper_settings()
             self._autosave()
+            self._apply_wallpaper_settings()
             self._reload_channels()
             self.audio_engine.apply_settings(self.settings)
             self.refresh_status()
+        else:
+            self._restore_wallpaper_preview()

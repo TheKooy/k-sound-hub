@@ -30,13 +30,13 @@ from .eq_dialog import EqProfileDialog
 from .widgets import ChannelVolumeSlider, MenuSelectorButton, CollapsibleSection, HeaderBadge, SelectorFrame, StereoLevelMeterWidget
 
 CHANNEL_META = {
-    "all": {"icon": "🌍", "apps": ["Default desktop audio", "Browser", "System sounds"]},
-    "game": {"icon": "🎮", "apps": ["Steam game", "FMOD stream"]},
-    "chat": {"icon": "💬", "apps": ["Discord voice", "Team chat"]},
-    "media": {"icon": "🎵", "apps": ["Firefox media", "Music player"]},
-    "more": {"icon": "🔊", "apps": ["Utility output"]},
-    "micro": {"icon": "🎤", "apps": ["Voice apps", "Injected playback sends"]},
-    "return-mic": {"icon": "🎧", "apps": ["Post-EE", "Final Mix"]},
+    "all": {"icon": "🌍", "apps": []},
+    "game": {"icon": "🎮", "apps": []},
+    "chat": {"icon": "💬", "apps": []},
+    "media": {"icon": "🎵", "apps": []},
+    "more": {"icon": "🔊", "apps": []},
+    "micro": {"icon": "🎤", "apps": []},
+    "return-mic": {"icon": "🎧", "apps": []},
 }
 
 DEVICE_CHOICES = {
