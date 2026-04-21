@@ -472,7 +472,7 @@ class MainWindow(QMainWindow):
                 channel,
                 global_visualizer_enabled=self.settings.visualizer_enabled,
                 audio_engine=self.audio_engine,
-                on_runtime_refresh=self.refresh_status,
+                on_runtime_refresh=self._sync_runtime_audio_state,
             )
             widget.changed.connect(self._on_any_changed)
             self.channel_widgets[channel.key] = widget
@@ -495,6 +495,10 @@ class MainWindow(QMainWindow):
         for key in keys:
             self.audio_engine.apply_channel(self.settings, key)
         self._status_timer.start()
+
+    def _sync_runtime_audio_state(self) -> None:
+        self.audio_engine.apply_settings(self.settings)
+        self.refresh_status()
 
     def _on_any_changed(self) -> None:
         sender = self.sender()
