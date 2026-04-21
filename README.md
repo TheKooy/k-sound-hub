@@ -45,7 +45,7 @@ Optional development tools:
 - `pytest`
 - `ruff`
 
-## Quick install on another PC
+## Quick install
 
 From the repository root:
 
@@ -56,7 +56,7 @@ python -m pip install --upgrade pip setuptools wheel
 python -m pip install -e .
 ```
 
-If you also want the dev tools:
+Optional development tools:
 
 ```bash
 python -m pip install -e .[dev]
@@ -70,9 +70,9 @@ A helper script is included:
 ./scripts/check_k_sound_hub_env.sh
 ```
 
-It checks the main commands and Python modules expected by the current project.
+It checks the main commands and Python modules required by K-Sound Hub on the target system.
 
-## Run the application
+## Launch the application
 
 Preferred launcher from the repository root:
 
