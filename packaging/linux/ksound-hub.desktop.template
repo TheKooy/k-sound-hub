@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=K-Sound Hub
+Comment=PipeWire-first modular Linux audio hub
+Exec=__EXEC__
+Icon=__ICON__
+Terminal=false
+Categories=AudioVideo;Audio;Utility;
+StartupNotify=true
+X-GNOME-UsesNotifications=true
