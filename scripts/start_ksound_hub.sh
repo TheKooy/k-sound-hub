@@ -6,6 +6,10 @@ VENV_DIR="$REPO_DIR/.venv"
 
 cd "$REPO_DIR"
 
+if [[ -x "$REPO_DIR/scripts/install_desktop_entry.sh" ]]; then
+  "$REPO_DIR/scripts/install_desktop_entry.sh" --quiet >/dev/null 2>&1 || true
+fi
+
 if [[ -x "$VENV_DIR/bin/ksound-hub" ]]; then
   exec "$VENV_DIR/bin/ksound-hub"
 fi
