@@ -180,6 +180,18 @@ class ChannelWidget(QFrame):
         self._change_hint = hint
         self.changed.emit()
 
+    def set_meter_levels(self, left: float, right: float) -> None:
+        if not (self.global_visualizer_enabled and self.channel.visualizer_enabled):
+            self.left_meter.clear()
+            self.right_meter.clear()
+            return
+        self.left_meter.set_level(left)
+        self.right_meter.set_level(right)
+
+    def clear_meter_levels(self) -> None:
+        self.left_meter.clear()
+        self.right_meter.clear()
+
     def _default_primary_target(self) -> str:
         if self.channel.key == "micro":
             return "Both mics"
@@ -304,6 +316,9 @@ class ChannelWidget(QFrame):
         visible = self.global_visualizer_enabled and self.channel.visualizer_enabled
         self.left_meter.setVisible(visible)
         self.right_meter.setVisible(visible)
+        if not visible:
+            self.left_meter.clear()
+            self.right_meter.clear()
 
     def _populate_apps_section(self, app_names: list[str]) -> None:
         badge_row = QHBoxLayout()

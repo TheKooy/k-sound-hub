@@ -68,6 +68,10 @@ class MainWindow(QMainWindow):
         self._apply_timer.setSingleShot(True)
         self._apply_timer.timeout.connect(self._flush_pending_channel_apply)
 
+        self._meter_timer = QTimer(self)
+        self._meter_timer.setInterval(45)
+        self._meter_timer.timeout.connect(self._refresh_meters)
+
         self._link_shared_eq_library()
 
         self.overlay = OverlayManager(self)
@@ -125,6 +129,7 @@ class MainWindow(QMainWindow):
         self._reload_channels()
         self.audio_engine.apply_settings(self.settings)
         self.refresh_status()
+        self._meter_timer.start()
 
     def _link_shared_eq_library(self, source_channel=None) -> None:
         shared_profiles = None
@@ -232,6 +237,7 @@ class MainWindow(QMainWindow):
         self._apply_column_widths()
 
     def closeEvent(self, event):
+        self._meter_timer.stop()
         self.ipc_server.stop()
         self.audio_engine.shutdown()
         super().closeEvent(event)
@@ -352,7 +358,16 @@ class MainWindow(QMainWindow):
         for widget in self.channel_widgets.values():
             widget.set_global_visualizer_enabled(self.settings.visualizer_enabled)
             widget.refresh_runtime_views()
+        self._refresh_meters()
         self._apply_column_widths()
+
+    def _refresh_meters(self) -> None:
+        for widget in self.channel_widgets.values():
+            if not self.settings.visualizer_enabled or not widget.channel.visualizer_enabled:
+                widget.clear_meter_levels()
+                continue
+            left, right = self.audio_engine.meter_levels(widget.channel.key)
+            widget.set_meter_levels(left, right)
 
     def open_settings(self) -> None:
         dialog = SettingsDialog(self.settings, self)

@@ -40,6 +40,10 @@ class AudioEngine(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def meter_levels(self, channel_key: str) -> tuple[float, float]:
+        raise NotImplementedError
+
+    @abstractmethod
     def apply_channel(self, settings: AppSettings, channel_key: str) -> None:
         raise NotImplementedError
 

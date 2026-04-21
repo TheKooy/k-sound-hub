@@ -279,7 +279,7 @@ class StereoLevelMeterWidget(QWidget):
         self.setFixedWidth(16)
         self.setMinimumHeight(154)
         self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
-        self.setToolTip(f"{side.upper()} meter. It stays idle until backend audio levels are wired.")
+        self.setToolTip(f"{side.upper()} live meter from backend monitor source.")
 
     def clear(self) -> None:
         self.set_level(0.0)
@@ -303,16 +303,15 @@ class StereoLevelMeterWidget(QWidget):
 
         y = height - margin - seg_h
         for i in range(self._segments):
-            level_index = self._segments - 1 - i
-            active = level_index < lit
+            active = i < lit
             if not active:
                 color = QColor("#1a2430")
-            elif i < 7:
-                color = QColor("#34d3ff")
+            elif i < 8:
+                color = QColor("#48d66b")
             elif i < 11:
-                color = QColor("#ff65d4")
+                color = QColor("#f2cf5b")
             else:
-                color = QColor("#ffd166")
+                color = QColor("#ff6666")
             painter.fillRect(margin, y, width - margin * 2, seg_h, color)
             y -= seg_h + gap
 

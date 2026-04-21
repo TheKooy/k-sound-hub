@@ -4,9 +4,13 @@ import json
 import os
 import re
 import subprocess
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
+
+import numpy as np
 
 from ..config import CONFIG_DIR
 from ..models import AppSettings, ChannelConfig, EqProfile
@@ -45,6 +49,16 @@ STATUS_LABELS = {
     "more": "more-eq",
 }
 
+METER_SOURCE_BY_CHANNEL = {
+    "all": "all.monitor",
+    "game": "game.monitor",
+    "chat": "chat.monitor",
+    "media": "media.monitor",
+    "more": "more.monitor",
+    "return-mic": "retour.monitor",
+    "micro": "micro",
+}
+
 
 @dataclass
 class EqRuntimeSlot:
@@ -53,6 +67,142 @@ class EqRuntimeSlot:
     proc: subprocess.Popen | None = None
     signature: str = ""
     status: str = "idle"
+
+
+class SourceMeterProbe:
+    def __init__(self, source_name: str) -> None:
+        self.source_name = source_name
+        self._stop_event = threading.Event()
+        self._lock = threading.Lock()
+        self._levels = (0.0, 0.0)
+        self._proc: subprocess.Popen | None = None
+        self._thread = threading.Thread(
+            target=self._run,
+            name=f"ksh-meter-{source_name}",
+            daemon=True,
+        )
+
+    def start(self) -> None:
+        if not self._thread.is_alive():
+            self._thread.start()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        self._terminate_proc()
+        if self._thread.is_alive():
+            self._thread.join(timeout=1.2)
+        self._set_levels(0.0, 0.0)
+
+    def levels(self) -> tuple[float, float]:
+        with self._lock:
+            return self._levels
+
+    def _set_levels(self, left: float, right: float) -> None:
+        left = max(0.0, min(1.0, float(left)))
+        right = max(0.0, min(1.0, float(right)))
+        with self._lock:
+            self._levels = (left, right)
+
+    def _terminate_proc(self) -> None:
+        proc = self._proc
+        self._proc = None
+        if proc is None:
+            return
+        try:
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=0.8)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+        except Exception:
+            pass
+
+    def _run(self) -> None:
+        chunk_frames = 960
+        chunk_bytes = chunk_frames * 2 * 4
+
+        while not self._stop_event.is_set():
+            current_left = 0.0
+            current_right = 0.0
+            buffer = bytearray()
+
+            try:
+                proc = subprocess.Popen(
+                    [
+                        "parec",
+                        f"--device={self.source_name}",
+                        "--raw",
+                        "--format=float32le",
+                        "--rate=48000",
+                        "--channels=2",
+                        "--latency-msec=40",
+                    ],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                )
+                self._proc = proc
+
+                if proc.stdout is None:
+                    self._set_levels(0.0, 0.0)
+                    time.sleep(0.2)
+                    continue
+
+                fd = proc.stdout.fileno()
+                os.set_blocking(fd, False)
+
+                while not self._stop_event.is_set():
+                    if proc.poll() is not None:
+                        break
+
+                    try:
+                        data = os.read(fd, 65536)
+                    except BlockingIOError:
+                        data = b""
+
+                    if data:
+                        buffer.extend(data)
+
+                        while len(buffer) >= chunk_bytes:
+                            chunk = bytes(buffer[:chunk_bytes])
+                            del buffer[:chunk_bytes]
+
+                            samples = np.frombuffer(chunk, dtype="<f4")
+                            if samples.size < 2:
+                                continue
+                            if samples.size % 2:
+                                samples = samples[:-1]
+                            if samples.size < 2:
+                                continue
+
+                            frames = samples.reshape(-1, 2)
+                            peak_left = float(np.max(np.abs(frames[:, 0])))
+                            peak_right = float(np.max(np.abs(frames[:, 1])))
+
+                            current_left = max(min(1.0, peak_left), current_left * 0.74)
+                            current_right = max(min(1.0, peak_right), current_right * 0.74)
+                            self._set_levels(current_left, current_right)
+                    else:
+                        current_left *= 0.84
+                        current_right *= 0.84
+                        if current_left < 0.002:
+                            current_left = 0.0
+                        if current_right < 0.002:
+                            current_right = 0.0
+                        self._set_levels(current_left, current_right)
+                        time.sleep(0.03)
+
+            except Exception:
+                self._set_levels(0.0, 0.0)
+                time.sleep(0.25)
+            finally:
+                self._terminate_proc()
+
+            if not self._stop_event.is_set():
+                time.sleep(0.15)
+
+        self._set_levels(0.0, 0.0)
 
 
 class PipeWireAudioEngine(AudioEngine):
@@ -64,6 +214,7 @@ class PipeWireAudioEngine(AudioEngine):
             key: EqRuntimeSlot(key=key, logical_sink=logical_sink)
             for key, logical_sink in PLAYBACK_EQ_CHANNELS.items()
         }
+        self._meter_probes: dict[str, SourceMeterProbe] = {}
 
     def _run(self, args: list[str]) -> subprocess.CompletedProcess[str]:
         env = os.environ.copy()
@@ -111,6 +262,9 @@ class PipeWireAudioEngine(AudioEngine):
     def shutdown(self) -> None:
         for slot in self.eq_slots.values():
             self._stop_slot(slot)
+        for probe in self._meter_probes.values():
+            probe.stop()
+        self._meter_probes.clear()
 
     def _log_path_for(self, key: str) -> Path:
         return self.runtime_dir / f"{key}-eq.log"
@@ -335,6 +489,27 @@ class PipeWireAudioEngine(AudioEngine):
 
         tail = self._read_slot_log_tail(key)
         slot.status = f"failed ({tail or 'see log'})"
+
+    def meter_levels(self, channel_key: str) -> tuple[float, float]:
+        source_name = METER_SOURCE_BY_CHANNEL.get(channel_key)
+        if not source_name:
+            return (0.0, 0.0)
+
+        if not self._source_exists(source_name):
+            probe = self._meter_probes.pop(channel_key, None)
+            if probe is not None:
+                probe.stop()
+            return (0.0, 0.0)
+
+        probe = self._meter_probes.get(channel_key)
+        if probe is None or probe.source_name != source_name:
+            if probe is not None:
+                probe.stop()
+            probe = SourceMeterProbe(source_name)
+            probe.start()
+            self._meter_probes[channel_key] = probe
+
+        return probe.levels()
 
     def apply_channel(self, settings: AppSettings, channel_key: str) -> None:
         channel = self._find_channel(settings, channel_key)
