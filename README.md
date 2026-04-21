@@ -2,11 +2,16 @@
 
 K-Sound Hub is a PipeWire-first modular Linux audio hub.
 
-It provides a desktop GUI for managing modular audio channels, persistent settings, live meters, app routing helpers, IPC shortcuts, optional overlay feedback, and optional wallpaper styling.
+It is built for Linux desktop audio routing with a focused GUI, per-channel control, persistent settings, optional wallpaper/background styling, overlay feedback, IPC control shortcuts, live level meters, and PipeWire-based app routing helpers.
 
 > This project is being developed with AI assistance.
 
-## Current scope
+## Repository
+
+- Repository: `https://github.com/TheKooy/k-sound-hub`
+- Default branch: `main`
+
+## Current target
 
 K-Sound Hub currently targets:
 
@@ -15,9 +20,9 @@ K-Sound Hub currently targets:
 - WirePlumber
 - Python 3.11+
 - PySide6
-- desktop Linux environments with a working system tray and `.desktop` support
+- KDE Plasma / Wayland as the main tested environment
 
-KDE Plasma / Wayland is the main tested environment, but the project is intended to remain installable on other Linux distributions as long as the required commands and services are available.
+The project is installable and runnable as a normal Python application.
 
 ## Features currently present
 
@@ -34,36 +39,62 @@ KDE Plasma / Wayland is the main tested environment, but the project is intended
 - manual desktop launcher support
 - manual autostart support
 
-## Runtime requirements
+## Runtime dependencies
 
-### Python runtime dependencies
+Python runtime dependencies:
 
 - `PySide6`
 - `numpy`
 
-### System commands expected on Linux
-
-These commands must be available on the target system:
+System commands expected on Linux:
 
 - `pactl`
 - `parec`
 - `pw-cat`
 - `ffmpeg`
 
-### PipeWire services expected
-
-These user services should be running:
+PipeWire services expected:
 
 - `pipewire`
 - `pipewire-pulse`
 - `wireplumber`
+
+## Linux package notes
+
+### Generic Linux
+
+Install these before setting up the Python environment:
+
+- Python 3.11+
+- `python-venv` support or equivalent
+- `pip`
+- PipeWire
+- WirePlumber
+- PulseAudio compatibility for PipeWire
+- `ffmpeg`
+
+Package names vary by distribution.
+
+### Arch / EndeavourOS
+
+Typical packages:
+
+```bash
+sudo pacman -S --needed python python-pip python-virtualenv pipewire pipewire-pulse wireplumber ffmpeg
+```
+
+If `parec` is missing on the system, also install:
+
+```bash
+sudo pacman -S --needed libpulse
+```
 
 ## Installation
 
 ### 1. Clone the repository
 
 ```bash
-git clone <YOUR-REPO-URL>
+git clone https://github.com/TheKooy/k-sound-hub.git
 cd k-sound-hub
 ```
 
@@ -81,7 +112,7 @@ python -m pip install --upgrade pip setuptools wheel
 python -m pip install -e .
 ```
 
-### 4. Check the environment
+### 4. Check the local environment
 
 ```bash
 ./scripts/check_k_sound_hub_env.sh
@@ -91,7 +122,7 @@ This checks:
 
 - required Linux commands
 - PipeWire / WirePlumber services
-- Python modules used by the application
+- Python modules used by the app
 
 ### 5. Start the application
 
@@ -113,17 +144,17 @@ or:
 python -m ksound_hub.app
 ```
 
-## Desktop launcher support
+## Desktop launcher
 
-K-Sound Hub does **not** install a desktop launcher automatically.
+K-Sound Hub does **not** add itself to autostart automatically.
 
-A launcher file can be generated manually from the repository with:
+A launcher file can be generated manually from the project with:
 
 ```bash
 ./scripts/install_desktop_entry.sh
 ```
 
-That generates a ready-to-use launcher file here:
+That creates a ready-to-use launcher file in the repository:
 
 ```text
 packaging/linux/ksound-hub.desktop
@@ -131,15 +162,12 @@ packaging/linux/ksound-hub.desktop
 
 ### Add K-Sound Hub to the application launcher menu
 
-For desktop environments that use `~/.local/share/applications/`:
+On KDE Plasma or similar desktop environments:
 
 ```bash
-mkdir -p ~/.local/share/applications && cp "$HOME/k-sound-hub/packaging/linux/ksound-hub.desktop" ~/.local/share/applications/ && chmod +x ~/.local/share/applications/ksound-hub.desktop
-```
-
-On KDE Plasma, refresh the launcher cache with:
-
-```bash
+mkdir -p ~/.local/share/applications && \
+cp "$HOME/k-sound-hub/packaging/linux/ksound-hub.desktop" ~/.local/share/applications/ && \
+chmod +x ~/.local/share/applications/ksound-hub.desktop && \
 kbuildsycoca6
 ```
 
@@ -147,45 +175,42 @@ Then search for **K-Sound Hub** in the application launcher.
 
 ### Create a desktop shortcut
 
-To place a launcher directly on the desktop:
+To copy the launcher to the desktop:
 
 ```bash
-cp "$HOME/k-sound-hub/packaging/linux/ksound-hub.desktop" "$HOME/Desktop/" && chmod +x "$HOME/Desktop/ksound-hub.desktop"
+cp "$HOME/k-sound-hub/packaging/linux/ksound-hub.desktop" "$HOME/Desktop/" && \
+chmod +x "$HOME/Desktop/ksound-hub.desktop"
 ```
 
 ## Autostart
 
-K-Sound Hub does **not** enable autostart automatically.
+K-Sound Hub does **not** enable autostart during installation.
 
 Autostart remains a manual choice.
 
-The script intended for manual autostart is:
+If autostart is wanted later, use the provided start script:
 
 ```bash
 $HOME/k-sound-hub/scripts/start_ksound_hub.sh
 ```
 
-If a `.desktop` autostart file or template is used, paths should be adjusted manually before enabling it.
-
-The important behavior is:
-
-- installation does **not** force autostart
-- autostart remains explicit and manual
+If a desktop-file autostart template is present in the project, adjust its paths manually and place it in the appropriate autostart location for the desktop environment.
 
 ## Tray behavior
 
-K-Sound Hub can be configured to send the application to the system tray when the window close button is pressed.
+K-Sound Hub supports closing to the system tray instead of fully exiting.
 
-When this setting is enabled:
+This behavior is controlled from the application settings.
 
-- clicking the window close button hides the main window
-- the application continues running in the tray
-- the tray menu can restore the window
-- the tray menu can fully quit the application
+When the setting is enabled:
 
-When this setting is disabled:
+- clicking the window close button sends the app to the tray
+- restoring can be done from the tray icon
+- quitting can be done from the tray menu
 
-- clicking the window close button exits the application normally
+When the setting is disabled:
+
+- clicking the window close button fully exits the app
 
 ## Updating dependencies later
 
@@ -234,22 +259,19 @@ scripts/
 
 packaging/linux/
   ksound-hub.desktop
+  ksound-hub.desktop.template
   ksound-hub-autostart.desktop.template
 ```
 
-## Notes for installing on another Linux PC
-
-The recommended order is:
+## Recommended install flow on another Linux PC
 
 1. clone the repository
 2. create and activate `.venv`
 3. install with `python -m pip install -e .`
 4. run `./scripts/check_k_sound_hub_env.sh`
 5. start with `./scripts/start_ksound_hub.sh`
-6. optionally generate the launcher with `./scripts/install_desktop_entry.sh`
+6. optionally create the launcher with `./scripts/install_desktop_entry.sh`
 7. optionally copy the launcher into `~/.local/share/applications/`
-
-This installation flow is intended to stay distro-agnostic. The Python installation remains the same; only the system package names for PipeWire-related tools may vary by distribution.
 
 ## License
 
