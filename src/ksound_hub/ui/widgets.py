@@ -14,6 +14,11 @@ from PySide6.QtWidgets import (
 )
 
 
+class NoWheelSlider(QSlider):
+    def wheelEvent(self, event) -> None:
+        event.accept()
+
+
 class SelectorFrame(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -200,7 +205,7 @@ class MenuSelectorButton(QPushButton):
         painter.restore()
 
 
-class ChannelVolumeSlider(QSlider):
+class ChannelVolumeSlider(NoWheelSlider):
     def __init__(self, parent=None):
         super().__init__(Qt.Vertical, parent)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
@@ -334,9 +339,7 @@ class EqBandSlider(QWidget):
         self.value_label.setObjectName("mutedLabel")
         root.addWidget(self.value_label)
 
-        from PySide6.QtWidgets import QSlider
-
-        self.slider = QSlider(Qt.Vertical)
+        self.slider = NoWheelSlider(Qt.Vertical)
         self.slider.setRange(-12, 12)
         self.slider.setValue(value)
         self.slider.setTickPosition(QSlider.NoTicks)
