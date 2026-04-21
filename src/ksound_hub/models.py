@@ -56,6 +56,7 @@ class ChannelConfig:
     close_to_tray: bool = True
     primary_target: str = ""
     secondary_target: str = ""
+    linked_channels: list[str] = field(default_factory=list)
     eq_profiles: list[EqProfile] = field(default_factory=lambda: [EqProfile.default()])
     selected_eq_profile: str = "Default"
 
@@ -79,6 +80,10 @@ class ChannelConfig:
             close_to_tray=bool(data.get("close_to_tray", True)),
             primary_target=str(data.get("primary_target", "")),
             secondary_target=str(data.get("secondary_target", "")),
+            linked_channels=[
+                str(item)
+                for item in (data.get("linked_channels", []) if isinstance(data.get("linked_channels", []), list) else [])
+            ],
             eq_profiles=profiles,
             selected_eq_profile=selected,
         )
@@ -95,6 +100,7 @@ class ChannelConfig:
             "close_to_tray": self.close_to_tray,
             "primary_target": self.primary_target,
             "secondary_target": self.secondary_target,
+            "linked_channels": list(self.linked_channels),
             "eq_profiles": [profile.to_dict() for profile in self.eq_profiles],
             "selected_eq_profile": self.selected_eq_profile,
         }

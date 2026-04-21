@@ -46,6 +46,7 @@ DEVICE_CHOICES = {
 RETURN_MODES = ["Post-EE", "Final Mix"]
 MIC_INPUT_CHOICES = ["ANPW Mic", "RODE NT-USB", "Both mics"]
 PLAYBACK_CHANNEL_KEYS = {"all", "game", "chat", "media", "more"}
+MIC_LINKABLE_CHANNEL_KEYS = ["all", "game", "chat", "media", "more"]
 
 
 class ClickOutsideMessageDialog(QDialog):
@@ -441,6 +442,23 @@ class ChannelWidget(QFrame):
 
         self.apps_list.clear()
 
+        if self.channel.key == "micro":
+            shown = 0
+            for key in self.channel.linked_channels:
+                if key not in MIC_LINKABLE_CHANNEL_KEYS:
+                    continue
+                item = QListWidgetItem(key.upper())
+                item.setData(Qt.UserRole, key)
+                self.apps_list.addItem(item)
+                shown += 1
+
+            if shown == 0 and fallback_names:
+                for app_name in fallback_names[:1]:
+                    item = QListWidgetItem(app_name)
+                    item.setFlags(item.flags() & ~Qt.ItemIsSelectable)
+                    self.apps_list.addItem(item)
+            return
+
         if self.audio_engine is None or self.channel.key not in PLAYBACK_CHANNEL_KEYS:
             for app_name in (fallback_names or []):
                 self.apps_list.addItem(QListWidgetItem(app_name))
@@ -463,6 +481,29 @@ class ChannelWidget(QFrame):
                 self.apps_list.addItem(item)
 
     def _add_app_route(self) -> None:
+        if self.channel.key == "micro":
+            available = [key.upper() for key in MIC_LINKABLE_CHANNEL_KEYS if key not in self.channel.linked_channels]
+            if not available:
+                self._show_click_outside_message("Micro sends", "All playback channels are already sent to MICRO.")
+                return
+
+            choice, ok = QInputDialog.getItem(
+                self,
+                "Send channel to MICRO",
+                "Playback channels",
+                available,
+                0,
+                False,
+            )
+            if not ok or not choice:
+                return
+
+            key = choice.lower()
+            if key not in self.channel.linked_channels:
+                self.channel.linked_channels.append(key)
+                self._emit_changed("micro_links")
+            return
+
         if self.audio_engine is None or self.channel.key not in PLAYBACK_CHANNEL_KEYS:
             return
 
@@ -504,11 +545,19 @@ class ChannelWidget(QFrame):
             self.on_runtime_refresh()
 
     def _remove_selected_app_route(self) -> None:
-        if self.audio_engine is None or self.channel.key not in PLAYBACK_CHANNEL_KEYS:
-            return
-
         item = self.apps_list.currentItem() if self.apps_list is not None else None
         if item is None:
+            return
+
+        if self.channel.key == "micro":
+            linked_key = item.data(Qt.UserRole)
+            if not isinstance(linked_key, str):
+                return
+            self.channel.linked_channels = [key for key in self.channel.linked_channels if key != linked_key]
+            self._emit_changed("micro_links")
+            return
+
+        if self.audio_engine is None or self.channel.key not in PLAYBACK_CHANNEL_KEYS:
             return
 
         stream_id = item.data(Qt.UserRole)

@@ -3,8 +3,13 @@ set -Eeuo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VENV_DIR="$REPO_DIR/.venv"
+AUDIO_STACK_SCRIPT="$HOME/.config/audio-stack/audio-setup.sh"
 
 cd "$REPO_DIR"
+
+if [[ -x "$AUDIO_STACK_SCRIPT" ]]; then
+  "$AUDIO_STACK_SCRIPT" >/dev/null 2>&1 || true
+fi
 
 if [[ -x "$REPO_DIR/scripts/install_desktop_entry.sh" ]]; then
   "$REPO_DIR/scripts/install_desktop_entry.sh" --quiet >/dev/null 2>&1 || true
