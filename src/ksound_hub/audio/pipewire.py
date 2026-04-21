@@ -589,7 +589,7 @@ class PipeWireAudioEngine(AudioEngine):
 
         for raw_line in proc.stdout.splitlines():
             line = raw_line.rstrip()
-            match = re.match(r"^Sink Input #(\\d+)", line)
+            match = re.match(r"^Sink Input #(\d+)", line)
             if match:
                 flush()
                 current_id = int(match.group(1))

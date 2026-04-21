@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import copy
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QEvent, Qt, Signal
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
+    QDialog,
+    QDialogButtonBox,
     QGridLayout,
     QHBoxLayout,
     QInputDialog,
@@ -15,6 +18,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QSlider,
+    QStyle,
     QVBoxLayout,
     QFrame,
     QWidget,
@@ -42,6 +46,91 @@ DEVICE_CHOICES = {
 RETURN_MODES = ["Post-EE", "Final Mix"]
 MIC_INPUT_CHOICES = ["ANPW Mic", "RODE NT-USB", "Both mics"]
 PLAYBACK_CHANNEL_KEYS = {"all", "game", "chat", "media", "more"}
+
+
+class ClickOutsideMessageDialog(QDialog):
+    def __init__(self, title: str, text: str, *, icon=QMessageBox.Information, parent=None):
+        super().__init__(parent)
+        self._app = QApplication.instance()
+        self._owner_window = parent.window() if parent is not None else None
+        self._filter_installed = False
+
+        self.setAttribute(Qt.WA_DeleteOnClose, True)
+        self.setWindowTitle(title)
+        self.setModal(False)
+        self.setWindowModality(Qt.NonModal)
+        self.setWindowFlag(Qt.WindowContextHelpButtonHint, False)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(16, 14, 16, 14)
+        root.setSpacing(12)
+
+        body = QHBoxLayout()
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(12)
+
+        icon_label = QLabel()
+        if icon == QMessageBox.Warning:
+            pix = self.style().standardIcon(QStyle.SP_MessageBoxWarning).pixmap(40, 40)
+        else:
+            pix = self.style().standardIcon(QStyle.SP_MessageBoxInformation).pixmap(40, 40)
+        icon_label.setPixmap(pix)
+        icon_label.setAlignment(Qt.AlignTop | Qt.AlignHCenter)
+        body.addWidget(icon_label, 0)
+
+        text_label = QLabel(text)
+        text_label.setWordWrap(True)
+        text_label.setTextInteractionFlags(Qt.NoTextInteraction)
+        body.addWidget(text_label, 1)
+
+        root.addLayout(body)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok)
+        buttons.accepted.connect(self.accept)
+        root.addWidget(buttons)
+
+        self.adjustSize()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        if self._app is not None and not self._filter_installed:
+            self._app.installEventFilter(self)
+            self._filter_installed = True
+
+    def hideEvent(self, event) -> None:
+        self._remove_event_filter()
+        super().hideEvent(event)
+
+    def closeEvent(self, event) -> None:
+        self._remove_event_filter()
+        super().closeEvent(event)
+
+    def _remove_event_filter(self) -> None:
+        if self._app is not None and self._filter_installed:
+            try:
+                self._app.removeEventFilter(self)
+            except Exception:
+                pass
+            self._filter_installed = False
+
+    def eventFilter(self, obj, event) -> bool:
+        if not self.isVisible():
+            return super().eventFilter(obj, event)
+
+        if event.type() != QEvent.MouseButtonPress:
+            return super().eventFilter(obj, event)
+
+        if not isinstance(obj, QWidget):
+            return super().eventFilter(obj, event)
+
+        if obj is self or self.isAncestorOf(obj):
+            return super().eventFilter(obj, event)
+
+        if self._owner_window is not None and obj.window() is self._owner_window:
+            self.close()
+            return False
+
+        return super().eventFilter(obj, event)
 
 
 class ChannelWidget(QFrame):
@@ -379,7 +468,7 @@ class ChannelWidget(QFrame):
 
         streams = [s for s in self.audio_engine.list_sink_inputs() if s.sink_name != self.channel.key]
         if not streams:
-            QMessageBox.information(self, "Apps", "No active audio app available to move.")
+            self._show_click_outside_message("Apps", "No active audio app available to move.")
             return
 
         choices = []
@@ -404,7 +493,11 @@ class ChannelWidget(QFrame):
 
         stream_id = mapping[choice]
         if not self.audio_engine.move_sink_input_to_channel(stream_id, self.channel.key):
-            QMessageBox.warning(self, "Apps", "Unable to move this app to the selected channel.")
+            self._show_click_outside_message(
+                "Apps",
+                "Unable to move this app to the selected channel.",
+                icon=QMessageBox.Warning,
+            )
             return
 
         if callable(self.on_runtime_refresh):
@@ -423,11 +516,15 @@ class ChannelWidget(QFrame):
             return
 
         if self.channel.key == "all":
-            QMessageBox.information(self, "Apps", "This app is already on ALL.")
+            self._show_click_outside_message("Apps", "This app is already on ALL.")
             return
 
         if not self.audio_engine.move_sink_input_to_channel(stream_id, "all"):
-            QMessageBox.warning(self, "Apps", "Unable to move this app back to ALL.")
+            self._show_click_outside_message(
+                "Apps",
+                "Unable to move this app back to ALL.",
+                icon=QMessageBox.Warning,
+            )
             return
 
         if callable(self.on_runtime_refresh):
@@ -437,6 +534,18 @@ class ChannelWidget(QFrame):
         meta = CHANNEL_META.get(self.channel.key, {"apps": []})
         self._reload_app_routes(fallback_names=meta["apps"])
         self._reload_profiles()
+
+    def _show_click_outside_message(
+        self,
+        title: str,
+        text: str,
+        *,
+        icon=QMessageBox.Information,
+    ) -> None:
+        box = ClickOutsideMessageDialog(title, text, icon=icon, parent=self)
+        box.show()
+        box.raise_()
+        box.activateWindow()
 
     def _populate_eq_section(self) -> None:
         badge_row = QHBoxLayout()
