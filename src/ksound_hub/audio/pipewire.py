@@ -19,6 +19,7 @@ from .engine import AppStream, AudioEngine, AudioNode
 
 TARGET_OBJECT_BY_LABEL = {
     "ANPW": "alsa_output.usb-SteelSeries_Arctis_Nova_Pro_Wireless-00.analog-stereo",
+    "Arctis Nova Pro": "alsa_output.usb-SteelSeries_Arctis_Nova_Pro_Wireless-00.analog-stereo",
     "S/PDIF": "alsa_output.usb-Generic_USB_Audio-00.HiFi__SPDIF__sink",
 }
 
@@ -59,6 +60,13 @@ STATUS_LABELS = {
 
 MIC_LINKABLE_CHANNELS = ("all", "game", "chat", "media", "more")
 
+RETURN_MODE_ALIASES = {
+    "Final Mix": "direct",
+    "Direct Mic": "direct",
+    "Post-EE": "post_ee",
+    "Apps / Post-EE": "post_ee",
+}
+
 METER_SOURCE_BY_CHANNEL = {
     "all": "all.monitor",
     "game": "game.monitor",
@@ -84,6 +92,12 @@ class LoopbackLink:
     source_name: str
     sink_name: str
     module_id: str
+
+
+@dataclass
+class ReturnMicRuntime:
+    capture_module_id: str = ""
+    playback_module_id: str = ""
 
 
 class SourceMeterProbe:
@@ -235,6 +249,7 @@ class PipeWireAudioEngine(AudioEngine):
         self._meter_source_name_cache: set[str] = set()
         self._meter_source_cache_at = 0.0
         self._micro_links: dict[str, LoopbackLink] = {}
+        self._return_mic_runtime = ReturnMicRuntime()
 
     def _run(self, args: list[str]) -> subprocess.CompletedProcess[str]:
         env = os.environ.copy()
@@ -294,6 +309,7 @@ class PipeWireAudioEngine(AudioEngine):
         self._meter_probes.clear()
         for key in list(self._micro_links):
             self._unload_micro_link(key)
+        self._disable_return_mic()
 
     def _log_path_for(self, key: str) -> Path:
         return self.runtime_dir / f"{key}-eq.log"
@@ -348,6 +364,10 @@ class PipeWireAudioEngine(AudioEngine):
         if fallback and self._source_exists(fallback):
             return fallback
         return "alsa_input.usb-RODE_Microphones_RODE_NT-USB-00.iec958-stereo"
+
+    def _normalized_return_mode(self, value: str) -> str:
+        raw = (value or "Direct Mic").strip()
+        return RETURN_MODE_ALIASES.get(raw, "direct")
 
     def _node_exists(self, node_type: str, node_name: str) -> bool:
         if node_type == "sink":
@@ -450,6 +470,9 @@ class PipeWireAudioEngine(AudioEngine):
             return
 
         volume = max(0, min(150, int(channel.volume)))
+        if node_type == "sink" and node_name == "retour":
+            volume = max(0, min(180, int(round(channel.volume * 1.8))))
+
         if node_type == "sink":
             self._run_no_fail(["pactl", "set-sink-volume", node_name, f"{volume}%"])
             self._run_no_fail(["pactl", "set-sink-mute", node_name, "1" if channel.muted else "0"])
@@ -570,6 +593,81 @@ class PipeWireAudioEngine(AudioEngine):
             else:
                 self._unload_micro_link(key)
 
+    def _load_loopback_module(self, *, source_name: str, sink_name: str, media_name: str) -> str:
+        proc = self._run(
+            [
+                "pactl",
+                "load-module",
+                "module-loopback",
+                f"source={source_name}",
+                f"sink={sink_name}",
+                "latency_msec=20",
+                "channels=2",
+                "source_dont_move=true",
+                "sink_dont_move=true",
+                f"sink_input_properties=media.name={media_name}",
+            ]
+        )
+        if proc.returncode != 0:
+            return ""
+        return proc.stdout.strip().splitlines()[-1].strip() if proc.stdout.strip() else ""
+
+    def _disable_return_mic(self) -> None:
+        ids = []
+        if self._return_mic_runtime.capture_module_id:
+            ids.append(self._return_mic_runtime.capture_module_id)
+        if self._return_mic_runtime.playback_module_id:
+            ids.append(self._return_mic_runtime.playback_module_id)
+
+        for module_id in ids:
+            self._run_no_fail(["pactl", "unload-module", module_id])
+
+        self._return_mic_runtime = ReturnMicRuntime()
+
+    def _apply_return_mic(self, settings: AppSettings) -> None:
+        channel = self._find_channel(settings, "return-mic")
+        if channel is None or not channel.enabled or channel.muted or int(channel.volume) <= 0:
+            self._disable_return_mic()
+            return
+
+        target_label = (channel.primary_target or "ANPW").strip()
+        target_sink = TARGET_OBJECT_BY_LABEL.get(target_label)
+        if not target_sink or not self._sink_exists(target_sink):
+            self._disable_return_mic()
+            return
+
+        if not self._source_exists("micro") or not self._sink_exists("retour"):
+            self._disable_return_mic()
+            return
+
+        self._apply_node_controls(channel, node_type="sink", node_name="retour")
+
+        existing_capture = self._find_loopback_module_ids(source_name="micro", sink_name="retour")
+        existing_playback = self._find_loopback_module_ids(source_name="retour.monitor", sink_name=target_sink)
+
+        capture_id = existing_capture[0] if existing_capture else ""
+        playback_id = existing_playback[0] if existing_playback else ""
+
+        if not capture_id:
+            capture_id = self._load_loopback_module(
+                source_name="micro",
+                sink_name="retour",
+                media_name="K-Sound Hub Return Mic Capture",
+            )
+        if not playback_id:
+            playback_id = self._load_loopback_module(
+                source_name="retour.monitor",
+                sink_name=target_sink,
+                media_name="K-Sound Hub Return Mic Playback",
+            )
+
+        if not capture_id or not playback_id:
+            self._disable_return_mic()
+            return
+
+        self._return_mic_runtime.capture_module_id = capture_id
+        self._return_mic_runtime.playback_module_id = playback_id
+
     def _apply_eq_slot(self, settings: AppSettings, key: str) -> None:
         slot = self.eq_slots[key]
         logical_sink = slot.logical_sink
@@ -674,6 +772,11 @@ class PipeWireAudioEngine(AudioEngine):
         if channel_key == "micro":
             node_name = self._resolved_micro_source_name(channel)
             self._apply_node_controls(channel, node_type="source", node_name=node_name)
+            self._apply_return_mic(settings)
+            return
+
+        if channel_key == "return-mic":
+            self._apply_return_mic(settings)
             return
 
         control = CONTROL_NODE_BY_CHANNEL.get(channel_key)
@@ -689,6 +792,7 @@ class PipeWireAudioEngine(AudioEngine):
             self._apply_eq_slot(settings, key)
         for key in ("return-mic", "micro"):
             self.apply_channel(settings, key)
+        self._apply_return_mic(settings)
 
     def _sink_index_to_name(self) -> dict[int, str]:
         mapping: dict[int, str] = {}

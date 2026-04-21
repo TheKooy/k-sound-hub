@@ -43,7 +43,7 @@ DEVICE_CHOICES = {
     "playback": ["ANPW", "S/PDIF", "Temp out"],
     "monitor": ["ANPW", "S/PDIF"],
 }
-RETURN_MODES = ["Post-EE", "Final Mix"]
+RETURN_MODES = ["Direct Mic", "Apps / Post-EE"]
 MIC_INPUT_CHOICES = ["ANPW Mic", "RODE NT-USB", "Both mics"]
 PLAYBACK_CHANNEL_KEYS = {"all", "game", "chat", "media", "more"}
 MIC_LINKABLE_CHANNEL_KEYS = ["all", "game", "chat", "media", "more"]
@@ -291,7 +291,7 @@ class ChannelWidget(QFrame):
 
     def _default_secondary_target(self) -> str:
         if self.channel.key == "return-mic":
-            return RETURN_MODES[0]
+            return "Direct Mic"
         return ""
 
     def _selector_frame(self, combo: MenuSelectorButton, *, frame_width: int = 136) -> QWidget:
@@ -317,6 +317,18 @@ class ChannelWidget(QFrame):
         self.channel.secondary_target = self.channel.secondary_target or self._default_secondary_target()
 
         if self.channel.key == "return-mic":
+            legacy_mode = (self.channel.secondary_target or "").strip()
+            mode_aliases = {
+                "Final Mix": "Direct Mic",
+                "Post-EE": "Apps / Post-EE",
+                "Direct Mic": "Direct Mic",
+                "Apps / Post-EE": "Apps / Post-EE",
+            }
+            self.channel.secondary_target = mode_aliases.get(
+                legacy_mode,
+                self.channel.secondary_target or self._default_secondary_target(),
+            )
+
             box = QWidget()
             box.setAttribute(Qt.WA_TranslucentBackground, True)
             box.setAutoFillBackground(False)
