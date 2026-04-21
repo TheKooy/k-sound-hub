@@ -22,6 +22,14 @@ TARGET_OBJECT_BY_LABEL = {
     "S/PDIF": "alsa_output.usb-Generic_USB_Audio-00.HiFi__SPDIF__sink",
 }
 
+MICRO_SOURCE_BY_LABEL = {
+    "ANPW Mic": "alsa_input.usb-SteelSeries_Arctis_Nova_Pro_Wireless-00.mono-fallback",
+    "Arctis Nova Pro Mic": "alsa_input.usb-SteelSeries_Arctis_Nova_Pro_Wireless-00.mono-fallback",
+    "RODE NT-USB": "alsa_input.usb-RODE_Microphones_RODE_NT-USB-00.iec958-stereo",
+    "Both mics": "alsa_input.usb-RODE_Microphones_RODE_NT-USB-00.iec958-stereo",
+    "Both microphones": "alsa_input.usb-RODE_Microphones_RODE_NT-USB-00.iec958-stereo",
+}
+
 PLAYBACK_EQ_CHANNELS = {
     "all": "all",
     "game": "game",
@@ -330,6 +338,16 @@ class PipeWireAudioEngine(AudioEngine):
 
     def _source_exists(self, source_name: str) -> bool:
         return any(node.name == source_name for node in self.list_sources())
+
+    def _resolved_micro_source_name(self, channel: ChannelConfig) -> str:
+        wanted = (channel.primary_target or "RODE NT-USB").strip()
+        source_name = MICRO_SOURCE_BY_LABEL.get(wanted)
+        if source_name and self._source_exists(source_name):
+            return source_name
+        fallback = MICRO_SOURCE_BY_LABEL.get("RODE NT-USB", "")
+        if fallback and self._source_exists(fallback):
+            return fallback
+        return "alsa_input.usb-RODE_Microphones_RODE_NT-USB-00.iec958-stereo"
 
     def _node_exists(self, node_type: str, node_name: str) -> bool:
         if node_type == "sink":
@@ -651,15 +669,11 @@ class PipeWireAudioEngine(AudioEngine):
 
         if channel_key in PLAYBACK_EQ_CHANNELS:
             self._apply_eq_slot(settings, channel_key)
-            self._apply_micro_links(settings)
             return
 
         if channel_key == "micro":
-            control = CONTROL_NODE_BY_CHANNEL.get(channel_key)
-            if control is not None:
-                node_type, node_name = control
-                self._apply_node_controls(channel, node_type=node_type, node_name=node_name)
-            self._apply_micro_links(settings)
+            node_name = self._resolved_micro_source_name(channel)
+            self._apply_node_controls(channel, node_type="source", node_name=node_name)
             return
 
         control = CONTROL_NODE_BY_CHANNEL.get(channel_key)
@@ -669,15 +683,12 @@ class PipeWireAudioEngine(AudioEngine):
         node_type, node_name = control
         self._apply_node_controls(channel, node_type=node_type, node_name=node_name)
 
-        if channel_key == "micro":
-            self._apply_micro_links(settings)
 
     def apply_settings(self, settings: AppSettings) -> None:
         for key in PLAYBACK_EQ_CHANNELS:
             self._apply_eq_slot(settings, key)
         for key in ("return-mic", "micro"):
             self.apply_channel(settings, key)
-        self._apply_micro_links(settings)
 
     def _sink_index_to_name(self) -> dict[int, str]:
         mapping: dict[int, str] = {}
