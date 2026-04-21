@@ -6,7 +6,7 @@ import re
 import subprocess
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
 
@@ -49,6 +49,8 @@ STATUS_LABELS = {
     "more": "more-eq",
 }
 
+MIC_LINKABLE_CHANNELS = ("all", "game", "chat", "media", "more")
+
 METER_SOURCE_BY_CHANNEL = {
     "all": "all.monitor",
     "game": "game.monitor",
@@ -67,6 +69,13 @@ class EqRuntimeSlot:
     proc: subprocess.Popen | None = None
     signature: str = ""
     status: str = "idle"
+
+
+@dataclass
+class LoopbackLink:
+    source_name: str
+    sink_name: str
+    module_id: str
 
 
 class SourceMeterProbe:
@@ -217,6 +226,7 @@ class PipeWireAudioEngine(AudioEngine):
         self._meter_probes: dict[str, SourceMeterProbe] = {}
         self._meter_source_name_cache: set[str] = set()
         self._meter_source_cache_at = 0.0
+        self._micro_links: dict[str, LoopbackLink] = {}
 
     def _run(self, args: list[str]) -> subprocess.CompletedProcess[str]:
         env = os.environ.copy()
@@ -274,6 +284,8 @@ class PipeWireAudioEngine(AudioEngine):
         for probe in self._meter_probes.values():
             probe.stop()
         self._meter_probes.clear()
+        for key in list(self._micro_links):
+            self._unload_micro_link(key)
 
     def _log_path_for(self, key: str) -> Path:
         return self.runtime_dir / f"{key}-eq.log"
@@ -427,6 +439,119 @@ class PipeWireAudioEngine(AudioEngine):
             self._run_no_fail(["pactl", "set-source-volume", node_name, f"{volume}%"])
             self._run_no_fail(["pactl", "set-source-mute", node_name, "1" if channel.muted else "0"])
 
+
+    def _find_loopback_module_ids(self, *, source_name: str, sink_name: str) -> list[str]:
+        proc = self._run(["pactl", "list", "short", "modules"])
+        if proc.returncode != 0:
+            return []
+
+        matches: list[str] = []
+        for line in proc.stdout.splitlines():
+            parts = line.split(None, 2)
+            if len(parts) < 3:
+                continue
+            module_id, module_name, args = parts
+            if module_name != "module-loopback":
+                continue
+            if f"source={source_name}" not in args:
+                continue
+            if f"sink={sink_name}" not in args:
+                continue
+            matches.append(module_id)
+        return matches
+
+    def _unload_micro_link(self, channel_key: str) -> None:
+        source_name = f"{channel_key}.monitor"
+        sink_name = "micro_bus"
+
+        link = self._micro_links.pop(channel_key, None)
+        module_ids: list[str] = []
+
+        if link is not None and link.module_id:
+            module_ids.append(link.module_id)
+
+        for module_id in self._find_loopback_module_ids(source_name=source_name, sink_name=sink_name):
+            if module_id not in module_ids:
+                module_ids.append(module_id)
+
+        for module_id in module_ids:
+            self._run_no_fail(["pactl", "unload-module", module_id])
+
+    def _ensure_micro_link(self, channel_key: str) -> bool:
+        if channel_key not in MIC_LINKABLE_CHANNELS:
+            return False
+
+        source_name = f"{channel_key}.monitor"
+        sink_name = "micro_bus"
+
+        current = self._micro_links.get(channel_key)
+        if current is not None:
+            if current.source_name == source_name and current.sink_name == sink_name:
+                existing_ids = self._find_loopback_module_ids(source_name=source_name, sink_name=sink_name)
+                if existing_ids:
+                    if current.module_id not in existing_ids:
+                        current.module_id = existing_ids[0]
+                    return True
+            self._unload_micro_link(channel_key)
+
+        if not self._source_exists(source_name):
+            return False
+        if not self._sink_exists(sink_name):
+            return False
+
+        existing_ids = self._find_loopback_module_ids(source_name=source_name, sink_name=sink_name)
+        if existing_ids:
+            self._micro_links[channel_key] = LoopbackLink(
+                source_name=source_name,
+                sink_name=sink_name,
+                module_id=existing_ids[0],
+            )
+            return True
+
+        proc = self._run(
+            [
+                "pactl",
+                "load-module",
+                "module-loopback",
+                f"source={source_name}",
+                f"sink={sink_name}",
+                "latency_msec=20",
+                "channels=2",
+                "source_dont_move=true",
+                "sink_dont_move=true",
+                f"sink_input_properties=media.name=K-Sound Hub Mic Send {channel_key.upper()}",
+            ]
+        )
+        if proc.returncode != 0:
+            return False
+
+        module_id = proc.stdout.strip().splitlines()[-1].strip() if proc.stdout.strip() else ""
+        if not module_id:
+            return False
+
+        self._micro_links[channel_key] = LoopbackLink(
+            source_name=source_name,
+            sink_name=sink_name,
+            module_id=module_id,
+        )
+        return True
+
+    def _apply_micro_links(self, settings: AppSettings) -> None:
+        channel = self._find_channel(settings, "micro")
+        wanted = set()
+        if channel is not None and channel.enabled:
+            wanted = {key for key in channel.linked_channels if key in MIC_LINKABLE_CHANNELS}
+
+        for key in list(self._micro_links):
+            if key not in wanted:
+                self._unload_micro_link(key)
+
+        for key in MIC_LINKABLE_CHANNELS:
+            if key in wanted:
+                self._ensure_micro_link(key)
+            else:
+                self._unload_micro_link(key)
+
     def _apply_eq_slot(self, settings: AppSettings, key: str) -> None:
         slot = self.eq_slots[key]
         logical_sink = slot.logical_sink
@@ -526,6 +651,15 @@ class PipeWireAudioEngine(AudioEngine):
 
         if channel_key in PLAYBACK_EQ_CHANNELS:
             self._apply_eq_slot(settings, channel_key)
+            self._apply_micro_links(settings)
+            return
+
+        if channel_key == "micro":
+            control = CONTROL_NODE_BY_CHANNEL.get(channel_key)
+            if control is not None:
+                node_type, node_name = control
+                self._apply_node_controls(channel, node_type=node_type, node_name=node_name)
+            self._apply_micro_links(settings)
             return
 
         control = CONTROL_NODE_BY_CHANNEL.get(channel_key)
@@ -535,11 +669,15 @@ class PipeWireAudioEngine(AudioEngine):
         node_type, node_name = control
         self._apply_node_controls(channel, node_type=node_type, node_name=node_name)
 
+        if channel_key == "micro":
+            self._apply_micro_links(settings)
+
     def apply_settings(self, settings: AppSettings) -> None:
         for key in PLAYBACK_EQ_CHANNELS:
             self._apply_eq_slot(settings, key)
         for key in ("return-mic", "micro"):
             self.apply_channel(settings, key)
+        self._apply_micro_links(settings)
 
     def _sink_index_to_name(self) -> dict[int, str]:
         mapping: dict[int, str] = {}
