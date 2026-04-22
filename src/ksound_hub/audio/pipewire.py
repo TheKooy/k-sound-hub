@@ -98,6 +98,7 @@ class LoopbackLink:
 class ReturnMicRuntime:
     capture_module_id: str = ""
     playback_module_id: str = ""
+    applied_signature: str = ""
 
 
 class SourceMeterProbe:
@@ -473,7 +474,7 @@ class PipeWireAudioEngine(AudioEngine):
         if node_type == "sink" and node_name == "retour":
             volume = max(0, min(180, int(round(channel.volume * 1.8))))
         elif node_type == "source" and node_name.startswith("alsa_input."):
-            volume = max(0, min(160, int(round(channel.volume * 1.35))))
+            volume = max(0, min(100, int(channel.volume)))
 
         if node_type == "sink":
             self._run_no_fail(["pactl", "set-sink-volume", node_name, f"{volume}%"])
@@ -633,6 +634,55 @@ class PipeWireAudioEngine(AudioEngine):
             return ""
         return proc.stdout.strip().splitlines()[-1].strip() if proc.stdout.strip() else ""
 
+    def _ensure_physical_micro_loopback(self, channel: ChannelConfig) -> None:
+        source_name = self._resolved_micro_source_name(channel)
+        media_names = (
+            "K-Sound Hub Mic Physical ANPW",
+            "K-Sound Hub Mic Physical RODE",
+        )
+
+        if not self._source_exists(source_name):
+            return
+        if not self._sink_exists("micro_bus"):
+            return
+
+        wanted_ids = self._find_loopback_module_ids(source_name=source_name, sink_name="micro_bus")
+
+        foreign_ids: list[str] = []
+        for media_name in media_names:
+            for module_id in self._find_loopback_module_ids_by_media_name(media_name):
+                if module_id not in wanted_ids and module_id not in foreign_ids:
+                    foreign_ids.append(module_id)
+
+        topology_changed = bool(foreign_ids) or not bool(wanted_ids)
+
+        if topology_changed and self._sink_exists("retour"):
+            self._run_no_fail(["pactl", "set-sink-mute", "retour", "1"])
+
+        for module_id in foreign_ids:
+            self._run_no_fail(["pactl", "unload-module", module_id])
+
+        if not wanted_ids:
+            media_name = "K-Sound Hub Mic Physical ANPW" if "SteelSeries" in source_name else "K-Sound Hub Mic Physical RODE"
+            proc = self._run(
+                [
+                    "pactl",
+                    "load-module",
+                    "module-loopback",
+                    f"source={source_name}",
+                    "sink=micro_bus",
+                    "latency_msec=20",
+                    "source_dont_move=true",
+                    "sink_dont_move=true",
+                    f"sink_input_properties=media.name={media_name}",
+                ]
+            )
+            if proc.returncode != 0:
+                return
+
+        if self._source_exists("micro"):
+            self._run_no_fail(["pactl", "set-default-source", "micro"])
+
     def _disable_return_mic(self) -> None:
         ids: list[str] = []
 
@@ -656,7 +706,7 @@ class PipeWireAudioEngine(AudioEngine):
 
     def _apply_return_mic(self, settings: AppSettings) -> None:
         channel = self._find_channel(settings, "return-mic")
-        if channel is None or not channel.enabled or channel.muted or int(channel.volume) <= 0:
+        if channel is None or not channel.enabled or int(channel.volume) <= 0:
             self._disable_return_mic()
             return
 
@@ -670,8 +720,26 @@ class PipeWireAudioEngine(AudioEngine):
             self._disable_return_mic()
             return
 
+        signature = json.dumps(
+            {
+                "capture_source": "micro",
+                "target_sink": target_sink,
+                "return_enabled": bool(channel.enabled),
+            },
+            sort_keys=True,
+            ensure_ascii=False,
+        )
+
+        capture_ids = self._find_loopback_module_ids_by_media_name("K-Sound Hub Return Mic Capture")
+        playback_ids = self._find_loopback_module_ids_by_media_name("K-Sound Hub Return Mic Playback")
+
+        if capture_ids and playback_ids and self._return_mic_runtime.applied_signature == signature:
+            self._return_mic_runtime.capture_module_id = capture_ids[0]
+            self._return_mic_runtime.playback_module_id = playback_ids[0]
+            self._apply_node_controls(channel, node_type="sink", node_name="retour")
+            return
+
         self._disable_return_mic()
-        self._apply_node_controls(channel, node_type="sink", node_name="retour")
 
         capture_id = self._load_loopback_module(
             source_name="micro",
@@ -690,6 +758,8 @@ class PipeWireAudioEngine(AudioEngine):
 
         self._return_mic_runtime.capture_module_id = capture_id
         self._return_mic_runtime.playback_module_id = playback_id
+        self._return_mic_runtime.applied_signature = signature
+        self._apply_node_controls(channel, node_type="sink", node_name="retour")
 
     def _apply_eq_slot(self, settings: AppSettings, key: str) -> None:
         slot = self.eq_slots[key]
@@ -795,6 +865,8 @@ class PipeWireAudioEngine(AudioEngine):
         if channel_key == "micro":
             node_name = self._resolved_micro_source_name(channel)
             self._apply_node_controls(channel, node_type="source", node_name=node_name)
+            self._ensure_physical_micro_loopback(channel)
+            self._run_no_fail(["pactl", "set-default-source", "micro"])
             self._apply_return_mic(settings)
             return
 
@@ -813,9 +885,8 @@ class PipeWireAudioEngine(AudioEngine):
     def apply_settings(self, settings: AppSettings) -> None:
         for key in PLAYBACK_EQ_CHANNELS:
             self._apply_eq_slot(settings, key)
-        for key in ("return-mic", "micro"):
-            self.apply_channel(settings, key)
-        self._apply_return_mic(settings)
+        self.apply_channel(settings, "micro")
+        self.apply_channel(settings, "return-mic")
 
     def _sink_index_to_name(self) -> dict[int, str]:
         mapping: dict[int, str] = {}
@@ -839,12 +910,12 @@ class PipeWireAudioEngine(AudioEngine):
                 mapping[int(parts[0])] = int(parts[1])
         return mapping
 
-    def _sink_input_labels(self) -> dict[int, str]:
+    def _sink_input_info(self) -> dict[int, dict[str, str]]:
         proc = self._run(["pactl", "list", "sink-inputs"])
         if proc.returncode != 0:
             return {}
 
-        labels: dict[int, str] = {}
+        info: dict[int, dict[str, str]] = {}
         current_id: int | None = None
         app_name = ""
         media_name = ""
@@ -861,7 +932,11 @@ class PipeWireAudioEngine(AudioEngine):
                 label = f"{base} — {media_name}"
             else:
                 label = base
-            labels[current_id] = label
+            info[current_id] = {
+                "display_name": label,
+                "app_name": app_name,
+                "binary_name": binary_name,
+            }
 
         for raw_line in proc.stdout.splitlines():
             line = raw_line.rstrip()
@@ -886,22 +961,25 @@ class PipeWireAudioEngine(AudioEngine):
                 binary_name = stripped.split("=", 1)[1].strip().strip('"')
 
         flush()
-        return labels
+        return info
 
     def list_sink_inputs(self) -> list[AppStream]:
         sink_names = self._sink_index_to_name()
         sink_indexes = self._sink_input_sink_indexes()
-        labels = self._sink_input_labels()
+        info = self._sink_input_info()
 
         streams: list[AppStream] = []
         for stream_id, sink_index in sink_indexes.items():
-            if stream_id not in labels:
+            meta = info.get(stream_id)
+            if meta is None:
                 continue
             streams.append(
                 AppStream(
                     stream_id=stream_id,
-                    display_name=labels[stream_id],
+                    display_name=meta.get("display_name", f"Stream {stream_id}"),
                     sink_name=sink_names.get(sink_index, ""),
+                    app_name=meta.get("app_name", ""),
+                    binary_name=meta.get("binary_name", ""),
                 )
             )
         streams.sort(key=lambda item: (item.display_name.lower(), item.stream_id))

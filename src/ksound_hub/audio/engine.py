@@ -20,6 +20,8 @@ class AppStream:
     stream_id: int
     display_name: str
     sink_name: str = ""
+    app_name: str = ""
+    binary_name: str = ""
 
 
 class AudioEngine(ABC):

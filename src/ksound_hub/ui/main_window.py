@@ -181,6 +181,7 @@ class MainWindow(QMainWindow):
 
         self._reload_channels()
         self.audio_engine.apply_settings(self.settings)
+        self._reapply_saved_app_routes()
         self.refresh_status()
         self._meter_timer.start()
 
@@ -211,6 +212,30 @@ class MainWindow(QMainWindow):
             if channel.key == key:
                 return channel
         return None
+
+    def _stream_matches_rule(self, stream, rule: str) -> bool:
+        rule = str(rule or "").strip()
+        if not rule:
+            return False
+        if rule.startswith("bin:"):
+            return bool(getattr(stream, "binary_name", "")) and stream.binary_name == rule[4:]
+        if rule.startswith("app:"):
+            return bool(getattr(stream, "app_name", "")) and stream.app_name == rule[4:]
+        return False
+
+    def _reapply_saved_app_routes(self) -> None:
+        streams = self.audio_engine.list_sink_inputs()
+        for channel in self.settings.channels:
+            if channel.key not in {"all", "game", "chat", "media", "more"}:
+                continue
+            rules = list(getattr(channel, "app_rules", []) or [])
+            if not rules:
+                continue
+            for stream in streams:
+                if stream.sink_name == channel.key:
+                    continue
+                if any(self._stream_matches_rule(stream, rule) for rule in rules):
+                    self.audio_engine.move_sink_input_to_channel(stream.stream_id, channel.key)
 
     def _normalize_channel_key(self, value: str) -> str:
         raw = str(value or "").strip().lower().replace(" ", "-")

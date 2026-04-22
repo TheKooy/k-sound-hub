@@ -57,6 +57,7 @@ class ChannelConfig:
     primary_target: str = ""
     secondary_target: str = ""
     linked_channels: list[str] = field(default_factory=list)
+    app_rules: list[str] = field(default_factory=list)
     eq_profiles: list[EqProfile] = field(default_factory=lambda: [EqProfile.default()])
     selected_eq_profile: str = "Default"
 
@@ -84,6 +85,10 @@ class ChannelConfig:
                 str(item)
                 for item in (data.get("linked_channels", []) if isinstance(data.get("linked_channels", []), list) else [])
             ],
+            app_rules=[
+                str(item)
+                for item in (data.get("app_rules", []) if isinstance(data.get("app_rules", []), list) else [])
+            ],
             eq_profiles=profiles,
             selected_eq_profile=selected,
         )
@@ -101,6 +106,7 @@ class ChannelConfig:
             "primary_target": self.primary_target,
             "secondary_target": self.secondary_target,
             "linked_channels": list(self.linked_channels),
+            "app_rules": list(self.app_rules),
             "eq_profiles": [profile.to_dict() for profile in self.eq_profiles],
             "selected_eq_profile": self.selected_eq_profile,
         }

@@ -472,6 +472,8 @@ class ChannelWidget(QFrame):
                 continue
             item = QListWidgetItem(stream.display_name)
             item.setData(Qt.UserRole, stream.stream_id)
+            item.setData(Qt.UserRole + 1, stream.app_name)
+            item.setData(Qt.UserRole + 2, stream.binary_name)
             self.apps_list.addItem(item)
             shown += 1
 
@@ -518,6 +520,8 @@ class ChannelWidget(QFrame):
             return
 
         stream_id = mapping[choice]
+        chosen_stream = next((s for s in streams if s.stream_id == stream_id), None)
+
         if not self.audio_engine.move_sink_input_to_channel(stream_id, self.channel.key):
             self._show_click_outside_message(
                 "Apps",
@@ -525,6 +529,18 @@ class ChannelWidget(QFrame):
                 icon=QMessageBox.Warning,
             )
             return
+
+        rule = ""
+        if chosen_stream is not None:
+            if chosen_stream.binary_name:
+                rule = f"bin:{chosen_stream.binary_name}"
+            elif chosen_stream.app_name:
+                rule = f"app:{chosen_stream.app_name}"
+
+        if rule and rule not in self.channel.app_rules:
+            self.channel.app_rules.append(rule)
+
+        self._emit_changed("app_route")
 
         if callable(self.on_runtime_refresh):
             self.on_runtime_refresh()
@@ -552,6 +568,9 @@ class ChannelWidget(QFrame):
             self._show_click_outside_message("Apps", "This app is already on ALL.")
             return
 
+        app_name = item.data(Qt.UserRole + 1)
+        binary_name = item.data(Qt.UserRole + 2)
+
         if not self.audio_engine.move_sink_input_to_channel(stream_id, "all"):
             self._show_click_outside_message(
                 "Apps",
@@ -559,6 +578,15 @@ class ChannelWidget(QFrame):
                 icon=QMessageBox.Warning,
             )
             return
+
+        for rule in (
+            f"bin:{binary_name}" if isinstance(binary_name, str) and binary_name else "",
+            f"app:{app_name}" if isinstance(app_name, str) and app_name else "",
+        ):
+            if rule:
+                self.channel.app_rules = [x for x in self.channel.app_rules if x != rule]
+
+        self._emit_changed("app_route")
 
         if callable(self.on_runtime_refresh):
             self.on_runtime_refresh()
