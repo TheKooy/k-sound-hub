@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-HUD_BIN="/home/kooy/k-sound-hub/tools/legacy_hud/build/audio-hud-overlay"
+HUD_BIN="$REPO_DIR/tools/legacy_hud/build/audio-hud-overlay"
 HUD_LOG="${XDG_RUNTIME_DIR:-/tmp}/ksound-legacy-hud.log"
 
 if [[ ! -x "$HUD_BIN" ]]; then

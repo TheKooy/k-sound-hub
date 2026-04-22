@@ -5,6 +5,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import (
+    QApplication,
     QFrame,
     QGraphicsBlurEffect,
     QHBoxLayout,
@@ -304,6 +305,11 @@ class MainWindow(QMainWindow):
         widget.mute_btn.blockSignals(False)
 
     def handle_ipc_message(self, payload: dict) -> None:
+        command = str(payload.get("command", "")).strip().lower()
+        if command == "restore":
+            self._restore_from_tray()
+            return
+
         channel_key = self._normalize_channel_key(payload.get("channel", ""))
         channel = self._find_channel(channel_key)
         if channel is None:
@@ -348,7 +354,7 @@ class MainWindow(QMainWindow):
         self._save_timer.start()
 
     def _can_close_to_tray(self) -> bool:
-        return bool(getattr(self.settings, "close_to_tray", True)) and QSystemTrayIcon.isSystemTrayAvailable()
+        return bool(self.settings.close_to_tray) and QSystemTrayIcon.isSystemTrayAvailable()
 
     def _ensure_tray_icon(self) -> bool:
         if not QSystemTrayIcon.isSystemTrayAvailable():
@@ -375,18 +381,41 @@ class MainWindow(QMainWindow):
         self.tray_menu = menu
         return True
 
-    def _restore_from_tray(self) -> None:
+    def _present_window(self) -> None:
+        self.setVisible(True)
+        self.show()
+        self.setWindowState((self.windowState() & ~Qt.WindowMinimized) | Qt.WindowActive)
         self.showNormal()
         self.raise_()
         self.activateWindow()
+        try:
+            self.setFocus(Qt.ActiveWindowFocusReason)
+        except Exception:
+            pass
+
+    def _restore_from_tray(self) -> None:
         if self.tray_icon is not None:
             self.tray_icon.hide()
+        self._present_window()
+        QTimer.singleShot(0, self._present_window)
+        QTimer.singleShot(150, self._present_window)
+
 
     def _quit_from_tray(self) -> None:
         self._force_close = True
         if self.tray_icon is not None:
             self.tray_icon.hide()
+            try:
+                self.tray_icon.deleteLater()
+            except Exception:
+                pass
+            self.tray_icon = None
         self.close()
+        app = QApplication.instance()
+        if app is not None:
+            QTimer.singleShot(0, app.quit)
+            QTimer.singleShot(150, app.quit)
+
 
     def _on_tray_activated(self, reason) -> None:
         if reason in (
@@ -479,9 +508,20 @@ class MainWindow(QMainWindow):
         self._meter_timer.stop()
         if self.tray_icon is not None:
             self.tray_icon.hide()
+            try:
+                self.tray_icon.deleteLater()
+            except Exception:
+                pass
+            self.tray_icon = None
         self.ipc_server.stop()
         self.audio_engine.shutdown()
+        event.accept()
         super().closeEvent(event)
+        app = QApplication.instance()
+        if app is not None:
+            QTimer.singleShot(0, app.quit)
+            QTimer.singleShot(150, app.quit)
+
 
     def _clear_columns(self) -> None:
         while self.columns_layout.count():

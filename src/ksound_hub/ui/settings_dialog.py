@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from ..models import AppSettings, ChannelConfig
+from ..models import AppSettings
 
 
 class SettingsDialog(QDialog):

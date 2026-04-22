@@ -40,10 +40,9 @@ CHANNEL_META = {
 }
 
 DEVICE_CHOICES = {
-    "playback": ["ANPW", "S/PDIF", "Temp out"],
+    "playback": ["ANPW", "S/PDIF"],
     "monitor": ["ANPW", "S/PDIF"],
 }
-RETURN_MODES = ["Direct Mic", "Apps / Post-EE"]
 MIC_INPUT_CHOICES = ["ANPW Mic", "RODE NT-USB", "Both mics"]
 PLAYBACK_CHANNEL_KEYS = {"all", "game", "chat", "media", "more"}
 MIC_LINKABLE_CHANNEL_KEYS = ["all", "game", "chat", "media", "more"]
@@ -290,8 +289,6 @@ class ChannelWidget(QFrame):
         return DEVICE_CHOICES["playback"][0]
 
     def _default_secondary_target(self) -> str:
-        if self.channel.key == "return-mic":
-            return "Direct Mic"
         return ""
 
     def _selector_frame(self, combo: MenuSelectorButton, *, frame_width: int = 136) -> QWidget:
@@ -314,28 +311,14 @@ class ChannelWidget(QFrame):
 
     def _build_primary_controls(self) -> QWidget | None:
         self.channel.primary_target = self.channel.primary_target or self._default_primary_target()
-        self.channel.secondary_target = self.channel.secondary_target or self._default_secondary_target()
-
         if self.channel.key == "return-mic":
-            legacy_mode = (self.channel.secondary_target or "").strip()
-            mode_aliases = {
-                "Final Mix": "Direct Mic",
-                "Post-EE": "Apps / Post-EE",
-                "Direct Mic": "Direct Mic",
-                "Apps / Post-EE": "Apps / Post-EE",
-            }
-            self.channel.secondary_target = mode_aliases.get(
-                legacy_mode,
-                self.channel.secondary_target or self._default_secondary_target(),
-            )
-
             box = QWidget()
             box.setAttribute(Qt.WA_TranslucentBackground, True)
             box.setAutoFillBackground(False)
             box.setStyleSheet("background: transparent;")
             outer = QHBoxLayout(box)
             outer.setContentsMargins(0, 0, 0, 0)
-            outer.setSpacing(8)
+            outer.setSpacing(0)
             outer.addStretch(1)
 
             self.device_combo = MenuSelectorButton()
@@ -343,14 +326,7 @@ class ChannelWidget(QFrame):
             self._prepare_selector(self.device_combo)
             self._set_selector_text(self.device_combo, self.channel.primary_target)
             self.device_combo.currentTextChanged.connect(self._on_primary_target_changed)
-            outer.addWidget(self._selector_frame(self.device_combo, frame_width=126), 0, Qt.AlignCenter)
-
-            self.return_mode_combo = MenuSelectorButton()
-            self.return_mode_combo.set_items(RETURN_MODES)
-            self._prepare_selector(self.return_mode_combo)
-            self._set_selector_text(self.return_mode_combo, self.channel.secondary_target)
-            self.return_mode_combo.currentTextChanged.connect(self._on_secondary_target_changed)
-            outer.addWidget(self._selector_frame(self.return_mode_combo, frame_width=126), 0, Qt.AlignCenter)
+            outer.addWidget(self._selector_frame(self.device_combo, frame_width=130), 0, Qt.AlignCenter)
 
             outer.addStretch(1)
             return box
@@ -391,9 +367,7 @@ class ChannelWidget(QFrame):
         combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
     def set_card_width(self, width: int) -> None:
-        if self.channel.key == "return-mic":
-            self._card_width = max(318, min(346, int(width) + 160))
-        elif self.channel.key == "micro":
+        if self.channel.key == "micro":
             self._card_width = max(166, min(186, int(width) + 12))
         else:
             self._card_width = max(136, min(156, int(width)))
@@ -402,12 +376,6 @@ class ChannelWidget(QFrame):
 
     def _resize_selector_frames(self) -> None:
         if not self._selector_frames:
-            return
-
-        if self.channel.key == "return-mic":
-            available_each = max(104, (self._card_width - 32 - 8) // 2)
-            for frame, base_width in self._selector_frames:
-                frame.setFixedWidth(min(base_width, available_each))
             return
 
         available = max(104, self._card_width - 22)
@@ -837,10 +805,6 @@ class ChannelWidget(QFrame):
         self.channel.primary_target = value
         if self.channel.key == "micro":
             self._sync_micro_checks_from_target()
-        self._emit_changed("target")
-
-    def _on_secondary_target_changed(self, value: str) -> None:
-        self.channel.secondary_target = value
         self._emit_changed("target")
 
     def _add_profile(self) -> None:

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import json
+import socket
 import sys
 
+from PySide6.QtCore import QLockFile
 from PySide6.QtGui import QColor, QIcon, QPalette
 from PySide6.QtWidgets import QApplication
 
-from .config import APP_ICON_PATH, APP_NAME, ORG_DOMAIN, ORG_NAME
+from .config import APP_ICON_PATH, APP_NAME, IPC_SOCKET_PATH, ORG_DOMAIN, ORG_NAME, RUNTIME_DIR
 from .settings_store import SettingsStore
 from .ui.main_window import MainWindow
 
@@ -251,6 +254,17 @@ QScrollBar::handle:horizontal {
 """
 
 
+
+def _notify_existing_instance(payload: dict) -> None:
+    try:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(0.2)
+        sock.connect(IPC_SOCKET_PATH)
+        sock.sendall((json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8"))
+        sock.close()
+    except Exception:
+        pass
+
 def _apply_palette(app: QApplication) -> None:
     palette = app.palette()
     palette.setColor(QPalette.Window, QColor("#0d1118"))
@@ -268,7 +282,15 @@ def _apply_palette(app: QApplication) -> None:
 
 
 def main() -> int:
+    RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+    lock = QLockFile(str(RUNTIME_DIR / "app.lock"))
+    lock.setStaleLockTime(5000)
+    if not lock.tryLock(0):
+        _notify_existing_instance({"command": "restore"})
+        return 0
+
     app = QApplication(sys.argv)
+    app.setProperty("ksound_instance_lock", lock)
     app.setApplicationName(APP_NAME)
     app.setOrganizationName(ORG_NAME)
     app.setOrganizationDomain(ORG_DOMAIN)
