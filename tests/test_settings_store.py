@@ -42,3 +42,13 @@ def test_close_to_tray_legacy_channel_fallback():
     loaded = AppSettings.from_dict(data)
 
     assert loaded.close_to_tray is False
+
+
+def test_settings_store_save_creates_parent_directory(tmp_path: Path):
+    path = tmp_path / "nested" / "settings.json"
+    store = SettingsStore(path)
+
+    settings = AppSettings.default()
+    store.save(settings)
+
+    assert path.is_file()

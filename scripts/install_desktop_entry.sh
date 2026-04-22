@@ -4,7 +4,6 @@ set -Eeuo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PACKAGING_DIR="$REPO_DIR/packaging/linux"
 TEMPLATE_PATH="$PACKAGING_DIR/ksound-hub.desktop.template"
-REPO_DESKTOP_PATH="$PACKAGING_DIR/ksound-hub.desktop"
 USER_APPS_DIR="$HOME/.local/share/applications"
 USER_DESKTOP_PATH="$USER_APPS_DIR/ksound-hub.desktop"
 DESKTOP_SHORTCUT_PATH="$HOME/Desktop/ksound-hub.desktop"
@@ -43,24 +42,22 @@ X-GNOME-UsesNotifications=true
 TPL
 fi
 
-python - "$TEMPLATE_PATH" "$REPO_DESKTOP_PATH" "$USER_DESKTOP_PATH" "$EXEC_PATH" "$ICON_PATH" <<'PY'
+python - "$TEMPLATE_PATH" "$USER_DESKTOP_PATH" "$EXEC_PATH" "$ICON_PATH" <<'PY'
 from pathlib import Path
 import sys
 
 template_path = Path(sys.argv[1])
-repo_desktop_path = Path(sys.argv[2])
-user_desktop_path = Path(sys.argv[3])
-exec_path = sys.argv[4]
-icon_path = sys.argv[5]
+user_desktop_path = Path(sys.argv[2])
+exec_path = sys.argv[3]
+icon_path = sys.argv[4]
 
 template = template_path.read_text(encoding="utf-8")
 content = template.replace("__EXEC__", exec_path).replace("__ICON__", icon_path)
 
-repo_desktop_path.write_text(content, encoding="utf-8")
 user_desktop_path.write_text(content, encoding="utf-8")
 PY
 
-chmod +x "$REPO_DESKTOP_PATH" "$USER_DESKTOP_PATH"
+chmod +x "$USER_DESKTOP_PATH"
 
 if (( MAKE_DESKTOP_SHORTCUT )); then
   mkdir -p "$HOME/Desktop"
@@ -73,9 +70,6 @@ if command -v kbuildsycoca6 >/dev/null 2>&1; then
 fi
 
 if (( QUIET == 0 )); then
-  echo "Launcher updated in repo:"
-  echo "  $REPO_DESKTOP_PATH"
-  echo
   echo "Launcher installed for app menu:"
   echo "  $USER_DESKTOP_PATH"
   echo

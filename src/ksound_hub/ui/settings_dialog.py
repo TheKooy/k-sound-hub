@@ -108,28 +108,30 @@ class SettingsDialog(QDialog):
         self.wallpaper_tint_value.setAlignment(Qt.AlignRight)
         root.addWidget(self.wallpaper_tint_value)
 
-        hint = QLabel("Channel changes are stored immediately in global settings.")
-        hint.setObjectName("mutedLabel")
-        hint.setWordWrap(True)
-        root.addWidget(hint)
+        channel_hint = QLabel(
+            "Channel layout is fixed in this build. Custom channels and extra routing presets are coming soon."
+        )
+        channel_hint.setObjectName("mutedLabel")
+        channel_hint.setWordWrap(True)
+        root.addWidget(channel_hint)
 
         root.addWidget(QLabel("Channels"))
         self.channel_list = QListWidget()
+        self.channel_list.setSelectionMode(QListWidget.NoSelection)
         root.addWidget(self.channel_list, 1)
 
         row = QHBoxLayout()
         self.add_btn = QPushButton("Add channel")
         self.remove_btn = QPushButton("Remove selected")
         self.toggle_btn = QPushButton("Toggle enabled")
+        for button in (self.add_btn, self.toggle_btn, self.remove_btn):
+            button.setEnabled(False)
+            button.setToolTip("Coming soon")
         row.addWidget(self.add_btn)
         row.addWidget(self.toggle_btn)
         row.addStretch(1)
         row.addWidget(self.remove_btn)
         root.addLayout(row)
-
-        self.add_btn.clicked.connect(self._add_channel)
-        self.remove_btn.clicked.connect(self._remove_selected)
-        self.toggle_btn.clicked.connect(self._toggle_selected)
 
         self.wallpaper_check.toggled.connect(self._on_wallpaper_inputs_changed)
         self.wallpaper_path_edit.textChanged.connect(self._on_wallpaper_inputs_changed)
@@ -150,34 +152,15 @@ class SettingsDialog(QDialog):
         self.channel_list.clear()
         for channel in self.settings.channels:
             state = "enabled" if channel.enabled else "disabled"
-            item = QListWidgetItem(f"{channel.name} ({channel.kind}) • {state}")
+            suffix = ""
+            if channel.key in {"micro", "return-mic"}:
+                suffix = " • built-in"
+            item = QListWidgetItem(f"{channel.name} ({channel.kind}) • {state}{suffix}")
             item.setData(Qt.UserRole, channel.key)
             self.channel_list.addItem(item)
 
-    def _add_channel(self) -> None:
-        base = "custom"
-        idx = 1
-        existing = {channel.key for channel in self.settings.channels}
-        while f"{base}-{idx}" in existing:
-            idx += 1
-        key = f"{base}-{idx}"
-        channel = ChannelConfig(key=key, name=f"CUSTOM {idx}", kind="playback")
-        self.settings.channels.append(channel)
-        self._reload()
 
-    def _remove_selected(self) -> None:
-        row = self.channel_list.currentRow()
-        if row < 0 or row >= len(self.settings.channels):
-            return
-        self.settings.channels.pop(row)
-        self._reload()
 
-    def _toggle_selected(self) -> None:
-        row = self.channel_list.currentRow()
-        if row < 0 or row >= len(self.settings.channels):
-            return
-        self.settings.channels[row].enabled = not self.settings.channels[row].enabled
-        self._reload()
 
     def _browse_wallpaper(self) -> None:
         current = self.wallpaper_path_edit.text().strip()

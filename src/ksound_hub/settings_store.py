@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from .config import CONFIG_DIR, SETTINGS_PATH
+from .config import SETTINGS_PATH
 from .models import AppSettings
 
 
@@ -26,6 +26,6 @@ class SettingsStore:
         return AppSettings.from_dict(data)
 
     def save(self, settings: AppSettings) -> None:
-        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = settings.to_dict()
         self.path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")

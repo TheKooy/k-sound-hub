@@ -36,7 +36,7 @@ The project is installable and runnable as a normal Python application.
 - optional wallpaper background with blur and dark overlay
 - custom app icon support
 - tray-capable close behavior
-- manual desktop launcher support
+- desktop launcher generation script
 - manual autostart support
 
 ## Runtime dependencies
@@ -154,10 +154,10 @@ A launcher file can be generated manually from the project with:
 ./scripts/install_desktop_entry.sh
 ```
 
-That creates a ready-to-use launcher file in the repository:
+That installs the launcher into your user applications directory:
 
 ```text
-packaging/linux/ksound-hub.desktop
+~/.local/share/applications/ksound-hub.desktop
 ```
 
 ### Add K-Sound Hub to the application launcher menu
@@ -165,21 +165,17 @@ packaging/linux/ksound-hub.desktop
 On KDE Plasma or similar desktop environments:
 
 ```bash
-mkdir -p ~/.local/share/applications && \
-cp "$HOME/k-sound-hub/packaging/linux/ksound-hub.desktop" ~/.local/share/applications/ && \
-chmod +x ~/.local/share/applications/ksound-hub.desktop && \
-kbuildsycoca6
+./scripts/install_desktop_entry.sh
 ```
 
 Then search for **K-Sound Hub** in the application launcher.
 
 ### Create a desktop shortcut
 
-To copy the launcher to the desktop:
+To also copy the launcher to the desktop:
 
 ```bash
-cp "$HOME/k-sound-hub/packaging/linux/ksound-hub.desktop" "$HOME/Desktop/" && \
-chmod +x "$HOME/Desktop/ksound-hub.desktop"
+./scripts/install_desktop_entry.sh --desktop-shortcut
 ```
 
 ## Autostart
@@ -195,6 +191,20 @@ $HOME/k-sound-hub/scripts/start_ksound_hub.sh
 ```
 
 If a desktop-file autostart template is present in the project, adjust its paths manually and place it in the appropriate autostart location for the desktop environment.
+
+## Channel roadmap
+
+The current build ships with the fixed built-in channel set:
+
+- ALL
+- GAME
+- CHAT
+- MEDIA
+- MORE
+- MICRO
+- RETOUR-MIC
+
+Custom channels and extra routing presets are planned, but are not enabled yet in the settings UI.
 
 ## Tray behavior
 

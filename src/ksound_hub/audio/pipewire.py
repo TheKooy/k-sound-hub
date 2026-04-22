@@ -61,13 +61,6 @@ STATUS_LABELS = {
 
 MIC_LINKABLE_CHANNELS = ("all", "game", "chat", "media", "more")
 
-RETURN_MODE_ALIASES = {
-    "Final Mix": "direct",
-    "Direct Mic": "direct",
-    "Post-EE": "post_ee",
-    "Apps / Post-EE": "post_ee",
-}
-
 METER_SOURCE_BY_CHANNEL = {
     "all": "all.monitor",
     "game": "game.monitor",
@@ -98,8 +91,6 @@ class LoopbackLink:
 @dataclass
 class ReturnMicRuntime:
     capture_module_id: str = ""
-    playback_module_id_anpw: str = ""
-    playback_module_id_spdif: str = ""
     applied_signature: str = ""
 
 
@@ -394,10 +385,6 @@ class PipeWireAudioEngine(AudioEngine):
         if fallback:
             return [fallback]
         return []
-
-    def _normalized_return_mode(self, value: str) -> str:
-        raw = (value or "Direct Mic").strip()
-        return RETURN_MODE_ALIASES.get(raw, "direct")
 
     def _node_exists(self, node_type: str, node_name: str) -> bool:
         if node_type == "sink":
@@ -841,11 +828,6 @@ class PipeWireAudioEngine(AudioEngine):
     def _cleanup_legacy_return_playback_modules(self) -> None:
         ids: list[str] = []
 
-        if self._return_mic_runtime.playback_module_id_anpw:
-            ids.append(self._return_mic_runtime.playback_module_id_anpw)
-        if self._return_mic_runtime.playback_module_id_spdif:
-            ids.append(self._return_mic_runtime.playback_module_id_spdif)
-
         for sink_name in sorted(set(TARGET_OBJECT_BY_LABEL.values())):
             for module_id in self._find_loopback_module_ids(source_name="retour.monitor", sink_name=sink_name):
                 if module_id not in ids:
@@ -863,8 +845,6 @@ class PipeWireAudioEngine(AudioEngine):
         for module_id in ids:
             self._run_no_fail(["pactl", "unload-module", module_id])
 
-        self._return_mic_runtime.playback_module_id_anpw = ""
-        self._return_mic_runtime.playback_module_id_spdif = ""
 
     def _disconnect_return_playback_links(self) -> None:
         if not self._pw_link_available():
@@ -961,9 +941,6 @@ class PipeWireAudioEngine(AudioEngine):
 
         if capture:
             self._return_mic_runtime.capture_module_id = ""
-        if playback:
-            self._return_mic_runtime.playback_module_id_anpw = ""
-            self._return_mic_runtime.playback_module_id_spdif = ""
 
         self._return_mic_runtime.applied_signature = ""
 
