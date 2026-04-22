@@ -179,6 +179,7 @@ class MainWindow(QMainWindow):
         self._apply_wallpaper_settings()
         self._update_background_layers()
 
+        self._normalize_app_rules()
         self._reload_channels()
         self.audio_engine.apply_settings(self.settings)
         self._reapply_saved_app_routes()
@@ -212,6 +213,37 @@ class MainWindow(QMainWindow):
             if channel.key == key:
                 return channel
         return None
+
+    def _normalize_app_rules(self) -> None:
+        priority = ["game", "chat", "media", "more", "all"]
+        seen: dict[str, str] = {}
+
+        channels = {channel.key: channel for channel in self.settings.channels}
+        for key in priority:
+            channel = channels.get(key)
+            if channel is None:
+                continue
+
+            cleaned: list[str] = []
+            for rule in channel.app_rules:
+                rule = str(rule or "").strip()
+                if not rule:
+                    continue
+
+                owner = seen.get(rule)
+                if owner is None:
+                    seen[rule] = key
+                    cleaned.append(rule)
+                    continue
+
+                if owner == "all" and key != "all":
+                    all_channel = channels.get("all")
+                    if all_channel is not None:
+                        all_channel.app_rules = [r for r in all_channel.app_rules if r != rule]
+                    seen[rule] = key
+                    cleaned.append(rule)
+
+            channel.app_rules = cleaned
 
     def _stream_matches_rule(self, stream, rule: str) -> bool:
         rule = str(rule or "").strip()
@@ -511,6 +543,7 @@ class MainWindow(QMainWindow):
         self._apply_column_widths()
 
     def _autosave(self) -> None:
+        self._normalize_app_rules()
         self.settings_store.save(self.settings)
 
     def _queue_channel_apply(self, channel_key: str, delay_ms: int) -> None:
@@ -596,6 +629,7 @@ class MainWindow(QMainWindow):
         if dialog.exec():
             self.settings = dialog.build_result()
             self._link_shared_eq_library()
+            self._normalize_app_rules()
             self.overlay.set_enabled(self.settings.overlay_enabled)
             self._autosave()
             self._apply_wallpaper_settings()

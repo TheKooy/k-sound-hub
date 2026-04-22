@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 import threading
 import time
@@ -97,8 +98,8 @@ class LoopbackLink:
 @dataclass
 class ReturnMicRuntime:
     capture_module_id: str = ""
-    playback_module_id: str = ""
-    playback_sink_name: str = ""
+    playback_module_id_anpw: str = ""
+    playback_module_id_spdif: str = ""
     applied_signature: str = ""
 
 
@@ -252,6 +253,7 @@ class PipeWireAudioEngine(AudioEngine):
         self._meter_source_cache_at = 0.0
         self._micro_links: dict[str, LoopbackLink] = {}
         self._return_mic_runtime = ReturnMicRuntime()
+        self._physical_micro_selection_signature = ""
 
     def _run(self, args: list[str]) -> subprocess.CompletedProcess[str]:
         env = os.environ.copy()
@@ -582,6 +584,36 @@ class PipeWireAudioEngine(AudioEngine):
         for sink_input_id in self._find_sink_input_ids_by_media_name(media_name):
             self._run_no_fail(["pactl", "set-sink-input-mute", sink_input_id, "1" if muted else "0"])
 
+    def _sink_input_muted_by_media_name(self, media_name: str) -> list[bool]:
+        proc = self._run(["pactl", "list", "sink-inputs"])
+        if proc.returncode != 0:
+            return []
+
+        results: list[bool] = []
+        current_media = ""
+        current_mute: bool | None = None
+
+        def flush() -> None:
+            if current_media == media_name and current_mute is not None:
+                results.append(current_mute)
+
+        for raw_line in proc.stdout.splitlines():
+            line = raw_line.rstrip()
+            if line.startswith("Sink Input #"):
+                flush()
+                current_media = ""
+                current_mute = None
+                continue
+
+            stripped = line.strip()
+            if stripped.startswith("media.name = "):
+                current_media = stripped.split("=", 1)[1].strip().strip('"')
+            elif stripped.startswith("Mute: "):
+                current_mute = stripped.split(":", 1)[1].strip().lower() == "yes"
+
+        flush()
+        return results
+
     def _unload_micro_link(self, channel_key: str) -> None:
         source_name = f"{channel_key}.monitor"
         sink_name = "micro_bus"
@@ -698,6 +730,7 @@ class PipeWireAudioEngine(AudioEngine):
             return
 
         desired_sources = set(self._resolved_micro_source_names(channel))
+        desired_signature = json.dumps(sorted(desired_sources), ensure_ascii=False)
 
         known_sources = [
             (
@@ -709,6 +742,8 @@ class PipeWireAudioEngine(AudioEngine):
                 "K-Sound Hub Mic Physical ANPW",
             ),
         ]
+
+        pending_changes: list[tuple[str, bool]] = []
 
         for source_name, media_name in known_sources:
             if not self._source_exists(source_name):
@@ -735,18 +770,182 @@ class PipeWireAudioEngine(AudioEngine):
                     continue
 
             should_enable = source_name in desired_sources
-            self._set_sink_input_mute_by_media_name(media_name, not should_enable)
+            wanted_muted = not should_enable
+            current_states = self._sink_input_muted_by_media_name(media_name)
+
+            if not current_states:
+                continue
+
+            if any(state != wanted_muted for state in current_states):
+                pending_changes.append((media_name, wanted_muted))
+
+        selection_changed = self._physical_micro_selection_signature != desired_signature
+
+        if selection_changed and pending_changes and self._sink_exists("retour"):
+            self._run_no_fail(["pactl", "set-sink-mute", "retour", "1"])
+            time.sleep(0.025)
+
+        for media_name, wanted_muted in pending_changes:
+            self._set_sink_input_mute_by_media_name(media_name, wanted_muted)
+
+        if selection_changed and pending_changes:
+            time.sleep(0.025)
+
+        self._physical_micro_selection_signature = desired_signature
 
         if self._source_exists("micro"):
             self._run_no_fail(["pactl", "set-default-source", "micro"])
+
+    def _pw_link_available(self) -> bool:
+        return shutil.which("pw-link") is not None
+
+    def _pw_link_ports(self, *, direction: str) -> set[str]:
+        if not self._pw_link_available():
+            return set()
+
+        args = ["pw-link", "-o"] if direction == "output" else ["pw-link", "-i"]
+        proc = self._run(args)
+        if proc.returncode != 0:
+            return set()
+
+        ports: set[str] = set()
+        for raw_line in proc.stdout.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            port_spec = line.split()[0].strip()
+            if ":" not in port_spec:
+                continue
+            ports.add(port_spec)
+        return ports
+
+    def _find_pw_port_spec(self, *, direction: str, node_names: list[str], port_name: str) -> str:
+        ports = self._pw_link_ports(direction=direction)
+        if not ports:
+            return ""
+
+        for node_name in node_names:
+            spec = f"{node_name}:{port_name}"
+            if spec in ports:
+                return spec
+
+        for spec in sorted(ports):
+            if not spec.endswith(f":{port_name}"):
+                continue
+            node_name = spec.rsplit(":", 1)[0]
+            if node_name in node_names:
+                return spec
+
+        return ""
+
+    def _cleanup_legacy_return_playback_modules(self) -> None:
+        ids: list[str] = []
+
+        if self._return_mic_runtime.playback_module_id_anpw:
+            ids.append(self._return_mic_runtime.playback_module_id_anpw)
+        if self._return_mic_runtime.playback_module_id_spdif:
+            ids.append(self._return_mic_runtime.playback_module_id_spdif)
+
+        for sink_name in sorted(set(TARGET_OBJECT_BY_LABEL.values())):
+            for module_id in self._find_loopback_module_ids(source_name="retour.monitor", sink_name=sink_name):
+                if module_id not in ids:
+                    ids.append(module_id)
+
+        for media_name in (
+            "K-Sound Hub Return Mic Playback",
+            "K-Sound Hub Return Mic Playback ANPW",
+            "K-Sound Hub Return Mic Playback SPDIF",
+        ):
+            for module_id in self._find_loopback_module_ids_by_media_name(media_name):
+                if module_id not in ids:
+                    ids.append(module_id)
+
+        for module_id in ids:
+            self._run_no_fail(["pactl", "unload-module", module_id])
+
+        self._return_mic_runtime.playback_module_id_anpw = ""
+        self._return_mic_runtime.playback_module_id_spdif = ""
+
+    def _disconnect_return_playback_links(self) -> None:
+        if not self._pw_link_available():
+            return
+
+        output_fl = self._find_pw_port_spec(
+            direction="output",
+            node_names=["retour", "retour.monitor"],
+            port_name="monitor_FL",
+        )
+        output_fr = self._find_pw_port_spec(
+            direction="output",
+            node_names=["retour", "retour.monitor"],
+            port_name="monitor_FR",
+        )
+
+        if not output_fl and not output_fr:
+            return
+
+        for sink_name in sorted(set(TARGET_OBJECT_BY_LABEL.values())):
+            input_fl = self._find_pw_port_spec(
+                direction="input",
+                node_names=[sink_name],
+                port_name="playback_FL",
+            )
+            input_fr = self._find_pw_port_spec(
+                direction="input",
+                node_names=[sink_name],
+                port_name="playback_FR",
+            )
+
+            if output_fl and input_fl:
+                self._run_no_fail(["pw-link", "-d", output_fl, input_fl])
+            if output_fr and input_fr:
+                self._run_no_fail(["pw-link", "-d", output_fr, input_fr])
+
+    def _connect_return_playback_links(self, target_sink: str) -> bool:
+        if not self._pw_link_available():
+            return False
+
+        output_fl = self._find_pw_port_spec(
+            direction="output",
+            node_names=["retour", "retour.monitor"],
+            port_name="monitor_FL",
+        )
+        output_fr = self._find_pw_port_spec(
+            direction="output",
+            node_names=["retour", "retour.monitor"],
+            port_name="monitor_FR",
+        )
+        input_fl = self._find_pw_port_spec(
+            direction="input",
+            node_names=[target_sink],
+            port_name="playback_FL",
+        )
+        input_fr = self._find_pw_port_spec(
+            direction="input",
+            node_names=[target_sink],
+            port_name="playback_FR",
+        )
+
+        if not output_fl or not output_fr or not input_fl or not input_fr:
+            return False
+
+        created_links: list[tuple[str, str]] = []
+
+        for output_port, input_port in ((output_fl, input_fl), (output_fr, input_fr)):
+            proc = self._run(["pw-link", output_port, input_port])
+            if proc.returncode != 0:
+                for created_output, created_input in created_links:
+                    self._run_no_fail(["pw-link", "-d", created_output, created_input])
+                return False
+            created_links.append((output_port, input_port))
+
+        return True
 
     def _disable_return_mic(self, *, capture: bool = True, playback: bool = True) -> None:
         ids: list[str] = []
 
         if capture and self._return_mic_runtime.capture_module_id:
             ids.append(self._return_mic_runtime.capture_module_id)
-        if playback and self._return_mic_runtime.playback_module_id:
-            ids.append(self._return_mic_runtime.playback_module_id)
 
         if capture:
             for module_id in self._find_loopback_module_ids_by_media_name("K-Sound Hub Return Mic Capture"):
@@ -754,9 +953,8 @@ class PipeWireAudioEngine(AudioEngine):
                     ids.append(module_id)
 
         if playback:
-            for module_id in self._find_loopback_module_ids_by_media_name("K-Sound Hub Return Mic Playback"):
-                if module_id not in ids:
-                    ids.append(module_id)
+            self._disconnect_return_playback_links()
+            self._cleanup_legacy_return_playback_modules()
 
         for module_id in ids:
             self._run_no_fail(["pactl", "unload-module", module_id])
@@ -764,14 +962,18 @@ class PipeWireAudioEngine(AudioEngine):
         if capture:
             self._return_mic_runtime.capture_module_id = ""
         if playback:
-            self._return_mic_runtime.playback_module_id = ""
-            self._return_mic_runtime.playback_sink_name = ""
+            self._return_mic_runtime.playback_module_id_anpw = ""
+            self._return_mic_runtime.playback_module_id_spdif = ""
 
         self._return_mic_runtime.applied_signature = ""
 
     def _apply_return_mic(self, settings: AppSettings) -> None:
         channel = self._find_channel(settings, "return-mic")
         if channel is None or not channel.enabled or int(channel.volume) <= 0:
+            self._disable_return_mic(capture=True, playback=True)
+            return
+
+        if not self._pw_link_available():
             self._disable_return_mic(capture=True, playback=True)
             return
 
@@ -788,37 +990,18 @@ class PipeWireAudioEngine(AudioEngine):
         signature = json.dumps(
             {
                 "capture_source": "micro",
-                "target_sink": target_sink,
                 "return_enabled": bool(channel.enabled),
+                "target_label": target_label,
+                "target_sink": target_sink,
             },
             sort_keys=True,
             ensure_ascii=False,
         )
 
         capture_ids = self._find_loopback_module_ids_by_media_name("K-Sound Hub Return Mic Capture")
-        playback_ids = self._find_loopback_module_ids_by_media_name("K-Sound Hub Return Mic Playback")
-
         capture_id = capture_ids[0] if capture_ids else ""
-        playback_id = playback_ids[0] if playback_ids else ""
-
-        if (
-            capture_id
-            and playback_id
-            and self._return_mic_runtime.applied_signature == signature
-            and self._return_mic_runtime.playback_sink_name == target_sink
-        ):
-            self._return_mic_runtime.capture_module_id = capture_id
-            self._return_mic_runtime.playback_module_id = playback_id
-            self._apply_node_controls(channel, node_type="sink", node_name="retour")
-            return
-
-        topology_changed = False
 
         if not capture_id:
-            topology_changed = True
-            if self._sink_exists("retour"):
-                self._run_no_fail(["pactl", "set-sink-mute", "retour", "1"])
-                time.sleep(0.02)
             capture_id = self._load_loopback_module(
                 source_name="micro",
                 sink_name="retour",
@@ -828,37 +1011,17 @@ class PipeWireAudioEngine(AudioEngine):
                 self._disable_return_mic(capture=True, playback=True)
                 return
 
-        need_rebuild_playback = (
-            not playback_id
-            or self._return_mic_runtime.playback_sink_name != target_sink
-            or self._return_mic_runtime.applied_signature != signature
-        )
+        self._cleanup_legacy_return_playback_modules()
 
-        if need_rebuild_playback:
-            topology_changed = True
-            if self._sink_exists("retour"):
-                self._run_no_fail(["pactl", "set-sink-mute", "retour", "1"])
-                time.sleep(0.02)
-
-            self._disable_return_mic(capture=False, playback=True)
-
-            playback_id = self._load_loopback_module(
-                source_name="retour.monitor",
-                sink_name=target_sink,
-                media_name="K-Sound Hub Return Mic Playback",
-            )
-            if not playback_id:
-                self._disable_return_mic(capture=False, playback=True)
-                self._return_mic_runtime.capture_module_id = capture_id
+        if self._return_mic_runtime.applied_signature != signature:
+            self._disconnect_return_playback_links()
+            if not self._connect_return_playback_links(target_sink):
+                self._disable_return_mic(capture=True, playback=True)
                 return
 
-        if topology_changed:
-            time.sleep(0.02)
-
         self._return_mic_runtime.capture_module_id = capture_id
-        self._return_mic_runtime.playback_module_id = playback_id
-        self._return_mic_runtime.playback_sink_name = target_sink
         self._return_mic_runtime.applied_signature = signature
+
         self._apply_node_controls(channel, node_type="sink", node_name="retour")
 
     def _apply_eq_slot(self, settings: AppSettings, key: str) -> None:
