@@ -455,9 +455,20 @@ class ChannelWidget(QFrame):
         self.apps_list.clear()
 
         if self.channel.key == "micro":
-            item = QListWidgetItem("MIC sends temporarily disabled for stability")
-            item.setFlags(item.flags() & ~Qt.ItemIsSelectable)
-            self.apps_list.addItem(item)
+            shown = 0
+            for key in self.channel.linked_channels:
+                if key not in MIC_LINKABLE_CHANNEL_KEYS:
+                    continue
+                item = QListWidgetItem(key.upper())
+                item.setData(Qt.UserRole, key)
+                self.apps_list.addItem(item)
+                shown += 1
+
+            if shown == 0 and fallback_names:
+                for app_name in fallback_names[:1]:
+                    item = QListWidgetItem(app_name)
+                    item.setFlags(item.flags() & ~Qt.ItemIsSelectable)
+                    self.apps_list.addItem(item)
             return
 
         if self.audio_engine is None or self.channel.key not in PLAYBACK_CHANNEL_KEYS:
@@ -485,10 +496,26 @@ class ChannelWidget(QFrame):
 
     def _add_app_route(self) -> None:
         if self.channel.key == "micro":
-            self._show_click_outside_message(
-                "Micro sends",
-                "MIC send routing is temporarily disabled in this stable build."
+            available = [key.upper() for key in MIC_LINKABLE_CHANNEL_KEYS if key not in self.channel.linked_channels]
+            if not available:
+                self._show_click_outside_message("Micro sends", "All playback channels are already sent to MICRO.")
+                return
+
+            choice, ok = QInputDialog.getItem(
+                self,
+                "Send channel to MICRO",
+                "Playback channels",
+                available,
+                0,
+                False,
             )
+            if not ok or not choice:
+                return
+
+            key = choice.lower()
+            if key not in self.channel.linked_channels:
+                self.channel.linked_channels.append(key)
+                self._emit_changed("micro_links")
             return
 
         if self.audio_engine is None or self.channel.key not in PLAYBACK_CHANNEL_KEYS:
@@ -551,10 +578,11 @@ class ChannelWidget(QFrame):
             return
 
         if self.channel.key == "micro":
-            self._show_click_outside_message(
-                "Micro sends",
-                "MIC send routing is temporarily disabled in this stable build."
-            )
+            linked_key = item.data(Qt.UserRole)
+            if not isinstance(linked_key, str):
+                return
+            self.channel.linked_channels = [key for key in self.channel.linked_channels if key != linked_key]
+            self._emit_changed("micro_links")
             return
 
         if self.audio_engine is None or self.channel.key not in PLAYBACK_CHANNEL_KEYS:

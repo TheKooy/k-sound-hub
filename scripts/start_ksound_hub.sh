@@ -13,6 +13,10 @@ if [[ -x "$AUDIO_STACK_SCRIPT" ]]; then
   sleep 1
 fi
 
+if [[ -x "$REPO_DIR/scripts/start_legacy_hud.sh" ]]; then
+  "$REPO_DIR/scripts/start_legacy_hud.sh" >>"$BOOTSTRAP_LOG" 2>&1 || true
+fi
+
 if [[ -x "$REPO_DIR/scripts/install_desktop_entry.sh" ]]; then
   "$REPO_DIR/scripts/install_desktop_entry.sh" --quiet >/dev/null 2>&1 || true
 fi

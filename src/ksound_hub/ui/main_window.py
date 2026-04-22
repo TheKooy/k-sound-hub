@@ -305,10 +305,15 @@ class MainWindow(QMainWindow):
             return
 
         self._sync_widget_for_channel(channel.key)
-        self._autosave()
-        self.audio_engine.apply_channel(self.settings, channel.key)
         self._show_overlay_for_change(channel, hint)
-        self._status_timer.start()
+
+        if hint == "volume":
+            self._queue_channel_apply(channel.key, 20)
+        else:
+            self.audio_engine.apply_channel(self.settings, channel.key)
+            self._status_timer.start()
+
+        self._save_timer.start()
 
     def _can_close_to_tray(self) -> bool:
         return bool(getattr(self.settings, "close_to_tray", True)) and QSystemTrayIcon.isSystemTrayAvailable()

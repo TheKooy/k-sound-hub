@@ -860,6 +860,7 @@ class PipeWireAudioEngine(AudioEngine):
 
         if channel_key in PLAYBACK_EQ_CHANNELS:
             self._apply_eq_slot(settings, channel_key)
+            self._apply_micro_links(settings)
             return
 
         if channel_key == "micro":
@@ -867,6 +868,7 @@ class PipeWireAudioEngine(AudioEngine):
             self._apply_node_controls(channel, node_type="source", node_name=node_name)
             self._ensure_physical_micro_loopback(channel)
             self._run_no_fail(["pactl", "set-default-source", "micro"])
+            self._apply_micro_links(settings)
             self._apply_return_mic(settings)
             return
 
@@ -887,6 +889,7 @@ class PipeWireAudioEngine(AudioEngine):
             self._apply_eq_slot(settings, key)
         self.apply_channel(settings, "micro")
         self.apply_channel(settings, "return-mic")
+        self._apply_micro_links(settings)
 
     def _sink_index_to_name(self) -> dict[int, str]:
         mapping: dict[int, str] = {}
