@@ -472,6 +472,8 @@ class PipeWireAudioEngine(AudioEngine):
         volume = max(0, min(150, int(channel.volume)))
         if node_type == "sink" and node_name == "retour":
             volume = max(0, min(180, int(round(channel.volume * 1.8))))
+        elif node_type == "source" and node_name.startswith("alsa_input."):
+            volume = max(0, min(160, int(round(channel.volume * 1.35))))
 
         if node_type == "sink":
             self._run_no_fail(["pactl", "set-sink-volume", node_name, f"{volume}%"])
@@ -497,6 +499,25 @@ class PipeWireAudioEngine(AudioEngine):
             if f"source={source_name}" not in args:
                 continue
             if f"sink={sink_name}" not in args:
+                continue
+            matches.append(module_id)
+        return matches
+
+    def _find_loopback_module_ids_by_media_name(self, media_name: str) -> list[str]:
+        proc = self._run(["pactl", "list", "short", "modules"])
+        if proc.returncode != 0:
+            return []
+
+        matches: list[str] = []
+        needle = f"sink_input_properties=media.name={media_name}"
+        for line in proc.stdout.splitlines():
+            parts = line.split(None, 2)
+            if len(parts) < 3:
+                continue
+            module_id, module_name, args = parts
+            if module_name != "module-loopback":
+                continue
+            if needle not in args:
                 continue
             matches.append(module_id)
         return matches
@@ -613,11 +634,20 @@ class PipeWireAudioEngine(AudioEngine):
         return proc.stdout.strip().splitlines()[-1].strip() if proc.stdout.strip() else ""
 
     def _disable_return_mic(self) -> None:
-        ids = []
+        ids: list[str] = []
+
         if self._return_mic_runtime.capture_module_id:
             ids.append(self._return_mic_runtime.capture_module_id)
         if self._return_mic_runtime.playback_module_id:
             ids.append(self._return_mic_runtime.playback_module_id)
+
+        for module_id in self._find_loopback_module_ids_by_media_name("K-Sound Hub Return Mic Capture"):
+            if module_id not in ids:
+                ids.append(module_id)
+
+        for module_id in self._find_loopback_module_ids_by_media_name("K-Sound Hub Return Mic Playback"):
+            if module_id not in ids:
+                ids.append(module_id)
 
         for module_id in ids:
             self._run_no_fail(["pactl", "unload-module", module_id])
@@ -640,26 +670,19 @@ class PipeWireAudioEngine(AudioEngine):
             self._disable_return_mic()
             return
 
+        self._disable_return_mic()
         self._apply_node_controls(channel, node_type="sink", node_name="retour")
 
-        existing_capture = self._find_loopback_module_ids(source_name="micro", sink_name="retour")
-        existing_playback = self._find_loopback_module_ids(source_name="retour.monitor", sink_name=target_sink)
-
-        capture_id = existing_capture[0] if existing_capture else ""
-        playback_id = existing_playback[0] if existing_playback else ""
-
-        if not capture_id:
-            capture_id = self._load_loopback_module(
-                source_name="micro",
-                sink_name="retour",
-                media_name="K-Sound Hub Return Mic Capture",
-            )
-        if not playback_id:
-            playback_id = self._load_loopback_module(
-                source_name="retour.monitor",
-                sink_name=target_sink,
-                media_name="K-Sound Hub Return Mic Playback",
-            )
+        capture_id = self._load_loopback_module(
+            source_name="micro",
+            sink_name="retour",
+            media_name="K-Sound Hub Return Mic Capture",
+        )
+        playback_id = self._load_loopback_module(
+            source_name="retour.monitor",
+            sink_name=target_sink,
+            media_name="K-Sound Hub Return Mic Playback",
+        )
 
         if not capture_id or not playback_id:
             self._disable_return_mic()
