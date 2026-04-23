@@ -181,6 +181,57 @@ def _parse_sink_input_blocks(lines: Iterable[str]) -> list[SinkInputBlock]:
     return blocks
 
 
+@dataclass(frozen=True)
+class PlaybackTarget:
+    label: str
+    sink_name: str
+
+
+def _resolved_channel_node_volume(channel_volume: int, *, node_type: str, node_name: str) -> int:
+    volume = _clamp_int(channel_volume, 0, 150)
+    if node_type == "sink" and node_name == "retour":
+        return _clamp_int(int(round(channel_volume * 1.8)), 0, 180)
+    if node_type == "source" and node_name.startswith("alsa_input."):
+        return _clamp_int(channel_volume, 0, 100)
+    return volume
+
+
+def _build_stream_display_name(block: SinkInputBlock) -> str | None:
+    if block.sink_input_id is None:
+        return None
+
+    base = block.app_name or block.binary_name or block.media_name or f"Stream {block.sink_input_id}"
+    if "K-Sound Hub" in base or "K-Sound Hub" in block.media_name:
+        return None
+
+    if block.media_name and block.media_name.lower() not in {base.lower(), "audio stream"}:
+        return f"{base} — {block.media_name}"
+    return base
+
+
+def _build_eq_slot_signature(key: str, profile: EqProfile, target: PlaybackTarget) -> str:
+    return json.dumps(
+        {
+            "key": key,
+            "profile": profile.to_dict(),
+            "target_label": target.label,
+            "target_sink": target.sink_name,
+        },
+        sort_keys=True,
+        ensure_ascii=False,
+    )
+
+
+def _build_eq_slot_status(*, profile_name: str, target_label: str, muted: bool, volume: int) -> str:
+    extra: list[str] = []
+    if muted:
+        extra.append("muted")
+    elif volume != 100:
+        extra.append(f"vol {volume}%")
+    suffix = f" • {', '.join(extra)}" if extra else ""
+    return f"active ({profile_name} → {target_label}){suffix}"
+
+
 class SourceMeterProbe:
     def __init__(self, source_name: str) -> None:
         self.source_name = source_name
@@ -588,11 +639,7 @@ class PipeWireAudioEngine(AudioEngine):
         if not self._node_exists(node_type, node_name):
             return
 
-        volume = _clamp_int(channel.volume, 0, 150)
-        if node_type == "sink" and node_name == "retour":
-            volume = _clamp_int(int(round(channel.volume * 1.8)), 0, 180)
-        elif node_type == "source" and node_name.startswith("alsa_input."):
-            volume = _clamp_int(channel.volume, 0, 100)
+        volume = _resolved_channel_node_volume(channel.volume, node_type=node_type, node_name=node_name)
 
         if node_type == "sink":
             self._set_node_volume_smooth(node_type="sink", node_name=node_name, target_volume=volume)
@@ -600,7 +647,6 @@ class PipeWireAudioEngine(AudioEngine):
         elif node_type == "source":
             self._set_node_volume_smooth(node_type="source", node_name=node_name, target_volume=volume)
             self._run_no_fail(["pactl", "set-source-mute", node_name, "1" if channel.muted else "0"])
-
 
     def _find_loopback_module_ids(self, *, source_name: str, sink_name: str) -> list[str]:
         proc = self._run(["pactl", "list", "short", "modules"])
@@ -1049,6 +1095,49 @@ class PipeWireAudioEngine(AudioEngine):
 
         self._apply_node_controls(channel, node_type="sink", node_name="retour")
 
+    def _resolve_playback_target(self, channel: ChannelConfig) -> PlaybackTarget | None:
+        target_label = (channel.primary_target or "ANPW").strip()
+        target_sink = TARGET_OBJECT_BY_LABEL.get(target_label)
+        if not target_sink:
+            return None
+        return PlaybackTarget(label=target_label, sink_name=target_sink)
+
+    def _apply_playback_channel(self, settings: AppSettings, channel_key: str) -> None:
+        self._apply_eq_slot(settings, channel_key)
+        self._apply_micro_links(settings)
+
+    def _apply_micro_channel(self, settings: AppSettings) -> None:
+        channel = self._find_channel(settings, "micro")
+        if channel is None:
+            return
+
+        node_names = self._resolved_micro_source_names(channel)
+        if not node_names:
+            node_names = [self._resolved_micro_source_name(channel)]
+
+        for node_name in node_names:
+            self._apply_node_controls(channel, node_type="source", node_name=node_name)
+
+        self._ensure_physical_micro_loopbacks(channel)
+        self._run_no_fail(["pactl", "set-default-source", "micro"])
+        self._apply_micro_links(settings)
+        self._apply_return_mic(settings)
+
+    def _apply_return_mic_channel(self, settings: AppSettings) -> None:
+        self._apply_return_mic(settings)
+
+    def _apply_direct_control_channel(self, settings: AppSettings, channel_key: str) -> None:
+        channel = self._find_channel(settings, channel_key)
+        if channel is None:
+            return
+
+        control = CONTROL_NODE_BY_CHANNEL.get(channel_key)
+        if control is None:
+            return
+
+        node_type, node_name = control
+        self._apply_node_controls(channel, node_type=node_type, node_name=node_name)
+
     def _apply_eq_slot(self, settings: AppSettings, key: str) -> None:
         slot = self.eq_slots[key]
         logical_sink = slot.logical_sink
@@ -1071,16 +1160,15 @@ class PipeWireAudioEngine(AudioEngine):
             slot.status = f"waiting for sink '{logical_sink}'"
             return
 
-        target_label = (channel.primary_target or "ANPW").strip()
-        target_sink = TARGET_OBJECT_BY_LABEL.get(target_label)
-        if not target_sink:
+        target = self._resolve_playback_target(channel)
+        if target is None:
             self._stop_slot(slot)
-            slot.status = f"no target mapping for {target_label}"
+            slot.status = f"no target mapping for {(channel.primary_target or 'ANPW').strip()}"
             return
 
-        if not self._sink_exists(target_sink):
+        if not self._sink_exists(target.sink_name):
             self._stop_slot(slot)
-            slot.status = f"target sink missing ({target_label})"
+            slot.status = f"target sink missing ({target.label})"
             return
 
         profile = self._current_profile(channel)
@@ -1088,18 +1176,9 @@ class PipeWireAudioEngine(AudioEngine):
             key=key,
             logical_sink=logical_sink,
             profile=profile,
-            target_sink=target_sink,
+            target_sink=target.sink_name,
         )
-        signature = json.dumps(
-            {
-                "key": key,
-                "profile": profile.to_dict(),
-                "target_label": target_label,
-                "target_sink": target_sink,
-            },
-            sort_keys=True,
-            ensure_ascii=False,
-        )
+        signature = _build_eq_slot_signature(key, profile, target)
         self._write_slot_dropin(key, dropin_text)
         self._start_slot(slot, signature)
 
@@ -1109,13 +1188,12 @@ class PipeWireAudioEngine(AudioEngine):
             return
 
         if proc.poll() is None:
-            extra = []
-            if channel.muted:
-                extra.append("muted")
-            elif channel.volume != 100:
-                extra.append(f"vol {channel.volume}%")
-            suffix = f" • {', '.join(extra)}" if extra else ""
-            slot.status = f"active ({profile.name} → {target_label}){suffix}"
+            slot.status = _build_eq_slot_status(
+                profile_name=profile.name,
+                target_label=target.label,
+                muted=channel.muted,
+                volume=channel.volume,
+            )
             return
 
         tail = self._read_slot_log_tail(key)
@@ -1142,46 +1220,25 @@ class PipeWireAudioEngine(AudioEngine):
         return probe.levels()
 
     def apply_channel(self, settings: AppSettings, channel_key: str) -> None:
-        channel = self._find_channel(settings, channel_key)
-        if channel is None:
-            return
-
         if channel_key in PLAYBACK_EQ_CHANNELS:
-            self._apply_eq_slot(settings, channel_key)
-            self._apply_micro_links(settings)
+            self._apply_playback_channel(settings, channel_key)
             return
 
         if channel_key == "micro":
-            node_names = self._resolved_micro_source_names(channel)
-            if not node_names:
-                node_names = [self._resolved_micro_source_name(channel)]
-
-            for node_name in node_names:
-                self._apply_node_controls(channel, node_type="source", node_name=node_name)
-
-            self._ensure_physical_micro_loopbacks(channel)
-            self._run_no_fail(["pactl", "set-default-source", "micro"])
-            self._apply_micro_links(settings)
-            self._apply_return_mic(settings)
+            self._apply_micro_channel(settings)
             return
 
         if channel_key == "return-mic":
-            self._apply_return_mic(settings)
+            self._apply_return_mic_channel(settings)
             return
 
-        control = CONTROL_NODE_BY_CHANNEL.get(channel_key)
-        if control is None:
-            return
-
-        node_type, node_name = control
-        self._apply_node_controls(channel, node_type=node_type, node_name=node_name)
-
+        self._apply_direct_control_channel(settings, channel_key)
 
     def apply_settings(self, settings: AppSettings) -> None:
         for key in PLAYBACK_EQ_CHANNELS:
-            self._apply_eq_slot(settings, key)
-        self.apply_channel(settings, "micro")
-        self.apply_channel(settings, "return-mic")
+            self._apply_playback_channel(settings, key)
+        self._apply_micro_channel(settings)
+        self._apply_return_mic_channel(settings)
         self._apply_micro_links(settings)
 
     def _sink_index_to_name(self) -> dict[int, str]:
@@ -1216,24 +1273,19 @@ class PipeWireAudioEngine(AudioEngine):
             if block.sink_input_id is None:
                 continue
 
-            base = block.app_name or block.binary_name or block.media_name or f"Stream {block.sink_input_id}"
-            if "K-Sound Hub" in base or "K-Sound Hub" in block.media_name:
+            display_name = _build_stream_display_name(block)
+            if not display_name:
                 continue
 
-            if block.media_name and block.media_name.lower() not in {base.lower(), "audio stream"}:
-                label = f"{base} — {block.media_name}"
-            else:
-                label = base
-
             info[block.sink_input_id] = {
-                "display_name": label,
+                "display_name": display_name,
                 "app_name": block.app_name,
                 "binary_name": block.binary_name,
             }
 
         return info
 
-    def list_sink_inputs(self) -> list[AppStream]:
+    def _build_app_streams(self) -> list[AppStream]:
         sink_names = self._sink_index_to_name()
         sink_indexes = self._sink_input_sink_indexes()
         info = self._sink_input_info()
@@ -1255,8 +1307,14 @@ class PipeWireAudioEngine(AudioEngine):
         streams.sort(key=lambda item: (item.display_name.lower(), item.stream_id))
         return streams
 
+    def list_sink_inputs(self) -> list[AppStream]:
+        return self._build_app_streams()
+
+    def _target_sink_name_for_channel_key(self, channel_key: str) -> str:
+        return PLAYBACK_EQ_CHANNELS.get(channel_key, "")
+
     def move_sink_input_to_channel(self, stream_id: int, channel_key: str) -> bool:
-        target = PLAYBACK_EQ_CHANNELS.get(channel_key)
+        target = self._target_sink_name_for_channel_key(channel_key)
         if not target:
             return False
         if not self._sink_exists(target):
