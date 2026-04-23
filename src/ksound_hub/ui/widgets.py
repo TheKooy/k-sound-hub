@@ -275,6 +275,17 @@ class ChannelVolumeSlider(NoWheelSlider):
         painter.drawEllipse(handle_rect)
 
 
+
+def _meter_visual_level(value: float) -> float:
+    raw = max(0.0, min(1.0, float(value)))
+    if raw <= 0.0:
+        return 0.0
+    boosted = raw ** 0.48
+    if boosted < 0.02:
+        return 0.0
+    return max(0.0, min(1.0, boosted))
+
+
 class StereoLevelMeterWidget(QWidget):
     def __init__(self, side: str, parent=None):
         super().__init__(parent)
@@ -290,7 +301,12 @@ class StereoLevelMeterWidget(QWidget):
         self.set_level(0.0)
 
     def set_level(self, value: float) -> None:
-        self._value = max(0.0, min(1.0, float(value)))
+        visual = _meter_visual_level(value)
+        old_lit = int(round(self._value * self._segments))
+        new_lit = int(round(visual * self._segments))
+        if new_lit == old_lit and abs(visual - self._value) < 0.03:
+            return
+        self._value = visual
         self.update()
 
     def paintEvent(self, event) -> None:

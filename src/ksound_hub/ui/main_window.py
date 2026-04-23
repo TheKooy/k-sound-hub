@@ -81,8 +81,13 @@ class MainWindow(QMainWindow):
         self._apply_timer.setSingleShot(True)
         self._apply_timer.timeout.connect(self._flush_pending_channel_apply)
 
+        self._runtime_view_timer = QTimer(self)
+        self._runtime_view_timer.setSingleShot(True)
+        self._runtime_view_timer.setInterval(30)
+        self._runtime_view_timer.timeout.connect(self._refresh_runtime_views_only)
+
         self._meter_timer = QTimer(self)
-        self._meter_timer.setInterval(45)
+        self._meter_timer.setInterval(60)
         self._meter_timer.timeout.connect(self._refresh_meters)
 
         self._link_shared_eq_library()
@@ -581,7 +586,7 @@ class MainWindow(QMainWindow):
                 channel,
                 global_visualizer_enabled=self.settings.visualizer_enabled,
                 audio_engine=self.audio_engine,
-                on_runtime_refresh=self._sync_runtime_audio_state,
+                on_runtime_refresh=self._queue_runtime_view_refresh,
             )
             widget.changed.connect(self._on_any_changed)
             self.channel_widgets[channel.key] = widget
@@ -606,6 +611,15 @@ class MainWindow(QMainWindow):
             self.audio_engine.apply_channel(self.settings, key)
         self._status_timer.start()
 
+    def _queue_runtime_view_refresh(self, delay_ms: int = 20) -> None:
+        remaining = self._runtime_view_timer.remainingTime()
+        if remaining < 0 or remaining > delay_ms:
+            self._runtime_view_timer.start(delay_ms)
+
+    def _refresh_runtime_views_only(self) -> None:
+        for widget in self.channel_widgets.values():
+            widget.refresh_runtime_views()
+
     def _sync_runtime_audio_state(self) -> None:
         self.audio_engine.apply_settings(self.settings)
         self.refresh_status()
@@ -623,11 +637,20 @@ class MainWindow(QMainWindow):
             self._status_timer.start()
             return
 
-        if hint == "volume":
-            self._queue_channel_apply(source_channel.key, 30)
+        if hint == "volume_drag":
+            self._queue_channel_apply(source_channel.key, 90)
+        elif hint == "volume_commit":
+            self.audio_engine.apply_channel(self.settings, source_channel.key)
+            self._show_overlay_for_change(source_channel, "volume")
+            self._status_timer.start()
+        elif hint == "volume":
+            self._queue_channel_apply(source_channel.key, 45)
             self._show_overlay_for_change(source_channel, hint)
         elif hint == "eq_preview":
             self._queue_channel_apply(source_channel.key, 95)
+        elif hint == "app_route":
+            self._queue_runtime_view_refresh(10)
+            self._status_timer.start()
         elif hint == "mute":
             self.audio_engine.apply_channel(self.settings, source_channel.key)
             self._show_overlay_for_change(source_channel, hint)

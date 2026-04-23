@@ -150,6 +150,7 @@ class ChannelWidget(QFrame):
         self.audio_engine = audio_engine
         self.on_runtime_refresh = on_runtime_refresh
         self._change_hint = "init"
+        self._slider_drag_active = False
 
         self.setObjectName("channelCard")
         self._card_width = 152
@@ -213,6 +214,8 @@ class ChannelWidget(QFrame):
         self.slider.setTracking(True)
         self.slider.setValue(channel.volume)
         self.slider.valueChanged.connect(self._on_volume_changed)
+        self.slider.sliderPressed.connect(self._on_slider_pressed)
+        self.slider.sliderReleased.connect(self._on_slider_released)
         self.slider.setFixedHeight(meter_height)
         self.slider.setFixedWidth(32)
 
@@ -768,10 +771,22 @@ class ChannelWidget(QFrame):
         self.channel.enabled = checked
         self._emit_changed("enabled")
 
+    def _on_slider_pressed(self) -> None:
+        self._slider_drag_active = True
+
+    def _on_slider_released(self) -> None:
+        self._slider_drag_active = False
+        self.channel.volume = self.slider.value()
+        self.volume_percent.setText(f"{self.channel.volume}%")
+        self._emit_changed("volume_commit")
+
     def _on_volume_changed(self, value: int) -> None:
         self.channel.volume = value
         self.volume_percent.setText(f"{value}%")
-        self._emit_changed("volume")
+        if self._slider_drag_active:
+            self._emit_changed("volume_drag")
+        else:
+            self._emit_changed("volume")
 
     def _on_muted_changed(self, checked: bool) -> None:
         self.channel.muted = checked
