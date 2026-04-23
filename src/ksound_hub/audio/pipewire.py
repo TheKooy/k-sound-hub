@@ -96,6 +96,91 @@ class ReturnMicRuntime:
     applied_signature: str = ""
 
 
+@dataclass
+class SinkInputBlock:
+    sink_input_id: int | None = None
+    media_name: str = ""
+    app_name: str = ""
+    binary_name: str = ""
+    muted: bool | None = None
+
+
+def _clamp_int(value: int, minimum: int, maximum: int) -> int:
+    return max(minimum, min(maximum, int(value)))
+
+
+def _parse_short_audio_nodes(lines: Iterable[str], kind: str) -> list[AudioNode]:
+    nodes: list[AudioNode] = []
+    for line in lines:
+        parts = line.split()
+        if len(parts) >= 5:
+            nodes.append(AudioNode(name=parts[1], kind=kind, state=parts[-1]))
+    return nodes
+
+
+def _parse_loopback_module_ids_from_short_modules(
+    lines: Iterable[str],
+    *,
+    source_name: str | None = None,
+    sink_name: str | None = None,
+    media_name: str | None = None,
+) -> list[str]:
+    matches: list[str] = []
+    media_needle = f"sink_input_properties=media.name={media_name}" if media_name else None
+
+    for line in lines:
+        parts = line.split(None, 2)
+        if len(parts) < 3:
+            continue
+        module_id, module_name, args = parts
+        if module_name != "module-loopback":
+            continue
+        if source_name is not None and f"source={source_name}" not in args:
+            continue
+        if sink_name is not None and f"sink={sink_name}" not in args:
+            continue
+        if media_needle is not None and media_needle not in args:
+            continue
+        matches.append(module_id)
+
+    return matches
+
+
+def _parse_sink_input_blocks(lines: Iterable[str]) -> list[SinkInputBlock]:
+    blocks: list[SinkInputBlock] = []
+    current: SinkInputBlock | None = None
+
+    def flush() -> None:
+        nonlocal current
+        if current is not None and current.sink_input_id is not None:
+            blocks.append(current)
+        current = None
+
+    for raw_line in lines:
+        line = raw_line.rstrip()
+        match = re.match(r"^Sink Input #(\d+)", line)
+        if match:
+            flush()
+            current = SinkInputBlock(sink_input_id=int(match.group(1)))
+            continue
+
+        if current is None:
+            continue
+
+        stripped = line.strip()
+        if stripped.startswith("media.name = "):
+            current.media_name = stripped.split("=", 1)[1].strip().strip('"')
+        elif stripped.startswith("application.name = "):
+            current.app_name = stripped.split("=", 1)[1].strip().strip('"')
+        elif stripped.startswith("application.process.binary = "):
+            current.binary_name = stripped.split("=", 1)[1].strip().strip('"')
+        elif stripped.startswith("Mute: "):
+            current.muted = stripped.split(":", 1)[1].strip().lower() == "yes"
+
+    flush()
+    return blocks
+
+
 class SourceMeterProbe:
     def __init__(self, source_name: str) -> None:
         self.source_name = source_name
@@ -262,25 +347,18 @@ class PipeWireAudioEngine(AudioEngine):
         except Exception:
             pass
 
-    def _parse_short(self, lines: Iterable[str], kind: str) -> list[AudioNode]:
-        nodes: list[AudioNode] = []
-        for line in lines:
-            parts = line.split()
-            if len(parts) >= 5:
-                nodes.append(AudioNode(name=parts[1], kind=kind, state=parts[-1]))
-        return nodes
 
     def list_sinks(self) -> list[AudioNode]:
         proc = self._run(["pactl", "list", "short", "sinks"])
         if proc.returncode != 0:
             return []
-        return self._parse_short(proc.stdout.splitlines(), "sink")
+        return _parse_short_audio_nodes(proc.stdout.splitlines(), "sink")
 
     def list_sources(self) -> list[AudioNode]:
         proc = self._run(["pactl", "list", "short", "sources"])
         if proc.returncode != 0:
             return []
-        return self._parse_short(proc.stdout.splitlines(), "source")
+        return _parse_short_audio_nodes(proc.stdout.splitlines(), "source")
 
     def _cached_source_names(self, *, force: bool = False) -> set[str]:
         now = time.monotonic()
@@ -502,18 +580,19 @@ class PipeWireAudioEngine(AudioEngine):
             return None
 
     def _set_node_volume_raw(self, *, node_type: str, node_name: str, volume: int) -> None:
-        volume = max(0, min(180 if node_name == "retour" else 150, int(volume)))
+        volume_limit = 180 if node_name == "retour" else 150
+        volume = _clamp_int(volume, 0, volume_limit)
         self._run_no_fail(["pactl", f"set-{node_type}-volume", node_name, f"{volume}%"])
 
     def _apply_node_controls(self, channel: ChannelConfig, *, node_type: str, node_name: str) -> None:
         if not self._node_exists(node_type, node_name):
             return
 
-        volume = max(0, min(150, int(channel.volume)))
+        volume = _clamp_int(channel.volume, 0, 150)
         if node_type == "sink" and node_name == "retour":
-            volume = max(0, min(180, int(round(channel.volume * 1.8))))
+            volume = _clamp_int(int(round(channel.volume * 1.8)), 0, 180)
         elif node_type == "source" and node_name.startswith("alsa_input."):
-            volume = max(0, min(100, int(channel.volume)))
+            volume = _clamp_int(channel.volume, 0, 100)
 
         if node_type == "sink":
             self._set_node_volume_smooth(node_type="sink", node_name=node_name, target_volume=volume)
@@ -527,68 +606,32 @@ class PipeWireAudioEngine(AudioEngine):
         proc = self._run(["pactl", "list", "short", "modules"])
         if proc.returncode != 0:
             return []
-
-        matches: list[str] = []
-        for line in proc.stdout.splitlines():
-            parts = line.split(None, 2)
-            if len(parts) < 3:
-                continue
-            module_id, module_name, args = parts
-            if module_name != "module-loopback":
-                continue
-            if f"source={source_name}" not in args:
-                continue
-            if f"sink={sink_name}" not in args:
-                continue
-            matches.append(module_id)
-        return matches
+        return _parse_loopback_module_ids_from_short_modules(
+            proc.stdout.splitlines(),
+            source_name=source_name,
+            sink_name=sink_name,
+        )
 
     def _find_loopback_module_ids_by_media_name(self, media_name: str) -> list[str]:
         proc = self._run(["pactl", "list", "short", "modules"])
         if proc.returncode != 0:
             return []
-
-        matches: list[str] = []
-        needle = f"sink_input_properties=media.name={media_name}"
-        for line in proc.stdout.splitlines():
-            parts = line.split(None, 2)
-            if len(parts) < 3:
-                continue
-            module_id, module_name, args = parts
-            if module_name != "module-loopback":
-                continue
-            if needle not in args:
-                continue
-            matches.append(module_id)
-        return matches
+        return _parse_loopback_module_ids_from_short_modules(
+            proc.stdout.splitlines(),
+            media_name=media_name,
+        )
 
     def _find_sink_input_ids_by_media_name(self, media_name: str) -> list[str]:
         proc = self._run(["pactl", "list", "sink-inputs"])
         if proc.returncode != 0:
             return []
 
-        matches: list[str] = []
-        current_id = ""
-        current_media = ""
-
-        def flush() -> None:
-            if current_id and current_media == media_name:
-                matches.append(current_id)
-
-        for raw_line in proc.stdout.splitlines():
-            line = raw_line.rstrip()
-            if line.startswith("Sink Input #"):
-                flush()
-                current_id = line.split("#", 1)[1].strip()
-                current_media = ""
-                continue
-
-            stripped = line.strip()
-            if stripped.startswith("media.name = "):
-                current_media = stripped.split("=", 1)[1].strip().strip('"')
-
-        flush()
-        return matches
+        blocks = _parse_sink_input_blocks(proc.stdout.splitlines())
+        return [
+            str(block.sink_input_id)
+            for block in blocks
+            if block.sink_input_id is not None and block.media_name == media_name
+        ]
 
     def _set_sink_input_mute_by_media_name(self, media_name: str, muted: bool) -> None:
         for sink_input_id in self._find_sink_input_ids_by_media_name(media_name):
@@ -599,30 +642,12 @@ class PipeWireAudioEngine(AudioEngine):
         if proc.returncode != 0:
             return []
 
-        results: list[bool] = []
-        current_media = ""
-        current_mute: bool | None = None
-
-        def flush() -> None:
-            if current_media == media_name and current_mute is not None:
-                results.append(current_mute)
-
-        for raw_line in proc.stdout.splitlines():
-            line = raw_line.rstrip()
-            if line.startswith("Sink Input #"):
-                flush()
-                current_media = ""
-                current_mute = None
-                continue
-
-            stripped = line.strip()
-            if stripped.startswith("media.name = "):
-                current_media = stripped.split("=", 1)[1].strip().strip('"')
-            elif stripped.startswith("Mute: "):
-                current_mute = stripped.split(":", 1)[1].strip().lower() == "yes"
-
-        flush()
-        return results
+        blocks = _parse_sink_input_blocks(proc.stdout.splitlines())
+        return [
+            bool(block.muted)
+            for block in blocks
+            if block.media_name == media_name and block.muted is not None
+        ]
 
     def _unload_micro_link(self, channel_key: str) -> None:
         source_name = f"{channel_key}.monitor"
@@ -1187,51 +1212,25 @@ class PipeWireAudioEngine(AudioEngine):
             return {}
 
         info: dict[int, dict[str, str]] = {}
-        current_id: int | None = None
-        app_name = ""
-        media_name = ""
-        binary_name = ""
+        for block in _parse_sink_input_blocks(proc.stdout.splitlines()):
+            if block.sink_input_id is None:
+                continue
 
-        def flush() -> None:
-            nonlocal current_id, app_name, media_name, binary_name
-            if current_id is None:
-                return
-            base = app_name or binary_name or media_name or f"Stream {current_id}"
-            if "K-Sound Hub" in base or "K-Sound Hub" in media_name:
-                return
-            if media_name and media_name.lower() not in {base.lower(), "audio stream"}:
-                label = f"{base} — {media_name}"
+            base = block.app_name or block.binary_name or block.media_name or f"Stream {block.sink_input_id}"
+            if "K-Sound Hub" in base or "K-Sound Hub" in block.media_name:
+                continue
+
+            if block.media_name and block.media_name.lower() not in {base.lower(), "audio stream"}:
+                label = f"{base} — {block.media_name}"
             else:
                 label = base
-            info[current_id] = {
+
+            info[block.sink_input_id] = {
                 "display_name": label,
-                "app_name": app_name,
-                "binary_name": binary_name,
+                "app_name": block.app_name,
+                "binary_name": block.binary_name,
             }
 
-        for raw_line in proc.stdout.splitlines():
-            line = raw_line.rstrip()
-            match = re.match(r"^Sink Input #(\d+)", line)
-            if match:
-                flush()
-                current_id = int(match.group(1))
-                app_name = ""
-                media_name = ""
-                binary_name = ""
-                continue
-
-            if current_id is None:
-                continue
-
-            stripped = line.strip()
-            if stripped.startswith("application.name = "):
-                app_name = stripped.split("=", 1)[1].strip().strip('"')
-            elif stripped.startswith("media.name = "):
-                media_name = stripped.split("=", 1)[1].strip().strip('"')
-            elif stripped.startswith("application.process.binary = "):
-                binary_name = stripped.split("=", 1)[1].strip().strip('"')
-
-        flush()
         return info
 
     def list_sink_inputs(self) -> list[AppStream]:
