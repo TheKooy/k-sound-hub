@@ -16,6 +16,9 @@ CONFIG_DIR = Path.home() / ".config" / "ksound-hub"
 SETTINGS_PATH = CONFIG_DIR / "settings.json"
 LOG_DIR = CONFIG_DIR / "logs"
 RUNTIME_DIR = CONFIG_DIR / "runtime"
+HUD_SHARED_STATE_DIR = Path.home() / ".config" / "audio-stack" / "hud_overlay"
+HUD_SHARED_STATE_PATH = HUD_SHARED_STATE_DIR / "state.json"
+HUD_SHARED_CONFIG_PATH = HUD_SHARED_STATE_DIR / "config.ini"
 
 IPC_SOCKET_PATH = f"/tmp/ksound_hub_audio_{os.getuid()}.sock"
 

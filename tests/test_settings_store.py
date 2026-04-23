@@ -52,3 +52,26 @@ def test_settings_store_save_creates_parent_directory(tmp_path: Path):
     store.save(settings)
 
     assert path.is_file()
+
+
+def test_legacy_secondary_target_is_ignored_on_save(tmp_path: Path):
+    path = tmp_path / "settings.json"
+    store = SettingsStore(path)
+
+    loaded = AppSettings.from_dict(
+        {
+            "channels": [
+                {
+                    "key": "all",
+                    "name": "ALL",
+                    "kind": "playback",
+                    "secondary_target": "Old target",
+                }
+            ]
+        }
+    )
+
+    store.save(loaded)
+    raw = path.read_text(encoding="utf-8")
+
+    assert "secondary_target" not in raw

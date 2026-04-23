@@ -2,34 +2,40 @@ from __future__ import annotations
 
 import json
 import time
-from pathlib import Path
 
 from PySide6.QtCore import QObject
+
+from ..config import HUD_SHARED_STATE_DIR, HUD_SHARED_STATE_PATH
 
 
 class OverlayManager(QObject):
     """
-    Pont vers l'ancien overlay Carla Hub.
-    On n'essaie plus de recréer un overlay séparé ici :
-    on écrit directement dans le même state.json que l'ancien HUD,
-    qui est déjà validé visuellement et côté placement.
+    Bridge vers le HUD overlay actuellement utilisé par K-Sound Hub.
+
+    Le rendu natif de l'overlay reste assuré par le binaire Qt existant.
+    Cette classe ne gère que l'écriture atomique du state partagé attendu par ce HUD.
     """
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._enabled = False
         self._seq = 0
+        self._hud_state_dir = HUD_SHARED_STATE_DIR
+        self._hud_state_path = HUD_SHARED_STATE_PATH
+        self._hud_state_dir.mkdir(parents=True, exist_ok=True)
+        self._seq = self._load_last_sequence()
 
-        self.legacy_dir = Path.home() / ".config" / "audio-stack" / "hud_overlay"
-        self.legacy_state_path = self.legacy_dir / "state.json"
-        self.legacy_dir.mkdir(parents=True, exist_ok=True)
-
-        if self.legacy_state_path.is_file():
-            try:
-                data = json.loads(self.legacy_state_path.read_text(encoding="utf-8"))
-                self._seq = int(data.get("seq", 0))
-            except Exception:
-                self._seq = 0
+    def _load_last_sequence(self) -> int:
+        if not self._hud_state_path.is_file():
+            return 0
+        try:
+            data = json.loads(self._hud_state_path.read_text(encoding="utf-8"))
+        except Exception:
+            return 0
+        try:
+            return int(data.get("seq", 0))
+        except Exception:
+            return 0
 
     def set_enabled(self, enabled: bool) -> None:
         self._enabled = bool(enabled)
@@ -48,11 +54,10 @@ class OverlayManager(QObject):
             "timestamp": int(time.time() * 1000),
         }
 
-        tmp = self.legacy_state_path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-        tmp.replace(self.legacy_state_path)
+        tmp_path = self._hud_state_path.with_suffix(".json.tmp")
+        tmp_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        tmp_path.replace(self._hud_state_path)
 
     def shutdown(self) -> None:
-        # On ne coupe pas l'ancien HUD ici.
-        # On laisse le process overlay vivre comme avant.
+        # Le process HUD reste géré séparément par le launcher.
         pass

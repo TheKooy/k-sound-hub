@@ -54,7 +54,6 @@ class ChannelConfig:
     muted: bool = False
     visualizer_enabled: bool = True
     primary_target: str = ""
-    secondary_target: str = ""
     linked_channels: list[str] = field(default_factory=list)
     app_rules: list[str] = field(default_factory=list)
     eq_profiles: list[EqProfile] = field(default_factory=lambda: [EqProfile.default()])
@@ -78,7 +77,6 @@ class ChannelConfig:
             muted=bool(data.get("muted", False)),
             visualizer_enabled=bool(data.get("visualizer_enabled", True)),
             primary_target=str(data.get("primary_target", "")),
-            secondary_target=str(data.get("secondary_target", "")),
             linked_channels=[
                 str(item)
                 for item in (data.get("linked_channels", []) if isinstance(data.get("linked_channels", []), list) else [])
@@ -101,7 +99,6 @@ class ChannelConfig:
             "muted": self.muted,
             "visualizer_enabled": self.visualizer_enabled,
             "primary_target": self.primary_target,
-            "secondary_target": self.secondary_target,
             "linked_channels": list(self.linked_channels),
             "app_rules": list(self.app_rules),
             "eq_profiles": [profile.to_dict() for profile in self.eq_profiles],

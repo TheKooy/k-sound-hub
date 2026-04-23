@@ -288,8 +288,6 @@ class ChannelWidget(QFrame):
             return DEVICE_CHOICES["monitor"][0]
         return DEVICE_CHOICES["playback"][0]
 
-    def _default_secondary_target(self) -> str:
-        return ""
 
     def _selector_frame(self, combo: MenuSelectorButton, *, frame_width: int = 136) -> QWidget:
         frame = SelectorFrame()
