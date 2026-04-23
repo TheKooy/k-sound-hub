@@ -34,7 +34,7 @@ class OverlayManager(QObject):
     def set_enabled(self, enabled: bool) -> None:
         self._enabled = bool(enabled)
 
-    def show_message(self, text: str, duration_ms: int = 900) -> None:
+    def show_message(self, text: str, duration_ms: int = 900, *, muted_active: bool = False) -> None:
         if not self._enabled or not text:
             return
 
@@ -44,6 +44,7 @@ class OverlayManager(QObject):
             "text": text,
             "visible": True,
             "durationMs": int(duration_ms),
+            "mutedActive": bool(muted_active),
             "timestamp": int(time.time() * 1000),
         }
 

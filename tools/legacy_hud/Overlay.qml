@@ -17,9 +17,9 @@ Window {
     Rectangle {
         anchors.fill: parent
         radius: 18
-        color: "#D20A0C12"
+        color: hudController.mutedActive ? "#D6401016" : "#D20A0C12"
         border.width: 1
-        border.color: "#DC80AAFF"
+        border.color: hudController.mutedActive ? "#E6FF6262" : "#DC80AAFF"
 
         Text {
             anchors.centerIn: parent

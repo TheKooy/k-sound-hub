@@ -23,6 +23,7 @@ class HudController : public QObject
     Q_PROPERTY(QString hudText READ hudText NOTIFY hudTextChanged)
     Q_PROPERTY(bool hudVisible READ hudVisible NOTIFY hudVisibleChanged)
     Q_PROPERTY(int durationMs READ durationMs NOTIFY durationMsChanged)
+    Q_PROPERTY(bool mutedActive READ mutedActive NOTIFY mutedActiveChanged)
 
 public:
     explicit HudController(const QString &statePath, QObject *parent = nullptr)
@@ -53,11 +54,13 @@ public:
     QString hudText() const { return m_hudText; }
     bool hudVisible() const { return m_hudVisible; }
     int durationMs() const { return m_durationMs; }
+    bool mutedActive() const { return m_mutedActive; }
 
 signals:
     void hudTextChanged();
     void hudVisibleChanged();
     void durationMsChanged();
+    void mutedActiveChanged();
     void triggerShow();
 
 private:
@@ -95,10 +98,12 @@ private:
         const QString newText = obj.value(QStringLiteral("text")).toString();
         const bool visible = obj.value(QStringLiteral("visible")).toBool(false);
         const int newDuration = obj.value(QStringLiteral("durationMs")).toInt(900);
+        const bool newMutedActive = obj.value(QStringLiteral("mutedActive")).toBool(false);
 
         bool textChanged = false;
         bool visChanged = false;
         bool durationChanged = false;
+        bool mutedChanged = false;
 
         if (newText != m_hudText) {
             m_hudText = newText;
@@ -108,6 +113,11 @@ private:
         if (newDuration != m_durationMs) {
             m_durationMs = newDuration;
             durationChanged = true;
+        }
+
+        if (newMutedActive != m_mutedActive) {
+            m_mutedActive = newMutedActive;
+            mutedChanged = true;
         }
 
         if (visible) {
@@ -124,6 +134,8 @@ private:
             emit hudTextChanged();
         if (durationChanged)
             emit durationMsChanged();
+        if (mutedChanged)
+            emit mutedActiveChanged();
         if (visChanged)
             emit hudVisibleChanged();
     }
@@ -133,6 +145,7 @@ private:
     QString m_hudText;
     bool m_hudVisible = false;
     int m_durationMs = 900;
+    bool m_mutedActive = false;
     int m_lastSeq = -1;
     QTimer m_hideTimer;
 };

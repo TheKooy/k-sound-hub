@@ -276,17 +276,19 @@ class MainWindow(QMainWindow):
 
     def _overlay_text(self, channel, hint: str) -> str:
         icon, label = CHANNEL_OVERLAY_META.get(channel.key, ("🎚", channel.name))
-        volume_text = f"{channel.volume}%"
         if hint == "mute":
-            if channel.muted:
-                return f"{icon} {label}  MUTE ON  —  {volume_text}"
-            return f"{icon} {label}  MUTE OFF  —  {volume_text}"
-        return f"{icon} {label} {volume_text}"
+            return f"{icon} {label} {'🔇' if channel.muted else '🔊'}"
+        return f"{icon} {label} {channel.volume}%"
+
 
     def _show_overlay_for_change(self, channel, hint: str) -> None:
         if hint not in {"volume", "mute"}:
             return
-        self.overlay.show_message(self._overlay_text(channel, hint))
+        self.overlay.show_message(
+            self._overlay_text(channel, hint),
+            muted_active=(hint == "mute" and bool(channel.muted)),
+        )
+
 
     def _sync_widget_for_channel(self, channel_key: str) -> None:
         widget = self.channel_widgets.get(channel_key)
@@ -318,6 +320,11 @@ class MainWindow(QMainWindow):
         action = str(payload.get("action", "")).strip().lower()
         hint = "generic"
         changed = False
+
+        if action in {"volup", "voldown", "set-volume"} and channel.muted:
+            self._sync_widget_for_channel(channel.key)
+            self._show_overlay_for_change(channel, "mute")
+            return
 
         if action == "volup":
             channel.volume = min(100, int(channel.volume) + 5)

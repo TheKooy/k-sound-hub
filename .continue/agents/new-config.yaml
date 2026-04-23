@@ -1,0 +1,13 @@
+name: KSound Config
+version: 1.0.0
+schema: v1
+
+models:
+  - name: Qwen
+    provider: ollama
+    model: qwen2.5-coder:14b
+    apiBase: http://127.0.0.1:11434
+
+context:
+  - provider: code
+  - provider: terminal

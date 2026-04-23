@@ -71,6 +71,8 @@ METER_SOURCE_BY_CHANNEL = {
     "micro": "micro",
 }
 
+EQ_PIPEWIRE_LATENCY = "256/48000"
+
 
 @dataclass
 class EqRuntimeSlot:
@@ -166,8 +168,10 @@ class SourceMeterProbe:
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.DEVNULL,
+                    bufsize=0,
                 )
                 self._proc = proc
+
 
                 if proc.stdout is None:
                     self._set_levels(0.0, 0.0)
@@ -245,6 +249,7 @@ class PipeWireAudioEngine(AudioEngine):
         self._micro_links: dict[str, LoopbackLink] = {}
         self._return_mic_runtime = ReturnMicRuntime()
         self._physical_micro_selection_signature = ""
+        self._last_applied_volume: dict[tuple[str, str], int] = {}
 
     def _run(self, args: list[str]) -> subprocess.CompletedProcess[str]:
         env = os.environ.copy()
@@ -462,6 +467,7 @@ class PipeWireAudioEngine(AudioEngine):
         env = os.environ.copy()
         env["XDG_CONFIG_HOME"] = str(self._xdg_home_for(slot.key))
         env["LC_ALL"] = "C"
+        env["PIPEWIRE_LATENCY"] = EQ_PIPEWIRE_LATENCY
 
         with self._log_path_for(slot.key).open("ab", buffering=0) as log_file:
             slot.proc = subprocess.Popen(
@@ -482,6 +488,23 @@ class PipeWireAudioEngine(AudioEngine):
             return ""
         return lines[-1].strip() if lines else ""
 
+    def _read_node_volume_percent(self, *, node_type: str, node_name: str) -> int | None:
+        cmd = ["pactl", f"get-{node_type}-volume", node_name]
+        proc = self._run(cmd)
+        if proc.returncode != 0:
+            return None
+        match = re.search(r"(\d+)%", proc.stdout)
+        if not match:
+            return None
+        try:
+            return int(match.group(1))
+        except Exception:
+            return None
+
+    def _set_node_volume_raw(self, *, node_type: str, node_name: str, volume: int) -> None:
+        volume = max(0, min(180 if node_name == "retour" else 150, int(volume)))
+        self._run_no_fail(["pactl", f"set-{node_type}-volume", node_name, f"{volume}%"])
+
     def _apply_node_controls(self, channel: ChannelConfig, *, node_type: str, node_name: str) -> None:
         if not self._node_exists(node_type, node_name):
             return
@@ -493,10 +516,10 @@ class PipeWireAudioEngine(AudioEngine):
             volume = max(0, min(100, int(channel.volume)))
 
         if node_type == "sink":
-            self._run_no_fail(["pactl", "set-sink-volume", node_name, f"{volume}%"])
+            self._set_node_volume_smooth(node_type="sink", node_name=node_name, target_volume=volume)
             self._run_no_fail(["pactl", "set-sink-mute", node_name, "1" if channel.muted else "0"])
         elif node_type == "source":
-            self._run_no_fail(["pactl", "set-source-volume", node_name, f"{volume}%"])
+            self._set_node_volume_smooth(node_type="source", node_name=node_name, target_volume=volume)
             self._run_no_fail(["pactl", "set-source-mute", node_name, "1" if channel.muted else "0"])
 
 
@@ -1241,3 +1264,25 @@ class PipeWireAudioEngine(AudioEngine):
             return False
         proc = self._run(["pactl", "move-sink-input", str(stream_id), target])
         return proc.returncode == 0
+
+    def _set_node_volume_smooth(self, *, node_type: str, node_name: str, target_volume: int) -> None:
+        cache_key = (node_type, node_name)
+
+        current = self._last_applied_volume.get(cache_key)
+        if current is None:
+            current = self._read_node_volume_percent(node_type=node_type, node_name=node_name)
+
+        if current is None:
+            self._set_node_volume_raw(node_type=node_type, node_name=node_name, volume=target_volume)
+            self._last_applied_volume[cache_key] = int(target_volume)
+            return
+
+        current = int(current)
+        target = int(target_volume)
+
+        if abs(target - current) > 10:
+            mid = current + (target - current) // 2
+            self._set_node_volume_raw(node_type=node_type, node_name=node_name, volume=mid)
+
+        self._set_node_volume_raw(node_type=node_type, node_name=node_name, volume=target)
+        self._last_applied_volume[cache_key] = target
