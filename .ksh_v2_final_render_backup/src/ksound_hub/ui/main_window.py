@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..audio.pipewire_v2_final import PipeWireAudioEngine
+from ..audio.pipewire_v2_playback import PipeWireAudioEngine
 from ..config import APP_ICON_PATH, APP_NAME, APP_VERSION, IPC_SOCKET_PATH
 from ..ipc import AudioIpcServer
 from ..settings_store import SettingsStore

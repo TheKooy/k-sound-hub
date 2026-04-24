@@ -1,4 +1,3 @@
-from .engine import AudioEngine
-from .pipewire_v2_playback import PipeWireAudioEngine
+from .pipewire_v2_final import PipeWireAudioEngine
 
-__all__ = ["AudioEngine", "PipeWireAudioEngine"]
+__all__ = ["PipeWireAudioEngine"]
