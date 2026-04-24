@@ -12,8 +12,8 @@ class OverlayManager(QObject):
     """
     Bridge vers le HUD overlay actuellement utilisé par K-Sound Hub.
 
-    Le rendu natif de l'overlay reste assuré par le binaire Qt existant.
-    Cette classe ne gère que l'écriture atomique du state partagé attendu par ce HUD.
+    Le rendu natif reste assuré par le binaire Qt existant.
+    Cette classe se contente d'écrire dans le state partagé attendu par ce HUD.
     """
 
     def __init__(self, parent=None):

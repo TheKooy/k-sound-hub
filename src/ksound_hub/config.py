@@ -3,24 +3,37 @@ from __future__ import annotations
 from pathlib import Path
 import os
 
-APP_NAME = "K-Sound Hub"
+def _env_path(name: str, default: Path) -> Path:
+    value = os.environ.get(name, "").strip()
+    return Path(value).expanduser() if value else default
+
+_profile_suffix = os.environ.get("KSH_PROFILE_SUFFIX", "").strip()
+_default_app_name = "K-Sound Hub" + (f" {_profile_suffix}" if _profile_suffix else "")
+APP_NAME = os.environ.get("KSH_APP_NAME", _default_app_name)
 APP_VERSION = "0.3.1"
-ORG_NAME = "K-Sound Hub"
-ORG_DOMAIN = "local.ksoundhub"
+ORG_NAME = os.environ.get("KSH_ORG_NAME", APP_NAME)
+ORG_DOMAIN = os.environ.get("KSH_ORG_DOMAIN", "local.ksoundhub.v2")
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 ASSETS_DIR = PACKAGE_DIR / "assets"
 APP_ICON_PATH = ASSETS_DIR / "app_icon.png"
 
-CONFIG_DIR = Path.home() / ".config" / "ksound-hub"
+CONFIG_DIR = _env_path("KSH_CONFIG_DIR", Path.home() / ".config" / "ksound-hub")
 SETTINGS_PATH = CONFIG_DIR / "settings.json"
 LOG_DIR = CONFIG_DIR / "logs"
 RUNTIME_DIR = CONFIG_DIR / "runtime"
-HUD_SHARED_STATE_DIR = Path.home() / ".config" / "audio-stack" / "hud_overlay"
+
+HUD_SHARED_STATE_DIR = _env_path(
+    "KSH_HUD_STATE_DIR",
+    Path.home() / ".config" / "audio-stack" / "hud_overlay",
+)
 HUD_SHARED_STATE_PATH = HUD_SHARED_STATE_DIR / "state.json"
 HUD_SHARED_CONFIG_PATH = HUD_SHARED_STATE_DIR / "config.ini"
 
-IPC_SOCKET_PATH = f"/tmp/ksound_hub_audio_{os.getuid()}.sock"
+IPC_SOCKET_PATH = os.environ.get(
+    "KSH_IPC_SOCKET_PATH",
+    f"/tmp/ksound_hub_audio_{os.getuid()}.sock",
+)
 
 OVERLAY_DURATION_MS = 900
 OVERLAY_WIDTH = 380
