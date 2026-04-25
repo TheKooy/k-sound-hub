@@ -36,6 +36,7 @@ try_restore() {
 import json
 import os
 import socket
+import sys
 
 sock = os.environ["KSH_IPC_SOCKET_PATH"]
 try:
@@ -62,7 +63,7 @@ import signal
 import time
 from pathlib import Path
 
-TARGET_ROLES = {"eq_slot", "meter_probe", "native_engine_shadow", "native_engine_bridge"}
+TARGET_ROLES = {"eq_slot", "meter_probe"}
 uid = os.getuid()
 proc_root = Path("/proc")
 pids = []
@@ -138,10 +139,6 @@ fi
 
 if [[ -x "$REPO_DIR/scripts/start_overlay_bridge.sh" ]]; then
   "$REPO_DIR/scripts/start_overlay_bridge.sh" >/dev/null 2>&1 || true
-fi
-
-if [[ -x "$REPO_DIR/scripts/start_ksound_native_shadow_bridge.sh" ]]; then
-  "$REPO_DIR/scripts/start_ksound_native_shadow_bridge.sh" >/dev/null 2>&1 || true
 fi
 
 exec "$PYTHON_BIN" -m ksound_hub.app
