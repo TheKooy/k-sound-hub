@@ -51,12 +51,12 @@ MIC_LINKABLE_CHANNEL_KEYS = ["all", "game", "chat", "media", "more"]
 class NoWheelAppListWidget(QListWidget):
     """App list where mouse wheel scrolling is disabled.
 
-    The wheel event is ignored, not accepted, so the parent scroll area can
-    still scroll when the cursor is above the apps section.
+    This avoids accidental scrolling inside the apps section while keeping
+    normal item selection and scrollbar dragging available.
     """
 
     def wheelEvent(self, event) -> None:
-        event.ignore()
+        event.accept()
 
 
 class ClickOutsideMessageDialog(QDialog):
@@ -409,8 +409,6 @@ class ChannelWidget(QFrame):
         self.apps_section.content_layout.addLayout(badge_row)
 
         self.apps_list = NoWheelAppListWidget()
-        self.apps_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self.apps_list.setHorizontalScrollMode(QListWidget.ScrollPerPixel)
         self.apps_list.setMinimumHeight(96)
         self.apps_list.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.apps_section.content_layout.addWidget(self.apps_list)

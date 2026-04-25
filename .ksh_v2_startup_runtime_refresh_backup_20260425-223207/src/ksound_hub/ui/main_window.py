@@ -238,33 +238,6 @@ class MainWindow(QMainWindow):
         event.accept()
         return True
 
-    def _schedule_startup_runtime_refresh(self) -> None:
-        """Resync routing and UI after cold start.
-
-        Some app streams appear after the first UI build. Without delayed
-        passes, the Apps section can display a stream in one channel while
-        PipeWire still routes it through another one until Refresh is pressed.
-        """
-        for delay in (250, 800, 1600, 3200, 5200, 8000):
-            QTimer.singleShot(delay, self._startup_runtime_refresh_once)
-
-    def _startup_runtime_refresh_once(self) -> None:
-        try:
-            self._normalize_app_rules()
-            self._reapply_saved_app_routes()
-            self.refresh_status()
-
-            # Also refresh size-dependent UI. This is intentionally repeated:
-            # at startup the window/background can still be settling.
-            if hasattr(self, "_startup_visual_refresh_once"):
-                self._startup_visual_refresh_once()
-            else:
-                self._update_background_layers()
-                self._apply_column_widths()
-                self.update()
-        except RuntimeError:
-            pass
-
     def _schedule_startup_visual_refresh(self) -> None:
         """Refresh size-dependent UI once the window has its real size.
 

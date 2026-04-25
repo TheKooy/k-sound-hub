@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer, QEvent
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -192,105 +192,6 @@ class MainWindow(QMainWindow):
         self.refresh_status()
         self._meter_timer.start()
 
-        self._schedule_startup_visual_refresh()
-
-        QApplication.instance().installEventFilter(self)
-
-    def eventFilter(self, obj, event) -> bool:
-        """Reserve mouse-wheel scrolling for the main Hub page only.
-
-        Manual sliders/scrollbars still work. Only wheel/touchpad wheel events
-        are intercepted inside the main window.
-        """
-        if event.type() != QEvent.Wheel:
-            return super().eventFilter(obj, event)
-
-        if not isinstance(obj, QWidget):
-            return super().eventFilter(obj, event)
-
-        if obj.window() is not self:
-            return super().eventFilter(obj, event)
-
-        if not hasattr(self, "scroll"):
-            return super().eventFilter(obj, event)
-
-        bar = self.scroll.verticalScrollBar()
-        if bar is None or bar.maximum() <= bar.minimum():
-            event.accept()
-            return True
-
-        angle = event.angleDelta()
-        pixel = event.pixelDelta()
-
-        if pixel.y():
-            step = -pixel.y()
-        elif angle.y():
-            step = int(-(angle.y() / 120.0) * bar.singleStep() * 3)
-        else:
-            # Horizontal wheel/touchpad movement: swallow it. It should not
-            # move Apps/EQ/list internals horizontally.
-            event.accept()
-            return True
-
-        if step:
-            bar.setValue(bar.value() + step)
-
-        event.accept()
-        return True
-
-    def _schedule_startup_runtime_refresh(self) -> None:
-        """Resync routing and UI after cold start.
-
-        Some app streams appear after the first UI build. Without delayed
-        passes, the Apps section can display a stream in one channel while
-        PipeWire still routes it through another one until Refresh is pressed.
-        """
-        for delay in (250, 800, 1600, 3200, 5200, 8000):
-            QTimer.singleShot(delay, self._startup_runtime_refresh_once)
-
-    def _startup_runtime_refresh_once(self) -> None:
-        try:
-            self._normalize_app_rules()
-            self._reapply_saved_app_routes()
-            self.refresh_status()
-
-            # Also refresh size-dependent UI. This is intentionally repeated:
-            # at startup the window/background can still be settling.
-            if hasattr(self, "_startup_visual_refresh_once"):
-                self._startup_visual_refresh_once()
-            else:
-                self._update_background_layers()
-                self._apply_column_widths()
-                self.update()
-        except RuntimeError:
-            pass
-
-    def _schedule_startup_visual_refresh(self) -> None:
-        """Refresh size-dependent UI once the window has its real size.
-
-        At cold start, the wallpaper and channel spacing can be calculated
-        before Qt has applied the final window geometry. A few delayed passes
-        reproduce what a manual resize/Refresh already fixes.
-        """
-        for delay in (0, 60, 180, 420, 900):
-            QTimer.singleShot(delay, self._startup_visual_refresh_once)
-
-    def _startup_visual_refresh_once(self) -> None:
-        try:
-            self.scroll.updateGeometry()
-            self.columns_host.updateGeometry()
-            self.columns_layout.invalidate()
-            self._apply_column_widths()
-            self._update_background_layers()
-
-            if self.scroll.widget() is not None:
-                self.scroll.widget().updateGeometry()
-
-            self.scroll.viewport().update()
-            self.update()
-        except RuntimeError:
-            pass
-
     def _link_shared_eq_library(self, source_channel=None) -> None:
         shared_profiles = None
 
@@ -349,38 +250,6 @@ class MainWindow(QMainWindow):
                     cleaned.append(rule)
 
             channel.app_rules = cleaned
-
-    def _prefer_app_rules_for_channel(self, preferred_channel) -> None:
-        """Make moved app rules belong to the target channel only.
-
-        When an app is moved from GAME to MEDIA, the old bin/app rule must be
-        removed from GAME, otherwise startup route restore may send it back to
-        the older channel.
-        """
-        if preferred_channel is None:
-            return
-
-        if preferred_channel.key not in {"all", "game", "chat", "media", "more"}:
-            return
-
-        preferred_rules = {
-            str(rule or "").strip()
-            for rule in getattr(preferred_channel, "app_rules", []) or []
-            if str(rule or "").strip()
-        }
-        if not preferred_rules:
-            return
-
-        for channel in self.settings.channels:
-            if channel is preferred_channel:
-                continue
-            if channel.key not in {"all", "game", "chat", "media", "more"}:
-                continue
-
-            channel.app_rules = [
-                rule for rule in getattr(channel, "app_rules", []) or []
-                if str(rule or "").strip() not in preferred_rules
-            ]
 
     def _stream_matches_rule(self, stream, rule: str) -> bool:
         rule = str(rule or "").strip()
@@ -761,10 +630,6 @@ class MainWindow(QMainWindow):
         hint = getattr(sender, "_change_hint", "generic")
 
         self._link_shared_eq_library(source_channel=source_channel)
-
-        if hint == "app_route":
-            self._prefer_app_rules_for_channel(source_channel)
-            self._normalize_app_rules()
 
         if source_channel is None:
             self.audio_engine.apply_settings(self.settings)

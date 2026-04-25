@@ -409,7 +409,7 @@ class ChannelWidget(QFrame):
         self.apps_section.content_layout.addLayout(badge_row)
 
         self.apps_list = NoWheelAppListWidget()
-        self.apps_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.apps_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.apps_list.setHorizontalScrollMode(QListWidget.ScrollPerPixel)
         self.apps_list.setMinimumHeight(96)
         self.apps_list.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)

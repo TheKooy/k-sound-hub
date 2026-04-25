@@ -193,6 +193,7 @@ class MainWindow(QMainWindow):
         self._meter_timer.start()
 
         self._schedule_startup_visual_refresh()
+        self._schedule_startup_runtime_refresh()
 
         QApplication.instance().installEventFilter(self)
 
@@ -542,6 +543,8 @@ class MainWindow(QMainWindow):
         self._present_window()
         QTimer.singleShot(0, self._present_window)
         QTimer.singleShot(150, self._present_window)
+        QTimer.singleShot(250, self._startup_runtime_refresh_once)
+        QTimer.singleShot(900, self._startup_runtime_refresh_once)
 
 
     def _quit_from_tray(self) -> None:
