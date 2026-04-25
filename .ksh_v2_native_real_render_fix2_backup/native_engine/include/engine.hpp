@@ -15,18 +15,16 @@ struct EngineConfig {
 class Engine {
   public:
     explicit Engine(EngineConfig config);
-    ~Engine();
     int run();
 
   private:
     void log(const std::string& line);
     void maybe_reload_state();
-    void tick_once();
     void write_levels();
-    void stop_all();
 
     EngineConfig config_;
     std::filesystem::file_time_type last_state_write_{};
+    unsigned long long tick_{0};
 };
 
 } // namespace ksound::native

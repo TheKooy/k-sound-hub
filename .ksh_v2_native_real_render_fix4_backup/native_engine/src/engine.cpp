@@ -36,13 +36,6 @@ constexpr int SAMPLE_BYTES = 4;
 constexpr int CHUNK_BYTES = CHUNK_FRAMES * CHANNELS * SAMPLE_BYTES;
 constexpr float MAX_OUTPUT = 0.98f;
 constexpr float MIX_HEADROOM = 0.72f;
-constexpr float VOLUME_CURVE_EXPONENT = 2.0f;
-constexpr float ACTIVITY_THRESHOLD = 1.0e-4f;
-constexpr float GATE_ATTACK_STEP = 0.45f;
-constexpr float GATE_RELEASE_STEP = 0.25f;
-constexpr int SILENCE_HOLD_CHUNKS = 3;
-constexpr float GAP_FILL_DECAY = 0.78f;
-constexpr int MAX_GAP_FILL_CHUNKS = 4;
 const std::array<const char*, 5> PLAYBACK_KEYS = {"all", "game", "chat", "media", "more"};
 
 volatile std::sig_atomic_t g_running = 1;
@@ -78,15 +71,6 @@ std::vector<std::string> split_tab(const std::string& line) {
 
 float clampf(float value, float low, float high) {
     return std::max(low, std::min(high, value));
-}
-
-float volume_percent_to_gain(float percent) {
-    percent = clampf(percent, 0.0f, 150.0f);
-    if (percent <= 100.0f) {
-        const float normalized = percent / 100.0f;
-        return std::pow(normalized, VOLUME_CURVE_EXPONENT);
-    }
-    return 1.0f + ((percent - 100.0f) / 100.0f);
 }
 
 struct Biquad {
@@ -249,11 +233,6 @@ struct CaptureClient {
     ChildProcess proc;
     std::vector<char> buffer;
     std::array<float, 2> last_level{0.0f, 0.0f};
-    std::vector<float> last_chunk;
-    int gap_fill_chunks{0};
-    float gate_gain{0.0f};
-    float output_gain{0.0f};
-    int silence_hold_chunks{0};
 
     void ensure_started() {
         if (proc.running()) {
@@ -277,11 +256,6 @@ struct CaptureClient {
         proc.stop();
         buffer.clear();
         last_level = {0.0f, 0.0f};
-        last_chunk.clear();
-        gap_fill_chunks = 0;
-        gate_gain = 0.0f;
-        output_gain = 0.0f;
-        silence_hold_chunks = 0;
     }
 
     std::vector<float> read_chunk() {
@@ -307,32 +281,12 @@ struct CaptureClient {
         }
 
         if (buffer.size() < static_cast<std::size_t>(CHUNK_BYTES)) {
-            if (!last_chunk.empty() && gap_fill_chunks < MAX_GAP_FILL_CHUNKS) {
-                std::vector<float> out = last_chunk;
-                float peak_l = 0.0f;
-                float peak_r = 0.0f;
-                for (int i = 0; i < CHUNK_FRAMES; ++i) {
-                    out[i * 2] *= GAP_FILL_DECAY;
-                    out[i * 2 + 1] *= GAP_FILL_DECAY;
-                    peak_l = std::max(peak_l, std::abs(out[i * 2]));
-                    peak_r = std::max(peak_r, std::abs(out[i * 2 + 1]));
-                }
-                last_chunk = out;
-                ++gap_fill_chunks;
-                if (std::max(peak_l, peak_r) < ACTIVITY_THRESHOLD) {
-                    last_chunk.clear();
-                }
-                last_level = {clampf(peak_l, 0.0f, 1.0f), clampf(peak_r, 0.0f, 1.0f)};
-                return out;
-            }
             return std::vector<float>(CHUNK_FRAMES * CHANNELS, 0.0f);
         }
 
         std::vector<float> out(CHUNK_FRAMES * CHANNELS, 0.0f);
         std::memcpy(out.data(), buffer.data(), CHUNK_BYTES);
         buffer.erase(buffer.begin(), buffer.begin() + CHUNK_BYTES);
-        last_chunk = out;
-        gap_fill_chunks = 0;
 
         float peak_l = 0.0f;
         float peak_r = 0.0f;
@@ -450,15 +404,6 @@ std::vector<Biquad> parse_bands(const std::string& spec) {
     return out;
 }
 
-bool same_filter_shape(const Biquad& a, const Biquad& b) {
-    const double eps = 1.0e-9;
-    return std::abs(a.b0 - b.b0) < eps &&
-           std::abs(a.b1 - b.b1) < eps &&
-           std::abs(a.b2 - b.b2) < eps &&
-           std::abs(a.a1 - b.a1) < eps &&
-           std::abs(a.a2 - b.a2) < eps;
-}
-
 void parse_state_text(const std::string& text) {
     std::map<std::string, ChannelState> parsed;
     for (const auto* key : PLAYBACK_KEYS) {
@@ -485,7 +430,7 @@ void parse_state_text(const std::string& text) {
         st.enabled = parts[2] == "1";
         st.muted = parts[3] == "1";
         try {
-            st.volume = volume_percent_to_gain(std::stof(parts[4]));
+            st.volume = clampf(std::stof(parts[4]) / 100.0f, 0.0f, 1.8f);
         } catch (...) {
             st.volume = 1.0f;
         }
@@ -493,33 +438,6 @@ void parse_state_text(const std::string& text) {
         st.target_sink = parts[6];
         st.filters = parse_bands(parts[7]);
         parsed[st.key] = st;
-    }
-
-    auto old_channels = g_channels;
-    for (auto& [key, st] : parsed) {
-        auto it = old_channels.find(key);
-        if (it == old_channels.end()) {
-            continue;
-        }
-        if (it->second.filters.size() != st.filters.size()) {
-            continue;
-        }
-        bool compatible = true;
-        for (std::size_t i = 0; i < st.filters.size(); ++i) {
-            if (!same_filter_shape(it->second.filters[i], st.filters[i])) {
-                compatible = false;
-                break;
-            }
-        }
-        if (!compatible) {
-            continue;
-        }
-        for (std::size_t i = 0; i < st.filters.size(); ++i) {
-            st.filters[i].z1[0] = it->second.filters[i].z1[0];
-            st.filters[i].z1[1] = it->second.filters[i].z1[1];
-            st.filters[i].z2[0] = it->second.filters[i].z2[0];
-            st.filters[i].z2[1] = it->second.filters[i].z2[1];
-        }
     }
 
     g_channels = std::move(parsed);
@@ -530,47 +448,16 @@ void parse_state_text(const std::string& text) {
     }
 }
 
-std::vector<float> process_channel(CaptureClient& capture, const ChannelState& state, std::vector<float> frames) {
-    float peak = 0.0f;
-    for (float sample : frames) {
-        peak = std::max(peak, std::abs(sample));
+std::vector<float> process_channel(const ChannelState& state, std::vector<float> frames) {
+    if (!state.enabled || state.muted) {
+        return std::vector<float>(CHUNK_FRAMES * CHANNELS, 0.0f);
     }
-
-    if (peak > ACTIVITY_THRESHOLD) {
-        capture.silence_hold_chunks = SILENCE_HOLD_CHUNKS;
-    } else if (capture.silence_hold_chunks > 0) {
-        --capture.silence_hold_chunks;
-    }
-
-    const bool should_play = state.enabled && !state.muted;
-    const bool keep_open = should_play && (peak > ACTIVITY_THRESHOLD || capture.silence_hold_chunks > 0);
-    const float target_gate = keep_open ? 1.0f : 0.0f;
-    const float start_gate = capture.gate_gain;
-    float end_gate = start_gate;
-    if (target_gate > start_gate) {
-        end_gate = std::min(target_gate, start_gate + GATE_ATTACK_STEP);
-    } else if (target_gate < start_gate) {
-        end_gate = std::max(target_gate, start_gate - GATE_RELEASE_STEP);
-    }
-
     for (auto& filt : const_cast<std::vector<Biquad>&>(state.filters)) {
         filt.process(frames);
     }
-
-    const float base_gain = should_play ? state.volume : 0.0f;
-    const float start_output_gain = capture.output_gain;
-    const float end_output_gain = base_gain * end_gate;
-    const float denom = static_cast<float>(std::max(1, CHUNK_FRAMES - 1));
-
-    for (int i = 0; i < CHUNK_FRAMES; ++i) {
-        const float t = static_cast<float>(i) / denom;
-        const float gain = start_output_gain + (end_output_gain - start_output_gain) * t;
-        frames[i * 2] *= gain;
-        frames[i * 2 + 1] *= gain;
+    for (float& sample : frames) {
+        sample *= state.volume;
     }
-
-    capture.gate_gain = end_gate;
-    capture.output_gain = end_output_gain;
     return frames;
 }
 
@@ -633,7 +520,7 @@ void Engine::tick_once() {
             continue;
         }
         auto frames = capture.read_chunk();
-        auto processed = process_channel(capture, state, std::move(frames));
+        auto processed = process_channel(state, std::move(frames));
         auto& mix = mixes[state.target_label.empty() ? state.target_sink : state.target_label];
         if (mix.empty()) {
             mix.assign(CHUNK_FRAMES * CHANNELS, 0.0f);

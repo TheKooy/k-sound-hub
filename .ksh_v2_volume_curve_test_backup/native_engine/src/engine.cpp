@@ -36,7 +36,6 @@ constexpr int SAMPLE_BYTES = 4;
 constexpr int CHUNK_BYTES = CHUNK_FRAMES * CHANNELS * SAMPLE_BYTES;
 constexpr float MAX_OUTPUT = 0.98f;
 constexpr float MIX_HEADROOM = 0.72f;
-constexpr float VOLUME_CURVE_EXPONENT = 2.0f;
 constexpr float ACTIVITY_THRESHOLD = 1.0e-4f;
 constexpr float GATE_ATTACK_STEP = 0.45f;
 constexpr float GATE_RELEASE_STEP = 0.25f;
@@ -78,15 +77,6 @@ std::vector<std::string> split_tab(const std::string& line) {
 
 float clampf(float value, float low, float high) {
     return std::max(low, std::min(high, value));
-}
-
-float volume_percent_to_gain(float percent) {
-    percent = clampf(percent, 0.0f, 150.0f);
-    if (percent <= 100.0f) {
-        const float normalized = percent / 100.0f;
-        return std::pow(normalized, VOLUME_CURVE_EXPONENT);
-    }
-    return 1.0f + ((percent - 100.0f) / 100.0f);
 }
 
 struct Biquad {
@@ -252,7 +242,6 @@ struct CaptureClient {
     std::vector<float> last_chunk;
     int gap_fill_chunks{0};
     float gate_gain{0.0f};
-    float output_gain{0.0f};
     int silence_hold_chunks{0};
 
     void ensure_started() {
@@ -280,7 +269,6 @@ struct CaptureClient {
         last_chunk.clear();
         gap_fill_chunks = 0;
         gate_gain = 0.0f;
-        output_gain = 0.0f;
         silence_hold_chunks = 0;
     }
 
@@ -485,7 +473,7 @@ void parse_state_text(const std::string& text) {
         st.enabled = parts[2] == "1";
         st.muted = parts[3] == "1";
         try {
-            st.volume = volume_percent_to_gain(std::stof(parts[4]));
+            st.volume = clampf(std::stof(parts[4]) / 100.0f, 0.0f, 1.8f);
         } catch (...) {
             st.volume = 1.0f;
         }
@@ -558,19 +546,16 @@ std::vector<float> process_channel(CaptureClient& capture, const ChannelState& s
     }
 
     const float base_gain = should_play ? state.volume : 0.0f;
-    const float start_output_gain = capture.output_gain;
-    const float end_output_gain = base_gain * end_gate;
     const float denom = static_cast<float>(std::max(1, CHUNK_FRAMES - 1));
-
     for (int i = 0; i < CHUNK_FRAMES; ++i) {
         const float t = static_cast<float>(i) / denom;
-        const float gain = start_output_gain + (end_output_gain - start_output_gain) * t;
+        const float gate = start_gate + (end_gate - start_gate) * t;
+        const float gain = base_gain * gate;
         frames[i * 2] *= gain;
         frames[i * 2 + 1] *= gain;
     }
 
     capture.gate_gain = end_gate;
-    capture.output_gain = end_output_gain;
     return frames;
 }
 

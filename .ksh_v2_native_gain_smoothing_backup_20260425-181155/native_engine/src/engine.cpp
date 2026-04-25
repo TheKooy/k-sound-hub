@@ -252,7 +252,6 @@ struct CaptureClient {
     std::vector<float> last_chunk;
     int gap_fill_chunks{0};
     float gate_gain{0.0f};
-    float output_gain{0.0f};
     int silence_hold_chunks{0};
 
     void ensure_started() {
@@ -280,7 +279,6 @@ struct CaptureClient {
         last_chunk.clear();
         gap_fill_chunks = 0;
         gate_gain = 0.0f;
-        output_gain = 0.0f;
         silence_hold_chunks = 0;
     }
 
@@ -558,19 +556,16 @@ std::vector<float> process_channel(CaptureClient& capture, const ChannelState& s
     }
 
     const float base_gain = should_play ? state.volume : 0.0f;
-    const float start_output_gain = capture.output_gain;
-    const float end_output_gain = base_gain * end_gate;
     const float denom = static_cast<float>(std::max(1, CHUNK_FRAMES - 1));
-
     for (int i = 0; i < CHUNK_FRAMES; ++i) {
         const float t = static_cast<float>(i) / denom;
-        const float gain = start_output_gain + (end_output_gain - start_output_gain) * t;
+        const float gate = start_gate + (end_gate - start_gate) * t;
+        const float gain = base_gain * gate;
         frames[i * 2] *= gain;
         frames[i * 2 + 1] *= gain;
     }
 
     capture.gate_gain = end_gate;
-    capture.output_gain = end_output_gain;
     return frames;
 }
 
