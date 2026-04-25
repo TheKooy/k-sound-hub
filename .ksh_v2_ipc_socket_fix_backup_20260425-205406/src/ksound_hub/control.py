@@ -2,27 +2,10 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import socket
 import sys
-from pathlib import Path
 
 from .config import IPC_SOCKET_PATH
-
-
-def resolve_ipc_socket_path() -> str:
-    candidates = [
-        os.environ.get("KSOUND_HUB_IPC_SOCKET", ""),
-        f"/tmp/ksound_hub_audio_v2_{os.getuid()}.sock",
-        IPC_SOCKET_PATH,
-        f"/tmp/ksound_hub_audio_{os.getuid()}.sock",
-    ]
-
-    for candidate in candidates:
-        if candidate and Path(candidate).exists():
-            return candidate
-
-    return candidates[1]
 
 
 CHANNEL_ALIASES = {
@@ -62,13 +45,12 @@ def main() -> int:
 
     try:
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        socket_path = resolve_ipc_socket_path()
-        sock.connect(socket_path)
+        sock.connect(IPC_SOCKET_PATH)
         sock.sendall((json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8"))
         sock.close()
         return 0
     except FileNotFoundError:
-        print(f"IPC socket not found: {resolve_ipc_socket_path()}", file=sys.stderr)
+        print(f"IPC socket not found: {IPC_SOCKET_PATH}", file=sys.stderr)
         return 1
     except Exception as exc:
         print(f"Failed to send command: {exc}", file=sys.stderr)
