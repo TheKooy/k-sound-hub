@@ -69,3 +69,16 @@ packaging/linux/ksound-hub.desktop
 
 # Shipped asset packs
 !src/ksound_hub/assets/**/*.zip
+
+# Android Soundboard build artifacts / secrets
+/android-soundboard-apk/gen/
+/android-soundboard-apk/classes/
+/android-soundboard-apk/dex/
+/android-soundboard-apk/*.apk
+/android-soundboard-apk/*.zip
+/android-soundboard-apk/*.keystore
+/android-soundboard-apk/*.jks
+/android-soundboard-apk/compiled-res.zip
+/android-soundboard-apk/unsigned*.apk
+/android-soundboard-apk/aligned.apk
+/dist/*.apk
