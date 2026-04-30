@@ -82,3 +82,16 @@ packaging/linux/ksound-hub.desktop
 /android-soundboard-apk/unsigned*.apk
 /android-soundboard-apk/aligned.apk
 /dist/*.apk
+
+# Local patch/rollback backups
+.android_pairing_backup_*/
+.ksh_v2_micro_keepalive_backup_*/
+.micro_soundboard_runtime_link_*/
+.micro_soundboard_ui_backup_*/
+.soundboard_*_backup_*/
+.soundboard_bus_true_source_*/
+.soundboard_micro_*/
+.soundboard_pair_button_backup_*/
+.soundboard_real_channel_patch_*/
+.soundboard_stop_android_seed_*/
+.soundboard_v2_backup_*/

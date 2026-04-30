@@ -102,6 +102,7 @@ class SinkInputBlock:
     media_name: str = ""
     app_name: str = ""
     binary_name: str = ""
+    node_name: str = ""
     muted: bool | None = None
 
 
@@ -174,6 +175,8 @@ def _parse_sink_input_blocks(lines: Iterable[str]) -> list[SinkInputBlock]:
             current.app_name = stripped.split("=", 1)[1].strip().strip('"')
         elif stripped.startswith("application.process.binary = "):
             current.binary_name = stripped.split("=", 1)[1].strip().strip('"')
+        elif stripped.startswith("node.name = "):
+            current.node_name = stripped.split("=", 1)[1].strip().strip('"')
         elif stripped.startswith("Mute: "):
             current.muted = stripped.split(":", 1)[1].strip().lower() == "yes"
 
@@ -196,11 +199,44 @@ def _resolved_channel_node_volume(channel_volume: int, *, node_type: str, node_n
     return volume
 
 
+def _is_internal_ksound_stream(block: SinkInputBlock) -> bool:
+    media_name = block.media_name or ""
+    internal_needles = (
+        "K-Sound Hub Return Mic",
+        "K-Sound Hub Mic Physical",
+        "K-Sound Hub Mic Send",
+        "K-Sound Hub ALL EQ",
+        "K-Sound Hub GAME EQ",
+        "K-Sound Hub CHAT EQ",
+        "K-Sound Hub MEDIA EQ",
+        "K-Sound Hub MORE EQ",
+        "K-Sound Hub V2 Device Bus",
+    )
+    return any(needle in media_name for needle in internal_needles)
+
+
+def _looks_like_ksound_soundboard_stream(block: SinkInputBlock) -> bool:
+    if "Soundboard" in block.media_name or "soundboard" in block.node_name.lower():
+        return True
+    app_name = block.app_name or ""
+    return "K-Sound Hub" in app_name and not _is_internal_ksound_stream(block)
+
+
 def _build_stream_display_name(block: SinkInputBlock) -> str | None:
     if block.sink_input_id is None:
         return None
 
+    if _is_internal_ksound_stream(block):
+        return None
+
     base = block.app_name or block.binary_name or block.media_name or f"Stream {block.sink_input_id}"
+
+    if _looks_like_ksound_soundboard_stream(block):
+        label = block.media_name.strip() if block.media_name.strip() else f"Stream {block.sink_input_id}"
+        if label.lower() in {"audio stream", "playback stream"}:
+            label = f"Stream {block.sink_input_id}"
+        return f"SOUNDBOARD — {label}"
+
     if "K-Sound Hub" in base or "K-Sound Hub" in block.media_name:
         return None
 
@@ -1281,6 +1317,8 @@ class PipeWireAudioEngine(AudioEngine):
                 "display_name": display_name,
                 "app_name": block.app_name,
                 "binary_name": block.binary_name,
+                "media_name": block.media_name,
+                "node_name": block.node_name,
             }
 
         return info
@@ -1302,6 +1340,8 @@ class PipeWireAudioEngine(AudioEngine):
                     sink_name=sink_names.get(sink_index, ""),
                     app_name=meta.get("app_name", ""),
                     binary_name=meta.get("binary_name", ""),
+                    media_name=meta.get("media_name", ""),
+                    node_name=meta.get("node_name", ""),
                 )
             )
         streams.sort(key=lambda item: (item.display_name.lower(), item.stream_id))

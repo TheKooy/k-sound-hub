@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import subprocess
 
 from PySide6.QtCore import QEvent, Qt, Signal
 from PySide6.QtWidgets import (
@@ -45,7 +46,98 @@ DEVICE_CHOICES = {
 }
 MIC_INPUT_CHOICES = ["ANPW Mic", "RODE NT-USB", "Both mics"]
 PLAYBACK_CHANNEL_KEYS = {"all", "game", "chat", "media", "more"}
-MIC_LINKABLE_CHANNEL_KEYS = ["all", "game", "chat", "media", "more"]
+MIC_LINKABLE_CHANNEL_KEYS = ["all", "game", "chat", "media", "more", "soundboard"]
+
+SOUNDBOARD_MIC_MEDIA_NAME = "K-Sound-Hub-Soundboard-To-Micro"
+
+
+def _run_pactl_channel_widget(args: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(["pactl", *args], capture_output=True, text=True, timeout=2.0)
+
+
+def _sink_exists_channel_widget(name: str) -> bool:
+    proc = _run_pactl_channel_widget(["list", "short", "sinks"])
+    if proc.returncode != 0:
+        return False
+    return any(line.split()[1] == name for line in proc.stdout.splitlines() if len(line.split()) >= 2)
+
+
+def _ensure_soundboard_sink_channel_widget() -> bool:
+    if _sink_exists_channel_widget("soundboard"):
+        return True
+
+    proc = _run_pactl_channel_widget([
+        "load-module",
+        "module-null-sink",
+        "sink_name=soundboard",
+        "sink_properties=device.description=🎛SOUNDBOARD media.name=K-Sound-Hub-Soundboard-Bus",
+        "channels=2",
+        "rate=48000",
+    ])
+    return proc.returncode == 0 or _sink_exists_channel_widget("soundboard")
+
+
+def _soundboard_micro_module_ids_channel_widget() -> list[str]:
+    proc = _run_pactl_channel_widget(["list", "modules", "short"])
+    if proc.returncode != 0:
+        return []
+
+    ids: list[str] = []
+    for line in proc.stdout.splitlines():
+        if "source=soundboard.monitor" not in line:
+            continue
+        if "sink=micro_bus" not in line:
+            continue
+        if SOUNDBOARD_MIC_MEDIA_NAME not in line:
+            continue
+
+        parts = line.split(None, 1)
+        if parts:
+            ids.append(parts[0])
+
+    return ids
+
+
+def _set_soundboard_to_micro_channel_widget(enabled: bool) -> bool:
+    existing = _soundboard_micro_module_ids_channel_widget()
+
+    if enabled:
+        if existing:
+            return True
+
+        if not _ensure_soundboard_sink_channel_widget():
+            return False
+
+        if not _sink_exists_channel_widget("micro_bus"):
+            return False
+
+        proc = _run_pactl_channel_widget([
+            "load-module",
+            "module-loopback",
+            "source=soundboard.monitor",
+            "sink=micro_bus",
+            "latency_msec=20",
+            "source_dont_move=true",
+            "sink_dont_move=true",
+            f"sink_input_properties=media.name={SOUNDBOARD_MIC_MEDIA_NAME}",
+        ])
+        return proc.returncode == 0
+
+    ok = True
+    for module_id in existing:
+        proc = _run_pactl_channel_widget(["unload-module", module_id])
+        ok = ok and proc.returncode == 0
+
+    return ok
+
+
+def _sync_soundboard_to_micro_from_links_channel_widget(linked_channels: list[str]) -> None:
+    try:
+        enabled = "soundboard" in [str(key).lower() for key in linked_channels]
+        _set_soundboard_to_micro_channel_widget(enabled)
+    except Exception:
+        pass
+
 
 
 class NoWheelAppListWidget(QListWidget):
@@ -438,6 +530,7 @@ class ChannelWidget(QFrame):
         self.apps_list.clear()
 
         if self.channel.key == "micro":
+            _sync_soundboard_to_micro_from_links_channel_widget(self.channel.linked_channels)
             shown = 0
             for key in self.channel.linked_channels:
                 if key not in MIC_LINKABLE_CHANNEL_KEYS:
@@ -481,13 +574,13 @@ class ChannelWidget(QFrame):
         if self.channel.key == "micro":
             available = [key.upper() for key in MIC_LINKABLE_CHANNEL_KEYS if key not in self.channel.linked_channels]
             if not available:
-                self._show_click_outside_message("Micro sends", "All playback channels are already sent to MICRO.")
+                self._show_click_outside_message("Micro sends", "All playback channels and SOUNDBOARD are already sent to MICRO.")
                 return
 
             choice, ok = QInputDialog.getItem(
                 self,
                 "Send channel to MICRO",
-                "Playback channels",
+                "Playback channels / soundboard",
                 available,
                 0,
                 False,
@@ -498,6 +591,13 @@ class ChannelWidget(QFrame):
             key = choice.lower()
             if key not in self.channel.linked_channels:
                 self.channel.linked_channels.append(key)
+                if key == "soundboard":
+                    if not _set_soundboard_to_micro_channel_widget(True):
+                        self._show_click_outside_message(
+                            "Micro sends",
+                            "SOUNDBOARD a été ajouté, mais le lien soundboard.monitor → micro_bus n'a pas pu être créé.",
+                            icon=QMessageBox.Warning,
+                        )
                 self._emit_changed("micro_links")
             return
 
@@ -542,7 +642,11 @@ class ChannelWidget(QFrame):
 
         rule = ""
         if chosen_stream is not None:
-            if chosen_stream.binary_name:
+            if chosen_stream.media_name and chosen_stream.display_name.startswith("SOUNDBOARD"):
+                rule = f"media:{chosen_stream.media_name}"
+            elif chosen_stream.node_name and chosen_stream.display_name.startswith("SOUNDBOARD"):
+                rule = f"node:{chosen_stream.node_name}"
+            elif chosen_stream.binary_name:
                 rule = f"bin:{chosen_stream.binary_name}"
             elif chosen_stream.app_name:
                 rule = f"app:{chosen_stream.app_name}"
@@ -565,6 +669,8 @@ class ChannelWidget(QFrame):
             if not isinstance(linked_key, str):
                 return
             self.channel.linked_channels = [key for key in self.channel.linked_channels if key != linked_key]
+            if linked_key == "soundboard":
+                _set_soundboard_to_micro_channel_widget(False)
             self._emit_changed("micro_links")
             return
 

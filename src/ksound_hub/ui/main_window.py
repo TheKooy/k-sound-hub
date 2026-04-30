@@ -27,6 +27,7 @@ from ..settings_store import SettingsStore
 from .channel_widget import ChannelWidget
 from .overlay import OverlayManager
 from .settings_dialog import SettingsDialog
+from .soundboard_dialog import SoundboardDialog
 
 
 CHANNEL_OVERLAY_META = {
@@ -60,6 +61,7 @@ class MainWindow(QMainWindow):
         self.settings = settings_store.load()
         self.audio_engine = PipeWireAudioEngine()
         self.channel_widgets: dict[str, ChannelWidget] = {}
+        self.soundboard_dialog: SoundboardDialog | None = None
         self._pending_apply_keys: set[str] = set()
 
         self._force_close = False
@@ -169,6 +171,11 @@ class MainWindow(QMainWindow):
         self.backend_status.setObjectName("mutedLabel")
         self.backend_status.setWordWrap(True)
         footer_layout.addWidget(self.backend_status, 1)
+
+        self.soundboard_btn = QPushButton("Soundboard")
+        self.soundboard_btn.setObjectName("ghostButton")
+        self.soundboard_btn.clicked.connect(self.open_soundboard)
+        footer_layout.addWidget(self.soundboard_btn)
 
         self.settings_btn = QPushButton("Settings")
         self.settings_btn.setObjectName("ghostButton")
@@ -446,6 +453,17 @@ class MainWindow(QMainWindow):
         command = str(payload.get("command", "")).strip().lower()
         if command == "restore":
             self._restore_from_tray()
+            return
+
+        if command in {"soundboard-stop-all", "soundboard_stop_all"}:
+            dialog = self._ensure_soundboard_dialog()
+            dialog.stop_all()
+            return
+
+        if command in {"soundboard", "soundboard-play", "soundboard_play"}:
+            slot = str(payload.get("slot") or payload.get("id") or payload.get("label") or "")
+            dialog = self._ensure_soundboard_dialog()
+            dialog.play_slot_by_key(slot)
             return
 
         channel_key = self._normalize_channel_key(payload.get("channel", ""))
@@ -819,6 +837,17 @@ class MainWindow(QMainWindow):
                 continue
             left, right = self.audio_engine.meter_levels(widget.channel.key)
             widget.set_meter_levels(left, right)
+
+    def _ensure_soundboard_dialog(self) -> SoundboardDialog:
+        if self.soundboard_dialog is None:
+            self.soundboard_dialog = SoundboardDialog(self)
+        return self.soundboard_dialog
+
+    def open_soundboard(self) -> None:
+        dialog = self._ensure_soundboard_dialog()
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
 
     def open_settings(self) -> None:
         try:

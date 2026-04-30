@@ -22,6 +22,8 @@ class AppStream:
     sink_name: str = ""
     app_name: str = ""
     binary_name: str = ""
+    media_name: str = ""
+    node_name: str = ""
 
 
 class AudioEngine(ABC):
