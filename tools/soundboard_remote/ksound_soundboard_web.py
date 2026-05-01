@@ -258,29 +258,29 @@ def page(status: str = "") -> bytes:
           margin-top: 8px;
           color: var(--cyan);
         }}
-        .control-panel {
+        .control-panel {{
           border: 1px solid rgba(62,216,255,.22);
           border-radius: 20px;
           background: rgba(8, 12, 22, .72);
           padding: 14px;
           margin-bottom: 14px;
           box-shadow: 0 14px 34px rgba(0,0,0,.22);
-        }
-        .control-row {
+        }}
+        .control-row {{
           display: grid;
           grid-template-columns: auto 1fr auto;
           gap: 12px;
           align-items: center;
-        }
-        input[type="range"] {
+        }}
+        input[type="range"] {{
           width: 100%;
           accent-color: var(--cyan);
-        }
-        .tiny {
+        }}
+        .tiny {{
           color: var(--muted);
           font-size: 12px;
           margin-top: 8px;
-        }
+        }}
         .grid {{
           display: grid;
           grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
@@ -342,17 +342,72 @@ def page(status: str = "") -> bytes:
       </form>
 
       <section class="control-panel">
-        <form method="POST" action="/volume?token={html.escape(TOKEN)}">
-          <div class="control-row">
-            <strong>Volume global</strong>
-            <input type="range" min="0" max="100" name="volume" value="{global_volume}" oninput="document.getElementById('globalVolValue').textContent=this.value + '%'">
-            <button class="pad" style="min-height:44px;text-align:center;padding:8px;">OK</button>
-          </div>
-          <div class="tiny">
-            <span id="globalVolValue">{global_volume}%</span> · Auto level PC: {auto_level_text}
-          </div>
-        </form>
+        <div class="control-row">
+          <strong>Volume global</strong>
+          <input
+            id="globalVolumeSlider"
+            type="range"
+            min="0"
+            max="100"
+            name="volume"
+            value="{global_volume}"
+            oninput="scheduleVolumeUpdate(this.value)"
+            onchange="sendVolumeNow(this.value)"
+          >
+          <span id="globalVolValue">{global_volume}%</span>
+        </div>
+        <div class="tiny">
+          Auto level PC: {auto_level_text} · <span id="volumeSendState">Ready</span>
+        </div>
       </section>
+
+      <script>
+        let volumeTimer = null;
+        let lastSentVolume = "{global_volume}";
+
+        function setVolumeState(text) {{
+          const node = document.getElementById("volumeSendState");
+          if (node) node.textContent = text;
+        }}
+
+        function scheduleVolumeUpdate(value) {{
+          document.getElementById("globalVolValue").textContent = value + "%";
+          setVolumeState("Pending...");
+          if (volumeTimer) {{
+            clearTimeout(volumeTimer);
+          }}
+          volumeTimer = setTimeout(() => sendVolumeNow(value), 180);
+        }}
+
+        function sendVolumeNow(value) {{
+          document.getElementById("globalVolValue").textContent = value + "%";
+          if (volumeTimer) {{
+            clearTimeout(volumeTimer);
+            volumeTimer = null;
+          }}
+          if (String(value) === String(lastSentVolume)) {{
+            setVolumeState("Ready");
+            return;
+          }}
+          lastSentVolume = String(value);
+          setVolumeState("Sending...");
+
+          fetch("/volume?token={html.escape(TOKEN)}", {{
+            method: "POST",
+            headers: {{
+              "Content-Type": "application/x-www-form-urlencoded"
+            }},
+            body: "volume=" + encodeURIComponent(value)
+          }})
+          .then(response => {{
+            if (!response.ok) throw new Error("HTTP " + response.status);
+            setVolumeState("Saved");
+          }})
+          .catch(() => {{
+            setVolumeState("Erreur envoi");
+          }});
+        }}
+      </script>
 
       <main class="grid">
         {''.join(buttons)}

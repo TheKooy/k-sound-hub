@@ -95,3 +95,4 @@ packaging/linux/ksound-hub.desktop
 .soundboard_real_channel_patch_*/
 .soundboard_stop_android_seed_*/
 .soundboard_v2_backup_*/
+.web_volume_live_slider_backup_*.py
