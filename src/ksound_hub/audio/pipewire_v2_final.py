@@ -74,8 +74,11 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
         self._v2_engine_proc: subprocess.Popen | None = None
         self._native_micro_state_path = self._native_runtime_dir / "micro_state.txt"
         self._native_micro_log = self._native_runtime_dir / "native-micro-engine.log"
+        self._native_micro_levels_path = self._native_runtime_dir / "micro_levels.json"
         self._native_micro_proc: subprocess.Popen | None = None
         self._last_micro_state_signature = ""
+        self._native_micro_levels_cache_mtime_ns = 0
+        self._native_micro_levels_cache_payload: dict[str, Any] = {}
         self._last_state_signature = ""
         self._v2_levels_cache_mtime_ns = 0
         self._v2_levels_cache_payload: dict[str, Any] = {}
@@ -508,6 +511,8 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
                     str(self._native_micro_state_path),
                     "--log",
                     str(self._native_micro_log),
+                    "--levels",
+                    str(self._native_micro_levels_path),
                     "--period-ms",
                     "10",
                 ],
@@ -821,9 +826,36 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
         except Exception:
             return self._v2_levels_cache_payload
 
+    def _read_native_micro_levels_payload(self) -> dict[str, Any]:
+        try:
+            stat = self._native_micro_levels_path.stat()
+            mtime_ns = int(stat.st_mtime_ns)
+            if mtime_ns == self._native_micro_levels_cache_mtime_ns:
+                return self._native_micro_levels_cache_payload
+
+            payload = json.loads(self._native_micro_levels_path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                payload = {}
+
+            self._native_micro_levels_cache_mtime_ns = mtime_ns
+            self._native_micro_levels_cache_payload = payload
+            return payload
+        except Exception:
+            return self._native_micro_levels_cache_payload
+
     def meter_levels(self, channel_key: str) -> tuple[float, float]:
         if channel_key in PLAYBACK_KEYS:
             payload = self._read_v2_levels_payload()
+            levels = payload.get("channels", {}).get(channel_key)
+            if isinstance(levels, list) and len(levels) >= 2:
+                try:
+                    return float(levels[0]), float(levels[1])
+                except Exception:
+                    return (0.0, 0.0)
+            return (0.0, 0.0)
+
+        if channel_key in {"micro", "return-mic"}:
+            payload = self._read_native_micro_levels_payload()
             levels = payload.get("channels", {}).get(channel_key)
             if isinstance(levels, list) and len(levels) >= 2:
                 try:

@@ -5,6 +5,7 @@
 #include <cmath>
 #include <csignal>
 #include <cstring>
+#include <cstdio>
 #include <fcntl.h>
 #include <fstream>
 #include <iostream>
@@ -476,6 +477,61 @@ void mix_add(std::vector<float>& mix, const std::vector<float>& chunk, float gai
     }
 }
 
+
+float peak_level(const std::vector<float>& frames, int channel) {
+    float peak = 0.0f;
+    for (int i = channel; i < static_cast<int>(frames.size()); i += CHANNELS) {
+        const float sample = frames[i];
+        if (std::isfinite(sample)) {
+            peak = std::max(peak, std::fabs(sample));
+        }
+    }
+    return clampf(peak, 0.0f, 1.0f);
+}
+
+void write_levels_file(
+    const std::string& path,
+    const std::vector<float>& micro_mix,
+    const std::vector<float>& return_mix
+) {
+    if (path.empty()) {
+        return;
+    }
+
+    static auto last_write = std::chrono::steady_clock::time_point{};
+    const auto now = std::chrono::steady_clock::now();
+
+    if (last_write.time_since_epoch().count() != 0) {
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_write).count();
+        if (elapsed < 25) {
+            return;
+        }
+    }
+
+    last_write = now;
+
+    const float micro_l = peak_level(micro_mix, 0);
+    const float micro_r = peak_level(micro_mix, 1);
+    const float return_l = peak_level(return_mix, 0);
+    const float return_r = peak_level(return_mix, 1);
+
+    const std::string tmp_path = path + ".tmp";
+    std::ofstream out(tmp_path);
+    if (!out) {
+        return;
+    }
+
+    out << "{"
+        << "\"channels\":{"
+        << "\"micro\":[" << micro_l << "," << micro_r << "],"
+        << "\"return-mic\":[" << return_l << "," << return_r << "]"
+        << "}"
+        << "}\n";
+    out.close();
+
+    std::rename(tmp_path.c_str(), path.c_str());
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -484,6 +540,7 @@ int main(int argc, char** argv) {
 
     std::string state_path;
     std::string log_path;
+    std::string levels_path;
     int period_ms = 20;
 
     for (int i = 1; i < argc; ++i) {
@@ -499,6 +556,8 @@ int main(int argc, char** argv) {
             state_path = next();
         } else if (arg == "--log") {
             log_path = next();
+        } else if (arg == "--levels") {
+            levels_path = next();
         } else if (arg == "--period-ms") {
             try {
                 period_ms = std::stoi(next());
@@ -509,7 +568,7 @@ int main(int argc, char** argv) {
     }
 
     if (state_path.empty()) {
-        std::cerr << "usage: ksound_native_micro_engine --state <path> [--log <path>] [--period-ms 20]\n";
+        std::cerr << "usage: ksound_native_micro_engine --state <path> [--levels <path>] [--log <path>] [--period-ms 10]\n";
         return 2;
     }
 
@@ -625,6 +684,8 @@ int main(int argc, char** argv) {
         } else {
             return_playback.stop();
         }
+
+        write_levels_file(levels_path, micro_mix, return_mix);
 
         std::this_thread::sleep_for(std::chrono::milliseconds(std::max(5, period_ms)));
     }
