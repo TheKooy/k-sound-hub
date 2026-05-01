@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 
 from ..models import EqBand, EqProfile
 from .widgets import EqBandSlider
+from .window_geometry import install_window_geometry
 
 
 class EqProfileDialog(QDialog):
@@ -27,6 +28,7 @@ class EqProfileDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle(title)
         self.resize(560, 360)
+        install_window_geometry(self, "eq_profile", default_size=(560, 360))
 
         self._source_profile = copy.deepcopy(profile)
         self._initial_profile = copy.deepcopy(profile)

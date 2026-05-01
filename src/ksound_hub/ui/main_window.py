@@ -28,6 +28,7 @@ from .channel_widget import ChannelWidget
 from .overlay import OverlayManager
 from .settings_dialog import SettingsDialog
 from .soundboard_dialog import SoundboardDialog
+from .window_geometry import install_window_geometry
 
 
 CHANNEL_OVERLAY_META = {
@@ -202,6 +203,12 @@ class MainWindow(QMainWindow):
         self._schedule_startup_visual_refresh()
 
         QApplication.instance().installEventFilter(self)
+
+        install_window_geometry(self, "main", default_size=(1440, 860))
+
+        # Install geometry restore only after the full main UI has been built.
+        # Subwindows already work because they are opened after startup.
+        install_window_geometry(self, "main", default_size=(1440, 860))
 
     def eventFilter(self, obj, event) -> bool:
         """Reserve mouse-wheel scrolling for the main Hub page only.
@@ -845,7 +852,7 @@ class MainWindow(QMainWindow):
 
     def _ensure_soundboard_dialog(self) -> SoundboardDialog:
         if self.soundboard_dialog is None:
-            self.soundboard_dialog = SoundboardDialog(self)
+            self.soundboard_dialog = SoundboardDialog()
         return self.soundboard_dialog
 
     def open_soundboard(self) -> None:

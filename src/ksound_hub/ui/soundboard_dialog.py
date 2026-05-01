@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
 
 from ..config import CONFIG_DIR
 from .widgets import MenuSelectorButton, NoWheelSlider
+from .window_geometry import install_window_geometry
 
 SOUNDBOARD_PATH = CONFIG_DIR / "soundboard.json"
 SOUNDBOARD_PAIRING_PATH = CONFIG_DIR / "soundboard_pairing.json"
@@ -545,6 +546,7 @@ class SoundboardDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("K-Sound Hub — Soundboard")
         self.resize(1120, 720)
+        install_window_geometry(self, "soundboard", default_size=(1120, 720))
 
         self.slots = self._load_slots()
         self.global_volume = self._load_global_volume()

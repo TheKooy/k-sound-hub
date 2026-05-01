@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..models import AppSettings
+from .window_geometry import install_window_geometry
 
 
 class SettingsDialog(QDialog):
@@ -36,6 +37,7 @@ class SettingsDialog(QDialog):
         self._wallpaper_preview_callback = wallpaper_preview_callback
         self._wallpaper_reset_callback = wallpaper_reset_callback
         self.resize(620, 680)
+        install_window_geometry(self, "settings", default_size=(620, 680))
 
         root = QVBoxLayout(self)
         root.setContentsMargins(14, 14, 14, 14)

@@ -98,3 +98,13 @@ packaging/linux/ksound-hub.desktop
 .web_volume_live_slider_backup_*.py
 .soundboard_wheel_forward_backup_*/
 .soundboard_ffmpeg_autolevel_cache_backup_*/
+.window_geometry_clean_feature_*/
+.window_geometry_*backup*/
+.window_geometry_*fix_*/
+.window_geometry_*offset_*/
+.window_geometry_*minimal_*/
+.window_geometry_*geometry_*/
+.window_geometry_*/
+.native_micro_engine_stage1_backup_*/
+.soundboard_global_volume_autolevel_*/
+.web_css_braces_fix_backup_*.py
