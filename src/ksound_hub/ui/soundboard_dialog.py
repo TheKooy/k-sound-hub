@@ -35,6 +35,9 @@ SOUNDBOARD_PATH = CONFIG_DIR / "soundboard.json"
 SOUNDBOARD_PAIRING_PATH = CONFIG_DIR / "soundboard_pairing.json"
 SOUNDBOARD_PAIRING_TTL_SECONDS = 300
 SUPPORTED_AUDIO_FILTER = "Audio files (*.wav *.wave *.ogg *.oga *.flac *.mp3 *.m4a);;All files (*)"
+SOUNDBOARD_GLOBAL_VOLUME_DEFAULT = 100
+SOUNDBOARD_AUTO_LEVEL_DEFAULT = False
+SOUNDBOARD_TARGET_PEAK_DB = -12.0
 PLAYBACK_TARGETS = ["media", "game", "chat", "more", "all"]
 SOUNDBOARD_BUS = "soundboard"
 SOUNDBOARD_MONITOR_MEDIA_NAME = "K-Sound-Hub-Soundboard-Monitor"
@@ -73,6 +76,14 @@ def _clean_slot(raw: dict[str, Any], fallback_index: int) -> dict[str, Any]:
     except Exception:
         volume = 80
 
+    try:
+        auto_gain = float(raw.get("auto_gain", 1.0))
+    except Exception:
+        auto_gain = 1.0
+    auto_gain = max(0.05, min(1.0, auto_gain))
+
+    analyzed_path = str(raw.get("analyzed_path") or "").strip()
+
     return {
         "id": slot_id,
         "label": label,
@@ -81,6 +92,8 @@ def _clean_slot(raw: dict[str, Any], fallback_index: int) -> dict[str, Any]:
         "shortcut": shortcut,
         "output_channel": output_channel,
         "send_to_micro": bool(raw.get("send_to_micro", False)),
+        "auto_gain": auto_gain,
+        "analyzed_path": analyzed_path,
     }
 
 
@@ -458,6 +471,8 @@ class SoundboardDialog(QDialog):
         self.resize(1120, 720)
 
         self.slots = self._load_slots()
+        self.global_volume = self._load_global_volume()
+        self.auto_level_enabled = self._load_auto_level_enabled()
         self.pad_widgets: list[SoundboardPadWidget] = []
         self._players: dict[str, tuple[QMediaPlayer, QAudioOutput]] = {}
         self._shortcuts: list[QShortcut] = []
@@ -514,6 +529,27 @@ class SoundboardDialog(QDialog):
         footer_layout.setContentsMargins(10, 6, 10, 6)
         footer_layout.setSpacing(8)
         footer_layout.addWidget(self.status_label, 1)
+
+        self.auto_level_check = QCheckBox("Auto level")
+        self.auto_level_check.setChecked(bool(self.auto_level_enabled))
+        self.auto_level_check.toggled.connect(self._on_auto_level_changed)
+        footer_layout.addWidget(self.auto_level_check)
+
+        global_label = QLabel("Global")
+        global_label.setObjectName("mutedLabel")
+        footer_layout.addWidget(global_label)
+
+        self.global_volume_slider = NoWheelSlider(Qt.Horizontal)
+        self.global_volume_slider.setRange(0, 100)
+        self.global_volume_slider.setFixedWidth(130)
+        self.global_volume_slider.setValue(int(self.global_volume))
+        self.global_volume_slider.valueChanged.connect(self._on_global_volume_changed)
+        footer_layout.addWidget(self.global_volume_slider)
+
+        self.global_volume_value = QLabel(f"{int(self.global_volume)}%")
+        self.global_volume_value.setObjectName("mutedLabel")
+        self.global_volume_value.setMinimumWidth(38)
+        footer_layout.addWidget(self.global_volume_value)
 
         add_btn = QPushButton("+ 4 pads")
         add_btn.setObjectName("ghostButton")
@@ -586,7 +622,16 @@ class SoundboardDialog(QDialog):
     def save(self) -> None:
         SOUNDBOARD_PATH.parent.mkdir(parents=True, exist_ok=True)
         SOUNDBOARD_PATH.write_text(
-            json.dumps({"slots": self.slots}, indent=2, ensure_ascii=False) + "\n",
+            json.dumps(
+                {
+                    "global_volume": int(getattr(self, "global_volume", SOUNDBOARD_GLOBAL_VOLUME_DEFAULT)),
+                    "auto_level_enabled": bool(getattr(self, "auto_level_enabled", SOUNDBOARD_AUTO_LEVEL_DEFAULT)),
+                    "slots": self.slots,
+                },
+                indent=2,
+                ensure_ascii=False,
+            )
+            + "\n",
             encoding="utf-8",
         )
         self.status_label.setText(f"Saved: {SOUNDBOARD_PATH}")
@@ -654,6 +699,124 @@ class SoundboardDialog(QDialog):
             ),
         )
 
+    def _load_global_volume(self) -> int:
+        if not SOUNDBOARD_PATH.is_file():
+            return SOUNDBOARD_GLOBAL_VOLUME_DEFAULT
+
+        try:
+            data = json.loads(SOUNDBOARD_PATH.read_text(encoding="utf-8"))
+            value = int(data.get("global_volume", SOUNDBOARD_GLOBAL_VOLUME_DEFAULT))
+        except Exception:
+            value = SOUNDBOARD_GLOBAL_VOLUME_DEFAULT
+
+        return max(0, min(100, value))
+
+    def _load_auto_level_enabled(self) -> bool:
+        if not SOUNDBOARD_PATH.is_file():
+            return SOUNDBOARD_AUTO_LEVEL_DEFAULT
+
+        try:
+            data = json.loads(SOUNDBOARD_PATH.read_text(encoding="utf-8"))
+            return bool(data.get("auto_level_enabled", SOUNDBOARD_AUTO_LEVEL_DEFAULT))
+        except Exception:
+            return SOUNDBOARD_AUTO_LEVEL_DEFAULT
+
+    def set_global_volume(self, value) -> None:
+        try:
+            volume = int(value)
+        except Exception:
+            return
+
+        self.global_volume = max(0, min(100, volume))
+
+        if hasattr(self, "global_volume_slider") and self.global_volume_slider.value() != self.global_volume:
+            self.global_volume_slider.blockSignals(True)
+            self.global_volume_slider.setValue(self.global_volume)
+            self.global_volume_slider.blockSignals(False)
+
+        if hasattr(self, "global_volume_value"):
+            self.global_volume_value.setText(f"{int(self.global_volume)}%")
+
+        self.save()
+
+    def _on_global_volume_changed(self, value: int) -> None:
+        self.global_volume = max(0, min(100, int(value)))
+        self.global_volume_value.setText(f"{int(self.global_volume)}%")
+        self.save()
+
+    def _on_auto_level_changed(self, checked: bool) -> None:
+        self.auto_level_enabled = bool(checked)
+        self.save()
+        self.status_label.setText("Auto level: ON" if checked else "Auto level: OFF")
+
+    def _analyze_auto_gain(self, path: Path) -> float:
+        try:
+            proc = subprocess.run(
+                [
+                    "ffmpeg",
+                    "-hide_banner",
+                    "-nostats",
+                    "-i",
+                    str(path),
+                    "-filter:a",
+                    "volumedetect",
+                    "-f",
+                    "null",
+                    "-",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+        except FileNotFoundError:
+            self.status_label.setText("Auto level désactivé: ffmpeg introuvable")
+            return 1.0
+        except Exception:
+            return 1.0
+
+        output = f"{proc.stdout}\n{proc.stderr}"
+        match = re.search(r"max_volume:\s*(-?\d+(?:\.\d+)?)\s*dB", output)
+        if not match:
+            return 1.0
+
+        try:
+            max_db = float(match.group(1))
+        except Exception:
+            return 1.0
+
+        gain_db = SOUNDBOARD_TARGET_PEAK_DB - max_db
+        gain = 10 ** (gain_db / 20.0)
+
+        # Sécurité: on atténue les sons trop forts, mais on ne booste pas au-dessus de 100%.
+        return max(0.05, min(1.0, gain))
+
+    def _auto_gain_for_slot(self, slot: dict[str, Any], path: Path) -> float:
+        if not self.auto_level_enabled:
+            return 1.0
+
+        path_text = str(path)
+
+        try:
+            cached_gain = float(slot.get("auto_gain", 1.0))
+        except Exception:
+            cached_gain = 1.0
+
+        if str(slot.get("analyzed_path", "")) == path_text and 0.05 <= cached_gain <= 1.0:
+            return cached_gain
+
+        gain = self._analyze_auto_gain(path)
+        slot["auto_gain"] = gain
+        slot["analyzed_path"] = path_text
+        self.save()
+
+        return gain
+
+    def _effective_volume(self, slot: dict[str, Any], path: Path, pad_volume: int) -> float:
+        base = max(0.0, min(100.0, float(pad_volume)))
+        global_factor = max(0.0, min(1.0, float(self.global_volume) / 100.0))
+        auto_gain = self._auto_gain_for_slot(slot, path)
+        return max(0.0, min(100.0, base * global_factor * auto_gain))
+
     def stop_all(self) -> None:
         stopped = 0
         for player, _audio in list(self._players.values()):
@@ -718,9 +881,9 @@ class SoundboardDialog(QDialog):
 
         return player, audio, device_found
 
-    def _start_player(self, *, key: str, path: Path, sink_name: str, volume: int) -> bool:
+    def _start_player(self, *, key: str, path: Path, sink_name: str, volume: float) -> bool:
         player, audio, device_found = self._player_for_key(key, sink_name)
-        audio.setVolume(max(0.0, min(1.0, int(volume) / 100.0)))
+        audio.setVolume(max(0.0, min(1.0, float(volume) / 100.0)))
         player.stop()
         player.setSource(QUrl.fromLocalFile(str(path)))
         player.setPosition(0)
@@ -747,6 +910,8 @@ class SoundboardDialog(QDialog):
         if target_channel not in PLAYBACK_TARGETS:
             target_channel = "media"
 
+        effective_volume = self._effective_volume(slot, path, volume)
+
         bus_found = _ensure_soundboard_bus()
         monitor_found = _ensure_soundboard_monitor_route(target_channel) if bus_found else False
 
@@ -760,7 +925,7 @@ class SoundboardDialog(QDialog):
                 key=f"{slot_id}:soundboard",
                 path=path,
                 sink_name=SOUNDBOARD_BUS,
-                volume=volume,
+                volume=effective_volume,
             )
             self._schedule_output_move_fallback(SOUNDBOARD_BUS)
 

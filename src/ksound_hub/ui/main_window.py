@@ -460,6 +460,11 @@ class MainWindow(QMainWindow):
             dialog.stop_all()
             return
 
+        if command in {"soundboard-set-global-volume", "soundboard_set_global_volume"}:
+            dialog = self._ensure_soundboard_dialog()
+            dialog.set_global_volume(payload.get("volume"))
+            return
+
         if command in {"soundboard", "soundboard-play", "soundboard_play"}:
             slot = str(payload.get("slot") or payload.get("id") or payload.get("label") or "")
             dialog = self._ensure_soundboard_dialog()

@@ -72,6 +72,29 @@ def read_slots() -> list[dict]:
     return [slot for slot in slots if isinstance(slot, dict)]
 
 
+def read_soundboard_settings() -> dict:
+    defaults = {
+        "global_volume": 100,
+        "auto_level_enabled": False,
+    }
+
+    if not CONFIG_PATH.is_file():
+        return defaults
+
+    try:
+        data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return defaults
+
+    try:
+        defaults["global_volume"] = max(0, min(100, int(data.get("global_volume", 100))))
+    except Exception:
+        defaults["global_volume"] = 100
+
+    defaults["auto_level_enabled"] = bool(data.get("auto_level_enabled", False))
+    return defaults
+
+
 def send_ipc(payload: dict) -> tuple[bool, str]:
     candidates = [
         os.environ.get("KSH_IPC_SOCKET_PATH", ""),
@@ -151,6 +174,9 @@ def json_response(handler: BaseHTTPRequestHandler, status: int, payload: dict) -
 
 def page(status: str = "") -> bytes:
     slots = read_slots()
+    settings = read_soundboard_settings()
+    global_volume = int(settings.get("global_volume", 100))
+    auto_level_text = "ON" if settings.get("auto_level_enabled") else "OFF"
     buttons = []
 
     for index, slot in enumerate(slots):
@@ -232,6 +258,29 @@ def page(status: str = "") -> bytes:
           margin-top: 8px;
           color: var(--cyan);
         }}
+        .control-panel {
+          border: 1px solid rgba(62,216,255,.22);
+          border-radius: 20px;
+          background: rgba(8, 12, 22, .72);
+          padding: 14px;
+          margin-bottom: 14px;
+          box-shadow: 0 14px 34px rgba(0,0,0,.22);
+        }
+        .control-row {
+          display: grid;
+          grid-template-columns: auto 1fr auto;
+          gap: 12px;
+          align-items: center;
+        }
+        input[type="range"] {
+          width: 100%;
+          accent-color: var(--cyan);
+        }
+        .tiny {
+          color: var(--muted);
+          font-size: 12px;
+          margin-top: 8px;
+        }
         .grid {{
           display: grid;
           grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
@@ -291,6 +340,19 @@ def page(status: str = "") -> bytes:
       <form method="POST" action="/stop?token={html.escape(TOKEN)}">
         <button class="stop">STOP ALL</button>
       </form>
+
+      <section class="control-panel">
+        <form method="POST" action="/volume?token={html.escape(TOKEN)}">
+          <div class="control-row">
+            <strong>Volume global</strong>
+            <input type="range" min="0" max="100" name="volume" value="{global_volume}" oninput="document.getElementById('globalVolValue').textContent=this.value + '%'">
+            <button class="pad" style="min-height:44px;text-align:center;padding:8px;">OK</button>
+          </div>
+          <div class="tiny">
+            <span id="globalVolValue">{global_volume}%</span> · Auto level PC: {auto_level_text}
+          </div>
+        </form>
+      </section>
 
       <main class="grid">
         {''.join(buttons)}
@@ -376,6 +438,17 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/stop":
             ok, msg = send_ipc({"command": "soundboard-stop-all"})
             self._send_page(f"Stop all: {msg if not ok else 'envoyé'}")
+            return
+
+        if parsed.path == "/volume":
+            raw_volume = form.get("volume", ["100"])[0]
+            try:
+                volume = max(0, min(100, int(raw_volume)))
+            except Exception:
+                volume = 100
+
+            ok, msg = send_ipc({"command": "soundboard-set-global-volume", "volume": volume})
+            self._send_page(f"Volume global {volume}%: {msg if not ok else 'envoyé'}")
             return
 
         self.send_response(404)
