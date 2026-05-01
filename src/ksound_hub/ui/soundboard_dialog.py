@@ -311,6 +311,31 @@ def _audio_output_for_sink_name(sink_name: str, parent) -> tuple[QAudioOutput, b
             return audio, False
 
 
+class SoundboardNoWheelSlider(NoWheelSlider):
+    """Slider qui ne change pas au scroll, mais laisse le scroll remonter au panneau."""
+
+    def wheelEvent(self, event) -> None:
+        parent = self.parent()
+        while parent is not None:
+            if isinstance(parent, QScrollArea):
+                bar = parent.verticalScrollBar()
+
+                pixel_delta = event.pixelDelta().y()
+                angle_delta = event.angleDelta().y()
+                delta = pixel_delta if pixel_delta else angle_delta
+
+                if delta:
+                    bar.setValue(bar.value() - delta)
+                    event.accept()
+                    return
+
+                break
+
+            parent = parent.parent()
+
+        event.ignore()
+
+
 class SoundboardPadWidget(QFrame):
     changed = Signal()
     play_requested = Signal(str)
@@ -371,7 +396,7 @@ class SoundboardPadWidget(QFrame):
         volume_label.setObjectName("mutedLabel")
         volume_row.addWidget(volume_label)
 
-        self.volume_slider = NoWheelSlider(Qt.Horizontal)
+        self.volume_slider = SoundboardNoWheelSlider(Qt.Horizontal)
         self.volume_slider.setRange(0, 100)
         self.volume_slider.setValue(int(slot.get("volume", 80)))
         self.volume_slider.valueChanged.connect(self._commit_volume)
@@ -539,7 +564,7 @@ class SoundboardDialog(QDialog):
         global_label.setObjectName("mutedLabel")
         footer_layout.addWidget(global_label)
 
-        self.global_volume_slider = NoWheelSlider(Qt.Horizontal)
+        self.global_volume_slider = SoundboardNoWheelSlider(Qt.Horizontal)
         self.global_volume_slider.setRange(0, 100)
         self.global_volume_slider.setFixedWidth(130)
         self.global_volume_slider.setValue(int(self.global_volume))
