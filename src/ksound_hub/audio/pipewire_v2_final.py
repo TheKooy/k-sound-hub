@@ -160,13 +160,20 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
             bands.append(f"{float(band.frequency):.3f}:{float(band.gain_db):.3f}:{float(band.q):.3f}")
         return ",".join(bands)
 
+    def _native_render_key_for_channel(self, key: str) -> str:
+        # UI/settings key is return-mic, but the real PipeWire sink/source is retour.
+        # The native playback engine derives capture source as "<key>.monitor",
+        # so return-mic must be rendered as "retour".
+        return "retour" if key == "return-mic" else key
+
     def _render_channel_line(self, channel: ChannelConfig) -> str:
+        render_key = self._native_render_key_for_channel(channel.key)
         target_label = (channel.primary_target or DEFAULT_TARGET_LABEL).strip() or DEFAULT_TARGET_LABEL
         target_sink = TARGET_OBJECT_BY_LABEL.get(target_label) or TARGET_OBJECT_BY_LABEL[DEFAULT_TARGET_LABEL]
         profile = self._current_profile(channel)
         fields = [
             "channel",
-            channel.key,
+            render_key,
             "1" if channel.enabled else "0",
             "1" if channel.muted else "0",
             str(int(channel.volume)),
@@ -425,59 +432,30 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
             time.sleep(0.04)
 
     def _render_native_micro_state_text(self, settings: AppSettings) -> str:
-        micro_channel = self._find_channel(settings, "micro")
-        return_channel = self._find_channel(settings, "return-mic")
+        channel = self._find_channel(settings, "micro")
+        if channel is None:
+            return "version\t2\nenabled\t0\nmuted\t1\nvolume\t0\nsource\t\n"
 
-        if micro_channel is None:
-            lines = [
-                "version\t2",
-                "enabled\t0",
-                "muted\t1",
-                "volume\t0",
-                "source\t",
-            ]
-        else:
-            source_name = self._native_micro_source_for_channel(micro_channel)
-            linked = {str(key).lower() for key in getattr(micro_channel, "linked_channels", []) or []}
+        source_name = self._native_micro_source_for_channel(channel)
+        linked = {str(key).lower() for key in getattr(channel, "linked_channels", []) or []}
 
-            lines = [
-                "version\t2",
-                f"enabled\t{'1' if micro_channel.enabled else '0'}",
-                f"muted\t{'1' if micro_channel.muted else '0'}",
-                f"volume\t{int(micro_channel.volume)}",
-                f"source\t{source_name}",
-            ]
+        lines = [
+            "version\t2",
+            f"enabled\t{'1' if channel.enabled else '0'}",
+            f"muted\t{'1' if channel.muted else '0'}",
+            f"volume\t{int(channel.volume)}",
+            f"source\t{source_name}",
+        ]
 
-            for key in ("all", "game", "chat", "media", "more"):
-                if key in linked:
-                    lines.append(f"send\t{key}\t1\t{key}.monitor\t1.0")
+        for key in ("all", "game", "chat", "media", "more"):
+            if key in linked:
+                lines.append(f"send\t{key}\t1\t{key}.monitor\t1.0")
 
-            # Soundboard vers MICRO final: pur, sans passer par EasyEffects.
-            if "soundboard" in linked:
-                lines.append("send\tsoundboard\t1\tsoundboard.monitor\t1.0")
-
-        if return_channel is None:
-            lines.extend([
-                "return_enabled\t0",
-                "return_muted\t1",
-                "return_volume\t0",
-                "return_target\tretour",
-            ])
-        else:
-            return_enabled = bool(return_channel.enabled) and int(return_channel.volume) > 0
-            lines.extend([
-                f"return_enabled\t{'1' if return_enabled else '0'}",
-                f"return_muted\t{'1' if return_channel.muted else '0'}",
-                f"return_volume\t{int(return_channel.volume)}",
-                "return_target\tretour",
-            ])
-
-            if return_enabled:
-                desired = self._desired_return_monitor_sources(return_channel)
-                for key, source_name in sorted(desired.items()):
-                    lines.append(f"return_source\t{key}\t1\t{source_name}\t1.0")
+        if "soundboard" in linked:
+            lines.append("send\tsoundboard\t1\tsoundboard.monitor\t1.0")
 
         return "\n".join(lines) + "\n"
+
     def _write_native_micro_state(self, settings: AppSettings) -> None:
         text = self._render_native_micro_state_text(settings)
         if text == self._last_micro_state_signature and self._native_micro_state_path.exists():
@@ -633,22 +611,19 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
     def _apply_return_mic(self, settings: AppSettings) -> None:
         channel = self._find_channel(settings, "return-mic")
 
-        # Always write the native state so disabling RETOUR-MIC stops the native output too.
-        try:
-            self._configure_easyeffects_for_settings(settings)
-            self._write_native_micro_state(settings)
-            self._ensure_native_micro_engine()
-        except Exception:
-            pass
+        # RETOUR-MIC standard:
+        # sources micro/soundboard -> sink virtuel retour -> moteur playback normal.
+        # Aucun rendu spécial par ksound_native_micro_engine.
+        self._disconnect_return_playback_links()
+        self._cleanup_legacy_return_playback_modules()
 
-        # From now on, RETOUR-MIC audio is rendered by ksound_native_micro_engine.
-        # Remove old loopback-based return monitor/capture modules to avoid crackle/double audio.
-        self._cleanup_return_monitor_sources()
         for module_id in self._find_loopback_module_ids_by_media_name("K-Sound Hub Return Mic Capture"):
             self._run_no_fail(["pactl", "unload-module", module_id])
 
         if channel is None or not channel.enabled or int(channel.volume) <= 0:
-            self._disable_return_mic(capture=True, playback=True)
+            self._cleanup_return_monitor_sources()
+            self._return_mic_runtime.capture_module_id = ""
+            self._return_mic_runtime.applied_signature = ""
             return
 
         if not self._sink_exists("retour"):
@@ -660,37 +635,33 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
                 "sink_properties=device.description=🎤RETOUR-MICRO",
             ])
 
-        if not self._pw_link_available() or not self._sink_exists("retour"):
-            self._disable_return_mic(capture=True, playback=True)
+        if not self._sink_exists("retour"):
+            self._cleanup_return_monitor_sources()
+            self._return_mic_runtime.capture_module_id = ""
+            self._return_mic_runtime.applied_signature = ""
             return
 
-        target_label = (channel.primary_target or "ANPW").strip()
-        target_sink = TARGET_OBJECT_BY_LABEL.get(target_label)
-        if not target_sink or not self._sink_exists(target_sink):
-            self._disable_return_mic(capture=True, playback=True)
-            return
+        desired = self._desired_return_monitor_sources(channel)
+        self._cleanup_return_monitor_sources(keep_keys=set(desired))
+
+        for key, source_name in desired.items():
+            self._ensure_return_monitor_loopback(key=key, source_name=source_name)
+
+        # Comme les autres canaux, le sink logique reste à 100%.
+        # Le volume utilisateur est géré par le moteur playback final.
+        self._run_no_fail(["pactl", "set-sink-mute", "retour", "0"])
+        self._run_no_fail(["pactl", "set-sink-volume", "retour", "100%"])
 
         signature = json.dumps(
             {
-                "return_native": True,
-                "target_label": target_label,
-                "target_sink": target_sink,
+                "return_standard_channel": True,
+                "sources": sorted(desired.items()),
             },
             sort_keys=True,
             ensure_ascii=False,
         )
-
-        self._cleanup_legacy_return_playback_modules()
-
-        if self._return_mic_runtime.applied_signature != signature:
-            self._disconnect_return_playback_links()
-            if not self._connect_return_playback_links(target_sink):
-                self._disable_return_mic(capture=True, playback=True)
-                return
-
         self._return_mic_runtime.capture_module_id = ""
         self._return_mic_runtime.applied_signature = signature
-        self._apply_node_controls(channel, node_type="sink", node_name="retour")
 
     def _native_engine_binary(self) -> Path:
         return Path(__file__).resolve().parents[3] / "native_engine" / "build" / "ksound_native_engine"
@@ -738,15 +709,21 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
         except Exception:
             pass
 
+    def _logical_sink_for_playback_key(self, key: str) -> str:
+        return PLAYBACK_EQ_CHANNELS.get(key, key)
+
     def _apply_playback_controls_to_visible_sink(self, channel: ChannelConfig) -> None:
-        if channel.key in PLAYBACK_KEYS and self._sink_exists(channel.key):
-            self._set_node_volume_smooth(node_type="sink", node_name=channel.key, target_volume=100)
-            self._run_no_fail(["pactl", "set-sink-mute", channel.key, "0"])
+        sink_name = self._logical_sink_for_playback_key(channel.key)
+        if channel.key in PLAYBACK_KEYS and sink_name and self._sink_exists(sink_name):
+            self._set_node_volume_smooth(node_type="sink", node_name=sink_name, target_volume=100)
+            self._run_no_fail(["pactl", "set-sink-mute", sink_name, "0"])
 
     def _apply_playback_channel(self, settings: AppSettings, channel_key: str) -> None:
         channel = self._find_channel(settings, channel_key)
         if channel is not None:
             self._apply_playback_controls_to_visible_sink(channel)
+        if channel_key == "return-mic":
+            self._apply_return_mic(settings)
         self._write_v2_state(settings)
         self._ensure_v2_engine()
         slot = self.eq_slots[channel_key]
@@ -793,6 +770,7 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
             if channel is not None:
                 self._apply_playback_controls_to_visible_sink(channel)
                 self.eq_slots[key].status = "v2 native final-render active"
+        self._apply_return_mic(settings)
         self._write_v2_state(settings)
         self._ensure_v2_engine()
 
@@ -847,6 +825,8 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
         if channel_key in PLAYBACK_KEYS:
             payload = self._read_v2_levels_payload()
             levels = payload.get("channels", {}).get(channel_key)
+            if levels is None and channel_key == "return-mic":
+                levels = payload.get("channels", {}).get("retour")
             if isinstance(levels, list) and len(levels) >= 2:
                 try:
                     return float(levels[0]), float(levels[1])

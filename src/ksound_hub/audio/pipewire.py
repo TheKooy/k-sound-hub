@@ -38,7 +38,8 @@ PLAYBACK_EQ_CHANNELS = {
     "chat": "chat",
     "media": "media",
     "more": "more",
-}
+
+    "return-mic": "retour",}
 
 CONTROL_NODE_BY_CHANNEL: dict[str, tuple[str, str]] = {
     "all": ("sink", "all"),
