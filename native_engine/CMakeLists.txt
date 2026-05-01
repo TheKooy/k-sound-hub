@@ -15,3 +15,12 @@ add_executable(ksound_native_engine
 target_include_directories(ksound_native_engine PRIVATE include)
 
 target_compile_options(ksound_native_engine PRIVATE -O2 -pipe -Wall -Wextra -Wpedantic)
+
+
+add_executable(ksound_native_micro_engine
+  src/micro_engine.cpp
+)
+
+target_include_directories(ksound_native_micro_engine PRIVATE include)
+
+target_compile_options(ksound_native_micro_engine PRIVATE -O2 -pipe -Wall -Wextra -Wpedantic)

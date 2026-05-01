@@ -173,6 +173,28 @@ def _soundboard_monitor_module_ids() -> list[tuple[str, str]]:
 
 
 def _ensure_soundboard_monitor_route(target_channel: str) -> bool:
+    # Native micro/return path:
+    # keep the soundboard bus available, but do NOT keep the old permanent
+    # soundboard.monitor -> MEDIA/GAME/... loopback alive.
+    #
+    # That old route makes SOUNDBOARD appear stuck on MEDIA and can interfere
+    # with the new native micro/return routing.
+    #
+    # Emergency override:
+    #   KSH_SOUNDBOARD_MONITOR_ROUTE=1
+    # restores the previous behavior.
+    enabled = str(os.environ.get("KSH_SOUNDBOARD_MONITOR_ROUTE", "0")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+    if not enabled:
+        for module_id, _line in _soundboard_monitor_module_ids():
+            _run_pactl(["unload-module", module_id])
+        return False
+
     target_channel = str(target_channel or "").strip().lower()
     if target_channel not in PLAYBACK_TARGETS:
         target_channel = "media"

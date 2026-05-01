@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import os
 import subprocess
 
 from PySide6.QtCore import QEvent, Qt, Signal
@@ -44,11 +45,27 @@ DEVICE_CHOICES = {
     "playback": ["ANPW", "S/PDIF"],
     "monitor": ["ANPW", "S/PDIF"],
 }
-MIC_INPUT_CHOICES = ["ANPW Mic", "RODE NT-USB", "Both mics"]
+MIC_INPUT_CHOICES = ["RODE NT-USB", "ANPW Mic", "RODE NT-USB EasyEffects", "ANPW Mic EasyEffects"]
 PLAYBACK_CHANNEL_KEYS = {"all", "game", "chat", "media", "more"}
 MIC_LINKABLE_CHANNEL_KEYS = ["all", "game", "chat", "media", "more", "soundboard"]
 
+RETURN_MIC_MONITOR_CHOICES: list[tuple[str, str]] = [
+    ("soundboard", "SOUNDBOARD"),
+    ("rode-pure", "RODE NT-USB pur"),
+    ("anpw-pure", "ANPW Mic pur"),
+    ("rode-ee", "RODE NT-USB EasyEffects"),
+    ("anpw-ee", "ANPW Mic EasyEffects"),
+    ("micro-final", "MICRO final"),
+]
+RETURN_MIC_MONITOR_LABEL_BY_KEY = {key: label for key, label in RETURN_MIC_MONITOR_CHOICES}
+RETURN_MIC_MONITOR_KEY_BY_LABEL = {label: key for key, label in RETURN_MIC_MONITOR_CHOICES}
+RETURN_MIC_EE_KEYS = {"rode-ee", "anpw-ee"}
+
 SOUNDBOARD_MIC_MEDIA_NAME = "K-Sound-Hub-Soundboard-To-Micro"
+
+
+def _native_micro_enabled_channel_widget() -> bool:
+    return str(os.environ.get("KSH_NATIVE_MIC", "1")).strip().lower() not in {"0", "false", "no", "off"}
 
 
 def _run_pactl_channel_widget(args: list[str]) -> subprocess.CompletedProcess[str]:
@@ -100,6 +117,19 @@ def _soundboard_micro_module_ids_channel_widget() -> list[str]:
 
 def _set_soundboard_to_micro_channel_widget(enabled: bool) -> bool:
     existing = _soundboard_micro_module_ids_channel_widget()
+
+    if _native_micro_enabled_channel_widget():
+        # Native micro engine reads soundboard.monitor directly.
+        # Keep the soundboard sink available, but do not create the old loopback.
+        ok = True
+        for module_id in existing:
+            proc = _run_pactl_channel_widget(["unload-module", module_id])
+            ok = ok and proc.returncode == 0
+
+        if enabled:
+            ok = _ensure_soundboard_sink_channel_widget() and ok
+
+        return ok
 
     if enabled:
         if existing:
@@ -389,13 +419,17 @@ class ChannelWidget(QFrame):
 
     def _default_primary_target(self) -> str:
         if self.channel.key == "micro":
-            return "Both mics"
+            return "RODE NT-USB"
+        if self.channel.key == "return-mic":
+            return DEVICE_CHOICES["monitor"][0]
         if self.channel.kind == "monitor":
             return DEVICE_CHOICES["monitor"][0]
         return DEVICE_CHOICES["playback"][0]
 
 
-    def _selector_frame(self, combo: MenuSelectorButton, *, frame_width: int = 136) -> QWidget:
+    def _selector_frame(self, combo: MenuSelectorButton, frame_width: int = 130) -> QFrame:
+        # Use the project's styled SelectorFrame instead of a transparent raw QFrame.
+        # This restores the visible rounded border/background around device selectors.
         frame = SelectorFrame()
         frame.setObjectName("selectorFrame")
         frame.setFixedWidth(frame_width)
@@ -415,6 +449,8 @@ class ChannelWidget(QFrame):
 
     def _build_primary_controls(self) -> QWidget | None:
         self.channel.primary_target = self.channel.primary_target or self._default_primary_target()
+        if self.channel.key == "micro" and self.channel.primary_target not in MIC_INPUT_CHOICES:
+            self.channel.primary_target = self._default_primary_target()
         if self.channel.key == "return-mic":
             box = QWidget()
             box.setAttribute(Qt.WA_TranslucentBackground, True)
@@ -496,7 +532,7 @@ class ChannelWidget(QFrame):
 
     def _populate_apps_section(self, app_names: list[str]) -> None:
         badge_row = QHBoxLayout()
-        badge_row.addWidget(HeaderBadge("Active"))
+        badge_row.addWidget(HeaderBadge("Sources" if self.channel.key == "return-mic" else "Active"))
         badge_row.addStretch(1)
         self.apps_section.content_layout.addLayout(badge_row)
 
@@ -528,6 +564,24 @@ class ChannelWidget(QFrame):
             return
 
         self.apps_list.clear()
+
+        if self.channel.key == "return-mic":
+            shown = 0
+            for key in self.channel.linked_channels:
+                key = str(key).lower()
+                label = RETURN_MIC_MONITOR_LABEL_BY_KEY.get(key)
+                if not label:
+                    continue
+                item = QListWidgetItem(label)
+                item.setData(Qt.UserRole, key)
+                self.apps_list.addItem(item)
+                shown += 1
+
+            if shown == 0:
+                item = QListWidgetItem("Aucune source monitorée")
+                item.setFlags(item.flags() & ~Qt.ItemIsSelectable)
+                self.apps_list.addItem(item)
+            return
 
         if self.channel.key == "micro":
             _sync_soundboard_to_micro_from_links_channel_widget(self.channel.linked_channels)
@@ -571,6 +625,41 @@ class ChannelWidget(QFrame):
                 self.apps_list.addItem(item)
 
     def _add_app_route(self) -> None:
+        if self.channel.key == "return-mic":
+            current = {str(key).lower() for key in self.channel.linked_channels}
+            available = [label for key, label in RETURN_MIC_MONITOR_CHOICES if key not in current]
+            if not available:
+                self._show_click_outside_message("Retour-micro", "Toutes les sources monitorables sont déjà ajoutées.")
+                return
+
+            choice, ok = QInputDialog.getItem(
+                self,
+                "Ajouter au RETOUR-MICRO",
+                "Source à écouter",
+                available,
+                0,
+                False,
+            )
+            if not ok or not choice:
+                return
+
+            key = RETURN_MIC_MONITOR_KEY_BY_LABEL.get(choice, "")
+            if not key:
+                return
+
+            if key in RETURN_MIC_EE_KEYS:
+                # Une seule source EasyEffects existe côté PipeWire.
+                self.channel.linked_channels = [
+                    existing for existing in self.channel.linked_channels
+                    if str(existing).lower() not in RETURN_MIC_EE_KEYS
+                ]
+
+            if key not in [str(existing).lower() for existing in self.channel.linked_channels]:
+                self.channel.linked_channels.append(key)
+
+            self._emit_changed("return_micro_sources")
+            return
+
         if self.channel.key == "micro":
             available = [key.upper() for key in MIC_LINKABLE_CHANNEL_KEYS if key not in self.channel.linked_channels]
             if not available:
@@ -662,6 +751,17 @@ class ChannelWidget(QFrame):
     def _remove_selected_app_route(self) -> None:
         item = self.apps_list.currentItem() if self.apps_list is not None else None
         if item is None:
+            return
+
+        if self.channel.key == "return-mic":
+            linked_key = item.data(Qt.UserRole)
+            if not isinstance(linked_key, str):
+                return
+            self.channel.linked_channels = [
+                key for key in self.channel.linked_channels
+                if str(key).lower() != linked_key.lower()
+            ]
+            self._emit_changed("return_micro_sources")
             return
 
         if self.channel.key == "micro":
@@ -788,7 +888,7 @@ class ChannelWidget(QFrame):
 
         self.details_section.content_layout.addLayout(grid)
 
-        if self.channel.key == "micro":
+        if False and self.channel.key == "micro":
             self.details_section.content_layout.addWidget(QLabel("Selected inputs"))
             inputs_box = QFrame()
             inputs_box.setObjectName("appRuleRow")

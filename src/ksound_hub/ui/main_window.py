@@ -90,7 +90,7 @@ class MainWindow(QMainWindow):
         self._runtime_view_timer.timeout.connect(self._refresh_runtime_views_only)
 
         self._meter_timer = QTimer(self)
-        self._meter_timer.setInterval(60)
+        self._meter_timer.setInterval(33)
         self._meter_timer.timeout.connect(self._refresh_meters)
 
         self._link_shared_eq_library()

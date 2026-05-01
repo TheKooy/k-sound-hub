@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import signal
@@ -22,6 +23,35 @@ from .pipewire import (
 PLAYBACK_KEYS = tuple(PLAYBACK_EQ_CHANNELS.keys())
 DEFAULT_TARGET_LABEL = "ANPW"
 
+MIC_PHYSICAL_SOURCE_BY_LABEL = {
+    "ANPW Mic": "alsa_input.usb-SteelSeries_Arctis_Nova_Pro_Wireless-00.mono-fallback",
+    "Arctis Nova Pro Mic": "alsa_input.usb-SteelSeries_Arctis_Nova_Pro_Wireless-00.mono-fallback",
+    "RODE NT-USB": "alsa_input.usb-RODE_Microphones_RODE_NT-USB-00.iec958-stereo",
+    "Both mics": "alsa_input.usb-RODE_Microphones_RODE_NT-USB-00.iec958-stereo",
+    "Both microphones": "alsa_input.usb-RODE_Microphones_RODE_NT-USB-00.iec958-stereo",
+}
+
+MIC_EASYEFFECTS_TARGET_BY_LABEL = {
+    "ANPW Mic EasyEffects": "alsa_input.usb-SteelSeries_Arctis_Nova_Pro_Wireless-00.mono-fallback",
+    "RODE NT-USB EasyEffects": "alsa_input.usb-RODE_Microphones_RODE_NT-USB-00.iec958-stereo",
+}
+
+RETURN_MIC_MONITOR_SOURCE_BY_KEY = {
+    "soundboard": "soundboard.monitor",
+    "anpw-pure": "alsa_input.usb-SteelSeries_Arctis_Nova_Pro_Wireless-00.mono-fallback",
+    "rode-pure": "alsa_input.usb-RODE_Microphones_RODE_NT-USB-00.iec958-stereo",
+    "anpw-ee": "easyeffects_source",
+    "rode-ee": "easyeffects_source",
+    "micro-final": "micro",
+}
+
+RETURN_MIC_EASYEFFECTS_TARGET_BY_KEY = {
+    "anpw-ee": "alsa_input.usb-SteelSeries_Arctis_Nova_Pro_Wireless-00.mono-fallback",
+    "rode-ee": "alsa_input.usb-RODE_Microphones_RODE_NT-USB-00.iec958-stereo",
+}
+
+RETURN_MIC_MONITOR_MEDIA_PREFIX = "K-Sound Hub Return Mic Monitor "
+
 
 class PipeWireAudioEngine(PipeWireAudioEngineBase):
     """
@@ -42,7 +72,13 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
         self._v2_levels_path = self._native_runtime_dir / "levels.json"
         self._v2_engine_log = self._native_runtime_dir / "native-engine.log"
         self._v2_engine_proc: subprocess.Popen | None = None
+        self._native_micro_state_path = self._native_runtime_dir / "micro_state.txt"
+        self._native_micro_log = self._native_runtime_dir / "native-micro-engine.log"
+        self._native_micro_proc: subprocess.Popen | None = None
+        self._last_micro_state_signature = ""
         self._last_state_signature = ""
+        self._v2_levels_cache_mtime_ns = 0
+        self._v2_levels_cache_payload: dict[str, Any] = {}
         self._disable_legacy_playback_slots()
 
     def _disable_legacy_playback_slots(self) -> None:
@@ -93,6 +129,7 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
 
     def shutdown(self) -> None:
         self._stop_v2_engine()
+        self._stop_native_micro_engine()
         for probe in self._meter_probes.values():
             probe.stop()
         self._meter_probes.clear()
@@ -154,6 +191,501 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
         tmp = self._v2_state_path.with_suffix(".txt.tmp")
         tmp.write_text(text, encoding="utf-8")
         tmp.replace(self._v2_state_path)
+
+    def _native_micro_enabled(self) -> bool:
+        return str(os.environ.get("KSH_NATIVE_MIC", "1")).strip().lower() not in {"0", "false", "no", "off"}
+
+    def _native_micro_engine_binary(self) -> Path:
+        return Path(__file__).resolve().parents[3] / "native_engine" / "build" / "ksound_native_micro_engine"
+
+    def _audio_source_names(self) -> list[str]:
+        proc = self._run(["pactl", "list", "short", "sources"])
+        if proc.returncode != 0:
+            return []
+        names: list[str] = []
+        for line in proc.stdout.splitlines():
+            parts = line.split()
+            if len(parts) >= 2:
+                names.append(parts[1])
+        return names
+
+    def _preferred_easyeffects_source(self) -> str:
+        names = self._audio_source_names()
+
+        for wanted in ("easyeffects_source", "EasyEffects Source"):
+            if wanted in names:
+                return wanted
+
+        for name in names:
+            low = name.lower()
+            if "easyeffects" in low and "monitor" not in low:
+                return name
+
+        return ""
+
+    def _micro_physical_source_for_label(self, label: str) -> str:
+        label = (label or "").strip()
+        source = MIC_PHYSICAL_SOURCE_BY_LABEL.get(label, "")
+        if source and self._source_exists(source):
+            return source
+
+        names = self._resolved_micro_source_names(self._find_channel(self._last_settings, "micro")) if hasattr(self, "_last_settings") and self._last_settings is not None else []
+        for name in names:
+            if self._source_exists(name):
+                return name
+
+        rode = MIC_PHYSICAL_SOURCE_BY_LABEL["RODE NT-USB"]
+        anpw = MIC_PHYSICAL_SOURCE_BY_LABEL["ANPW Mic"]
+        if self._source_exists(rode):
+            return rode
+        if self._source_exists(anpw):
+            return anpw
+        return source or rode
+
+    def _native_micro_source_for_channel(self, channel: ChannelConfig) -> str:
+        label = (channel.primary_target or "RODE NT-USB").strip()
+
+        ee_target = MIC_EASYEFFECTS_TARGET_BY_LABEL.get(label, "")
+        if ee_target:
+            ee_source = self._preferred_easyeffects_source()
+            if ee_source:
+                return ee_source
+            return ee_target
+
+        source = MIC_PHYSICAL_SOURCE_BY_LABEL.get(label, "")
+        if source:
+            return source
+
+        names = self._resolved_micro_source_names(channel)
+        if names:
+            return names[0]
+        return self._resolved_micro_source_name(channel)
+
+
+    def _ensure_micro_endpoint(self) -> None:
+        if not self._sink_exists("micro_bus"):
+            self._run_no_fail([
+                "pactl",
+                "load-module",
+                "module-null-sink",
+                "sink_name=micro_bus",
+                "sink_properties=device.description=🎤MICRO-BUS",
+            ])
+
+        if not self._source_exists("micro"):
+            self._run_no_fail([
+                "pactl",
+                "load-module",
+                "module-remap-source",
+                "master=micro_bus.monitor",
+                "source_name=micro",
+                "source_properties=device.description=🎤MICRO",
+            ])
+
+        self._run_no_fail(["pactl", "set-sink-mute", "micro_bus", "0"])
+        self._run_no_fail(["pactl", "set-sink-volume", "micro_bus", "100%"])
+        self._run_no_fail(["pactl", "set-source-mute", "micro", "0"])
+        self._run_no_fail(["pactl", "set-source-volume", "micro", "100%"])
+        self._run_no_fail(["pactl", "set-default-source", "micro"])
+
+    def _cleanup_legacy_micro_loopbacks_for_native(self) -> None:
+        proc = self._run(["pactl", "list", "short", "modules"])
+        if proc.returncode != 0:
+            return
+
+        needles = (
+            "K-Sound Hub Mic Physical",
+            "K-Sound Hub Mic Send",
+            "K-Sound-Hub-Soundboard-To-Micro",
+        )
+
+        for line in proc.stdout.splitlines():
+            parts = line.split(None, 2)
+            if len(parts) < 3:
+                continue
+
+            module_id, module_name, args = parts
+            if module_name != "module-loopback":
+                continue
+
+            if any(needle in args for needle in needles):
+                self._run_no_fail(["pactl", "unload-module", module_id])
+
+    def _ensure_easyeffects_running(self) -> None:
+        if self._preferred_easyeffects_source():
+            return
+
+        try:
+            proc = self._run(["pgrep", "-u", str(os.getuid()), "-f", r"(^|/)easyeffects($| )|com.github.wwmm.easyeffects"])
+            if proc.returncode == 0:
+                return
+        except Exception:
+            pass
+
+        if not shutil.which("easyeffects"):
+            return
+
+        try:
+            subprocess.Popen(
+                ["easyeffects", "--service-mode", "--hide-window"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                env=os.environ.copy(),
+            )
+        except Exception:
+            return
+
+    def _source_output_blocks(self) -> list[dict[str, str]]:
+        proc = self._run(["pactl", "list", "source-outputs"])
+        if proc.returncode != 0:
+            return []
+
+        blocks: list[dict[str, str]] = []
+        current: dict[str, str] | None = None
+
+        def flush() -> None:
+            nonlocal current
+            if current is not None and current.get("id"):
+                blocks.append(current)
+            current = None
+
+        for raw in proc.stdout.splitlines():
+            line = raw.rstrip()
+            if line.startswith("Source Output #"):
+                flush()
+                current = {"id": line.split("#", 1)[1].strip(), "text": line + "\n"}
+                continue
+
+            if current is None:
+                continue
+
+            current["text"] = current.get("text", "") + line + "\n"
+            stripped = line.strip()
+
+            if stripped.startswith("Source: "):
+                current["source"] = stripped.split(":", 1)[1].strip()
+            elif stripped.startswith("application.name = "):
+                current["app"] = stripped.split("=", 1)[1].strip().strip('"')
+            elif stripped.startswith("application.process.binary = "):
+                current["binary"] = stripped.split("=", 1)[1].strip().strip('"')
+            elif stripped.startswith("node.name = "):
+                current["node"] = stripped.split("=", 1)[1].strip().strip('"')
+            elif stripped.startswith("media.name = "):
+                current["media"] = stripped.split("=", 1)[1].strip().strip('"')
+
+        flush()
+        return blocks
+
+    def _move_easyeffects_input_to(self, target_source: str) -> None:
+        if not target_source or not self._source_exists(target_source):
+            return
+
+        for block in self._source_output_blocks():
+            text = block.get("text", "").lower()
+            if "easyeffects" not in text and "easy effects" not in text:
+                continue
+
+            source_output_id = block.get("id", "")
+            if source_output_id:
+                self._run_no_fail(["pactl", "move-source-output", source_output_id, target_source])
+
+    def _easyeffects_target_from_settings(self, settings: AppSettings) -> str:
+        micro_channel = self._find_channel(settings, "micro")
+        if micro_channel is not None:
+            label = (micro_channel.primary_target or "").strip()
+            target = MIC_EASYEFFECTS_TARGET_BY_LABEL.get(label, "")
+            if target:
+                return target
+
+        return_channel = self._find_channel(settings, "return-mic")
+        if return_channel is not None:
+            linked = [str(key).lower() for key in getattr(return_channel, "linked_channels", []) or []]
+            for key in linked:
+                target = RETURN_MIC_EASYEFFECTS_TARGET_BY_KEY.get(key, "")
+                if target:
+                    return target
+
+        return ""
+
+    def _configure_easyeffects_for_settings(self, settings: AppSettings) -> None:
+        target = self._easyeffects_target_from_settings(settings)
+        if not target:
+            return
+
+        self._ensure_easyeffects_running()
+
+        # EasyEffects creates/uses one processed source only. We try a few short
+        # passes because its source-output may appear just after K-Sound starts
+        # capturing easyeffects_source.
+        for _ in range(6):
+            self._move_easyeffects_input_to(target)
+            time.sleep(0.04)
+
+    def _render_native_micro_state_text(self, settings: AppSettings) -> str:
+        micro_channel = self._find_channel(settings, "micro")
+        return_channel = self._find_channel(settings, "return-mic")
+
+        if micro_channel is None:
+            lines = [
+                "version\t2",
+                "enabled\t0",
+                "muted\t1",
+                "volume\t0",
+                "source\t",
+            ]
+        else:
+            source_name = self._native_micro_source_for_channel(micro_channel)
+            linked = {str(key).lower() for key in getattr(micro_channel, "linked_channels", []) or []}
+
+            lines = [
+                "version\t2",
+                f"enabled\t{'1' if micro_channel.enabled else '0'}",
+                f"muted\t{'1' if micro_channel.muted else '0'}",
+                f"volume\t{int(micro_channel.volume)}",
+                f"source\t{source_name}",
+            ]
+
+            for key in ("all", "game", "chat", "media", "more"):
+                if key in linked:
+                    lines.append(f"send\t{key}\t1\t{key}.monitor\t1.0")
+
+            # Soundboard vers MICRO final: pur, sans passer par EasyEffects.
+            if "soundboard" in linked:
+                lines.append("send\tsoundboard\t1\tsoundboard.monitor\t1.0")
+
+        if return_channel is None:
+            lines.extend([
+                "return_enabled\t0",
+                "return_muted\t1",
+                "return_volume\t0",
+                "return_target\tretour",
+            ])
+        else:
+            return_enabled = bool(return_channel.enabled) and int(return_channel.volume) > 0
+            lines.extend([
+                f"return_enabled\t{'1' if return_enabled else '0'}",
+                f"return_muted\t{'1' if return_channel.muted else '0'}",
+                f"return_volume\t{int(return_channel.volume)}",
+                "return_target\tretour",
+            ])
+
+            if return_enabled:
+                desired = self._desired_return_monitor_sources(return_channel)
+                for key, source_name in sorted(desired.items()):
+                    lines.append(f"return_source\t{key}\t1\t{source_name}\t1.0")
+
+        return "\n".join(lines) + "\n"
+    def _write_native_micro_state(self, settings: AppSettings) -> None:
+        text = self._render_native_micro_state_text(settings)
+        if text == self._last_micro_state_signature and self._native_micro_state_path.exists():
+            return
+
+        self._last_micro_state_signature = text
+        self._native_micro_state_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self._native_micro_state_path.with_suffix(".txt.tmp")
+        tmp.write_text(text, encoding="utf-8")
+        tmp.replace(self._native_micro_state_path)
+
+    def _ensure_native_micro_engine(self) -> bool:
+        engine_bin = self._native_micro_engine_binary()
+        if not engine_bin.is_file():
+            return False
+
+        if self._native_micro_proc is not None and self._native_micro_proc.poll() is None:
+            return True
+
+        self._stop_native_micro_engine()
+
+        env = os.environ.copy()
+        env["KSH_RUNTIME_ROLE"] = "native_micro_engine"
+        self._native_micro_log.parent.mkdir(parents=True, exist_ok=True)
+
+        with self._native_micro_log.open("ab", buffering=0) as log_file:
+            self._native_micro_proc = subprocess.Popen(
+                [
+                    str(engine_bin),
+                    "--state",
+                    str(self._native_micro_state_path),
+                    "--log",
+                    str(self._native_micro_log),
+                    "--period-ms",
+                    "10",
+                ],
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+                env=env,
+            )
+
+        return self._native_micro_proc is not None and self._native_micro_proc.poll() is None
+
+    def _stop_native_micro_engine(self) -> None:
+        proc = self._native_micro_proc
+        self._native_micro_proc = None
+
+        if proc is None:
+            return
+
+        try:
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=1.2)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+        except Exception:
+            pass
+
+    def _apply_micro_transport(self, settings: AppSettings) -> None:
+        if self._native_micro_enabled():
+            try:
+                self._ensure_micro_endpoint()
+                self._configure_easyeffects_for_settings(settings)
+                self._write_native_micro_state(settings)
+
+                if self._ensure_native_micro_engine():
+                    self._configure_easyeffects_for_settings(settings)
+                    self._cleanup_legacy_micro_loopbacks_for_native()
+                    return
+            except Exception:
+                self._stop_native_micro_engine()
+
+        # Fallback legacy path.
+        self._apply_micro_links(settings)
+
+    def _return_monitor_media_name(self, key: str) -> str:
+        return RETURN_MIC_MONITOR_MEDIA_PREFIX + str(key)
+
+    def _return_monitor_existing_module_ids(self) -> dict[str, list[str]]:
+        proc = self._run(["pactl", "list", "short", "modules"])
+        if proc.returncode != 0:
+            return {}
+
+        found: dict[str, list[str]] = {}
+        for line in proc.stdout.splitlines():
+            parts = line.split(None, 2)
+            if len(parts) < 3:
+                continue
+
+            module_id, module_name, args = parts
+            if module_name != "module-loopback":
+                continue
+
+            if RETURN_MIC_MONITOR_MEDIA_PREFIX not in args:
+                continue
+
+            suffix = args.split(RETURN_MIC_MONITOR_MEDIA_PREFIX, 1)[1]
+            key = suffix.split()[0].strip()
+            if key:
+                found.setdefault(key, []).append(module_id)
+
+        return found
+
+    def _cleanup_return_monitor_sources(self, keep_keys: set[str] | None = None) -> None:
+        keep_keys = keep_keys or set()
+        for key, module_ids in self._return_monitor_existing_module_ids().items():
+            if key in keep_keys:
+                continue
+            for module_id in module_ids:
+                self._run_no_fail(["pactl", "unload-module", module_id])
+
+    def _desired_return_monitor_sources(self, channel: ChannelConfig) -> dict[str, str]:
+        linked = [str(key).lower() for key in getattr(channel, "linked_channels", []) or []]
+        desired: dict[str, str] = {}
+
+        # Only one EasyEffects processed source exists. If several EE entries
+        # were saved, keep the first one only to avoid double-monitoring the
+        # same easyeffects_source.
+        ee_taken = False
+
+        for key in linked:
+            source = RETURN_MIC_MONITOR_SOURCE_BY_KEY.get(key, "")
+            if not source:
+                continue
+
+            if key in RETURN_MIC_EASYEFFECTS_TARGET_BY_KEY:
+                if ee_taken:
+                    continue
+                ee_taken = True
+
+            if self._source_exists(source):
+                desired[key] = source
+
+        return desired
+
+    def _ensure_return_monitor_loopback(self, *, key: str, source_name: str) -> bool:
+        media_name = self._return_monitor_media_name(key)
+        existing = self._find_loopback_module_ids_by_media_name(media_name)
+        if existing:
+            return True
+
+        module_id = self._load_loopback_module(
+            source_name=source_name,
+            sink_name="retour",
+            media_name=media_name,
+        )
+        return bool(module_id)
+
+    def _apply_return_mic(self, settings: AppSettings) -> None:
+        channel = self._find_channel(settings, "return-mic")
+
+        # Always write the native state so disabling RETOUR-MIC stops the native output too.
+        try:
+            self._configure_easyeffects_for_settings(settings)
+            self._write_native_micro_state(settings)
+            self._ensure_native_micro_engine()
+        except Exception:
+            pass
+
+        # From now on, RETOUR-MIC audio is rendered by ksound_native_micro_engine.
+        # Remove old loopback-based return monitor/capture modules to avoid crackle/double audio.
+        self._cleanup_return_monitor_sources()
+        for module_id in self._find_loopback_module_ids_by_media_name("K-Sound Hub Return Mic Capture"):
+            self._run_no_fail(["pactl", "unload-module", module_id])
+
+        if channel is None or not channel.enabled or int(channel.volume) <= 0:
+            self._disable_return_mic(capture=True, playback=True)
+            return
+
+        if not self._sink_exists("retour"):
+            self._run_no_fail([
+                "pactl",
+                "load-module",
+                "module-null-sink",
+                "sink_name=retour",
+                "sink_properties=device.description=🎤RETOUR-MICRO",
+            ])
+
+        if not self._pw_link_available() or not self._sink_exists("retour"):
+            self._disable_return_mic(capture=True, playback=True)
+            return
+
+        target_label = (channel.primary_target or "ANPW").strip()
+        target_sink = TARGET_OBJECT_BY_LABEL.get(target_label)
+        if not target_sink or not self._sink_exists(target_sink):
+            self._disable_return_mic(capture=True, playback=True)
+            return
+
+        signature = json.dumps(
+            {
+                "return_native": True,
+                "target_label": target_label,
+                "target_sink": target_sink,
+            },
+            sort_keys=True,
+            ensure_ascii=False,
+        )
+
+        self._cleanup_legacy_return_playback_modules()
+
+        if self._return_mic_runtime.applied_signature != signature:
+            self._disconnect_return_playback_links()
+            if not self._connect_return_playback_links(target_sink):
+                self._disable_return_mic(capture=True, playback=True)
+                return
+
+        self._return_mic_runtime.capture_module_id = ""
+        self._return_mic_runtime.applied_signature = signature
+        self._apply_node_controls(channel, node_type="sink", node_name="retour")
 
     def _native_engine_binary(self) -> Path:
         return Path(__file__).resolve().parents[3] / "native_engine" / "build" / "ksound_native_engine"
@@ -218,7 +750,7 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
     def apply_channel(self, settings: AppSettings, channel_key: str) -> None:
         if channel_key in PLAYBACK_KEYS:
             self._apply_playback_channel(settings, channel_key)
-            self._apply_micro_links(settings)
+            self._apply_micro_transport(settings)
             return
 
         if channel_key == "micro":
@@ -230,9 +762,10 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
                 node_names = [self._resolved_micro_source_name(channel)]
             for node_name in node_names:
                 self._apply_node_controls(channel, node_type="source", node_name=node_name)
-            self._ensure_physical_micro_loopbacks(channel)
+            if not self._native_micro_enabled():
+                self._ensure_physical_micro_loopbacks(channel)
             self._run_no_fail(["pactl", "set-default-source", "micro"])
-            self._apply_micro_links(settings)
+            self._apply_micro_transport(settings)
             self._apply_return_mic(settings)
             return
 
@@ -265,20 +798,38 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
                 node_names = [self._resolved_micro_source_name(channel)]
             for node_name in node_names:
                 self._apply_node_controls(channel, node_type="source", node_name=node_name)
-            self._ensure_physical_micro_loopbacks(channel)
+            if not self._native_micro_enabled():
+                self._ensure_physical_micro_loopbacks(channel)
             self._run_no_fail(["pactl", "set-default-source", "micro"])
-        self._apply_micro_links(settings)
+        self._apply_micro_transport(settings)
         self._apply_return_mic(settings)
+
+    def _read_v2_levels_payload(self) -> dict[str, Any]:
+        try:
+            stat = self._v2_levels_path.stat()
+            mtime_ns = int(stat.st_mtime_ns)
+            if mtime_ns == self._v2_levels_cache_mtime_ns:
+                return self._v2_levels_cache_payload
+
+            payload = json.loads(self._v2_levels_path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                payload = {}
+
+            self._v2_levels_cache_mtime_ns = mtime_ns
+            self._v2_levels_cache_payload = payload
+            return payload
+        except Exception:
+            return self._v2_levels_cache_payload
 
     def meter_levels(self, channel_key: str) -> tuple[float, float]:
         if channel_key in PLAYBACK_KEYS:
-            try:
-                import json
-                payload = json.loads(self._v2_levels_path.read_text(encoding="utf-8"))
-                levels = payload.get("channels", {}).get(channel_key)
-                if isinstance(levels, list) and len(levels) >= 2:
+            payload = self._read_v2_levels_payload()
+            levels = payload.get("channels", {}).get(channel_key)
+            if isinstance(levels, list) and len(levels) >= 2:
+                try:
                     return float(levels[0]), float(levels[1])
-            except Exception:
-                return (0.0, 0.0)
+                except Exception:
+                    return (0.0, 0.0)
             return (0.0, 0.0)
+
         return super().meter_levels(channel_key)

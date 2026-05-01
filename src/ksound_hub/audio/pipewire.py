@@ -68,7 +68,7 @@ METER_SOURCE_BY_CHANNEL = {
     "media": "media.monitor",
     "more": "more.monitor",
     "return-mic": "retour.monitor",
-    "micro": "micro",
+    "micro": "micro_bus.monitor",
 }
 
 EQ_PIPEWIRE_LATENCY = "256/48000"
@@ -318,8 +318,12 @@ class SourceMeterProbe:
             pass
 
     def _run(self) -> None:
-        chunk_frames = 960
+        # 240 frames @ 48 kHz ~= 5 ms.
+        # This probe is UI-only, not audio-path. Keep it responsive by dropping
+        # old buffered data and measuring only the newest complete chunk.
+        chunk_frames = 240
         chunk_bytes = chunk_frames * 2 * 4
+        max_buffer_bytes = chunk_bytes * 8
 
         while not self._stop_event.is_set():
             current_left = 0.0
@@ -335,7 +339,7 @@ class SourceMeterProbe:
                         "--format=float32le",
                         "--rate=48000",
                         "--channels=2",
-                        "--latency-msec=40",
+                        "--latency-msec=10",
                     ],
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.PIPE,
@@ -344,10 +348,9 @@ class SourceMeterProbe:
                 )
                 self._proc = proc
 
-
                 if proc.stdout is None:
                     self._set_levels(0.0, 0.0)
-                    time.sleep(0.2)
+                    time.sleep(0.08)
                     continue
 
                 fd = proc.stdout.fileno()
@@ -357,51 +360,67 @@ class SourceMeterProbe:
                     if proc.poll() is not None:
                         break
 
-                    try:
-                        data = os.read(fd, 65536)
-                    except BlockingIOError:
-                        data = b""
+                    got_data = False
 
-                    if data:
+                    # Drain all immediately available data. This prevents the UI
+                    # from displaying old chunks when PipeWire/Qt had a short hiccup.
+                    for _ in range(32):
+                        try:
+                            data = os.read(fd, 65536)
+                        except BlockingIOError:
+                            break
+                        except Exception:
+                            data = b""
+                            break
+
+                        if not data:
+                            break
+
+                        got_data = True
                         buffer.extend(data)
 
-                        while len(buffer) >= chunk_bytes:
-                            chunk = bytes(buffer[:chunk_bytes])
-                            del buffer[:chunk_bytes]
+                        if len(buffer) > max_buffer_bytes:
+                            del buffer[: len(buffer) - max_buffer_bytes]
 
-                            samples = np.frombuffer(chunk, dtype="<f4")
-                            if samples.size < 2:
-                                continue
+                    if got_data and len(buffer) >= chunk_bytes:
+                        # Keep only the most recent complete chunk.
+                        chunk = bytes(buffer[-chunk_bytes:])
+                        buffer.clear()
+
+                        samples = np.frombuffer(chunk, dtype="<f4")
+                        if samples.size >= 2:
                             if samples.size % 2:
                                 samples = samples[:-1]
-                            if samples.size < 2:
-                                continue
-
                             frames = samples.reshape(-1, 2)
+
                             peak_left = float(np.max(np.abs(frames[:, 0])))
                             peak_right = float(np.max(np.abs(frames[:, 1])))
 
-                            current_left = max(min(1.0, peak_left), current_left * 0.74)
-                            current_right = max(min(1.0, peak_right), current_right * 0.74)
+                            current_left = max(min(1.0, peak_left), current_left * 0.62)
+                            current_right = max(min(1.0, peak_right), current_right * 0.62)
                             self._set_levels(current_left, current_right)
-                    else:
-                        current_left *= 0.84
-                        current_right *= 0.84
-                        if current_left < 0.002:
-                            current_left = 0.0
-                        if current_right < 0.002:
-                            current_right = 0.0
-                        self._set_levels(current_left, current_right)
-                        time.sleep(0.03)
+
+                        continue
+
+                    current_left *= 0.78
+                    current_right *= 0.78
+
+                    if current_left < 0.002:
+                        current_left = 0.0
+                    if current_right < 0.002:
+                        current_right = 0.0
+
+                    self._set_levels(current_left, current_right)
+                    time.sleep(0.012)
 
             except Exception:
                 self._set_levels(0.0, 0.0)
-                time.sleep(0.25)
+                time.sleep(0.12)
             finally:
                 self._terminate_proc()
 
             if not self._stop_event.is_set():
-                time.sleep(0.15)
+                time.sleep(0.08)
 
         self._set_levels(0.0, 0.0)
 

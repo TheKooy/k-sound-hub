@@ -55,6 +55,24 @@ cleanup_stale_runtime_files() {
   rm -f "$LOCK_FILE" || true
 }
 
+start_easyeffects_service() {
+  local start_ee="${KSH_START_EASYEFFECTS:-1}"
+  case "${start_ee,,}" in
+    0|false|no|off)
+      return 0
+      ;;
+  esac
+
+  command -v easyeffects >/dev/null 2>&1 || return 0
+
+  if pgrep -u "$(id -u)" -f '(^|/)easyeffects($| )|com.github.wwmm.easyeffects' >/dev/null 2>&1; then
+    return 0
+  fi
+
+  nohup easyeffects --service-mode --hide-window \
+    >"$KSH_CONFIG_DIR/runtime/easyeffects.log" 2>&1 &
+}
+
 cleanup_managed_processes() {
   "$PYTHON_BIN" - <<'PY'
 import os
@@ -62,7 +80,7 @@ import signal
 import time
 from pathlib import Path
 
-TARGET_ROLES = {"eq_slot", "meter_probe", "native_engine_shadow", "native_engine_bridge"}
+TARGET_ROLES = {"eq_slot", "meter_probe", "native_engine_shadow", "native_engine_bridge", "native_engine_real", "native_micro_engine", "v2_final_capture", "v2_final_render"}
 uid = os.getuid()
 proc_root = Path("/proc")
 pids = []
@@ -143,5 +161,11 @@ fi
 if [[ -x "$REPO_DIR/scripts/start_ksound_native_shadow_bridge.sh" ]]; then
   "$REPO_DIR/scripts/start_ksound_native_shadow_bridge.sh" >/dev/null 2>&1 || true
 fi
+
+# K-Sound UI geometry:
+# Native Wayland restores size but ignores global window position.
+# Run only the PySide app through XWayland/XCB so per-window position restore works.
+export QT_QPA_PLATFORM="${KSH_QT_PLATFORM:-xcb}"
+start_easyeffects_service
 
 exec "$PYTHON_BIN" -m ksound_hub.app
