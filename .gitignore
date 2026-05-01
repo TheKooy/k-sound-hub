@@ -97,3 +97,4 @@ packaging/linux/ksound-hub.desktop
 .soundboard_v2_backup_*/
 .web_volume_live_slider_backup_*.py
 .soundboard_wheel_forward_backup_*/
+.soundboard_ffmpeg_autolevel_cache_backup_*/

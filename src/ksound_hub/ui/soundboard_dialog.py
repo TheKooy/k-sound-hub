@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -34,10 +35,17 @@ from .widgets import MenuSelectorButton, NoWheelSlider
 SOUNDBOARD_PATH = CONFIG_DIR / "soundboard.json"
 SOUNDBOARD_PAIRING_PATH = CONFIG_DIR / "soundboard_pairing.json"
 SOUNDBOARD_PAIRING_TTL_SECONDS = 300
+SOUNDBOARD_CACHE_DIR = CONFIG_DIR / "soundboard-cache"
+SOUNDBOARD_LOUDNORM_I = -18.0
+SOUNDBOARD_LOUDNORM_TP = -1.5
+SOUNDBOARD_LIMITER_LIMIT = 0.95
 SUPPORTED_AUDIO_FILTER = "Audio files (*.wav *.wave *.ogg *.oga *.flac *.mp3 *.m4a);;All files (*)"
 SOUNDBOARD_GLOBAL_VOLUME_DEFAULT = 100
 SOUNDBOARD_AUTO_LEVEL_DEFAULT = False
 SOUNDBOARD_TARGET_PEAK_DB = -12.0
+SOUNDBOARD_TRIM_DB_DEFAULT = 0.0
+SOUNDBOARD_TRIM_DB_MIN = -24
+SOUNDBOARD_TRIM_DB_MAX = 24
 PLAYBACK_TARGETS = ["media", "game", "chat", "more", "all"]
 SOUNDBOARD_BUS = "soundboard"
 SOUNDBOARD_MONITOR_MEDIA_NAME = "K-Sound-Hub-Soundboard-Monitor"
@@ -57,6 +65,7 @@ def _default_slots(count: int = 12) -> list[dict[str, Any]]:
             "shortcut": "",
             "output_channel": "media",
             "send_to_micro": False,
+            "trim_db": SOUNDBOARD_TRIM_DB_DEFAULT,
         }
         for index in range(count)
     ]
@@ -84,6 +93,12 @@ def _clean_slot(raw: dict[str, Any], fallback_index: int) -> dict[str, Any]:
 
     analyzed_path = str(raw.get("analyzed_path") or "").strip()
 
+    try:
+        trim_db = float(raw.get("trim_db", SOUNDBOARD_TRIM_DB_DEFAULT))
+    except Exception:
+        trim_db = SOUNDBOARD_TRIM_DB_DEFAULT
+    trim_db = max(SOUNDBOARD_TRIM_DB_MIN, min(SOUNDBOARD_TRIM_DB_MAX, trim_db))
+
     return {
         "id": slot_id,
         "label": label,
@@ -94,6 +109,7 @@ def _clean_slot(raw: dict[str, Any], fallback_index: int) -> dict[str, Any]:
         "send_to_micro": bool(raw.get("send_to_micro", False)),
         "auto_gain": auto_gain,
         "analyzed_path": analyzed_path,
+        "trim_db": trim_db,
     }
 
 
@@ -343,6 +359,7 @@ class SoundboardPadWidget(QFrame):
     def __init__(self, slot: dict[str, Any], parent=None):
         super().__init__(parent)
         self.slot = slot
+        self.auto_level_mode = False
         self.setObjectName("soundboardPad")
         self.setMinimumWidth(230)
 
@@ -392,9 +409,9 @@ class SoundboardPadWidget(QFrame):
         volume_row.setContentsMargins(0, 0, 0, 0)
         volume_row.setSpacing(8)
 
-        volume_label = QLabel("Vol")
-        volume_label.setObjectName("mutedLabel")
-        volume_row.addWidget(volume_label)
+        self.volume_mode_label = QLabel("Vol")
+        self.volume_mode_label.setObjectName("mutedLabel")
+        volume_row.addWidget(self.volume_mode_label)
 
         self.volume_slider = SoundboardNoWheelSlider(Qt.Horizontal)
         self.volume_slider.setRange(0, 100)
@@ -446,9 +463,43 @@ class SoundboardPadWidget(QFrame):
         self.slot["label"] = self.label_edit.text().strip() or str(self.slot.get("id", "SOUND"))
         self.changed.emit()
 
+    def _format_trim_db(self, value: float) -> str:
+        sign = "+" if value > 0 else ""
+        return f"{sign}{value:.0f} dB"
+
+    def set_auto_level_mode(self, enabled: bool) -> None:
+        self.auto_level_mode = bool(enabled)
+
+        self.volume_slider.blockSignals(True)
+        try:
+            if self.auto_level_mode:
+                trim = float(self.slot.get("trim_db", SOUNDBOARD_TRIM_DB_DEFAULT))
+                trim = max(SOUNDBOARD_TRIM_DB_MIN, min(SOUNDBOARD_TRIM_DB_MAX, trim))
+
+                self.volume_mode_label.setText("Trim")
+                self.volume_slider.setRange(SOUNDBOARD_TRIM_DB_MIN, SOUNDBOARD_TRIM_DB_MAX)
+                self.volume_slider.setValue(int(round(trim)))
+                self.volume_value.setText(self._format_trim_db(trim))
+            else:
+                volume = int(self.slot.get("volume", 80))
+
+                self.volume_mode_label.setText("Vol")
+                self.volume_slider.setRange(0, 100)
+                self.volume_slider.setValue(max(0, min(100, volume)))
+                self.volume_value.setText(f"{max(0, min(100, volume))}%")
+        finally:
+            self.volume_slider.blockSignals(False)
+
     def _commit_volume(self, value: int) -> None:
-        self.slot["volume"] = int(value)
-        self.volume_value.setText(f"{int(value)}%")
+        if self.auto_level_mode:
+            trim = max(SOUNDBOARD_TRIM_DB_MIN, min(SOUNDBOARD_TRIM_DB_MAX, float(value)))
+            self.slot["trim_db"] = trim
+            self.volume_value.setText(self._format_trim_db(trim))
+        else:
+            volume = max(0, min(100, int(value)))
+            self.slot["volume"] = volume
+            self.volume_value.setText(f"{volume}%")
+
         self.changed.emit()
 
     def _commit_output_channel(self, value: str) -> None:
@@ -556,6 +607,7 @@ class SoundboardDialog(QDialog):
         footer_layout.addWidget(self.status_label, 1)
 
         self.auto_level_check = QCheckBox("Auto level")
+        self.auto_level_check.setObjectName("soundboardSwitch")
         self.auto_level_check.setChecked(bool(self.auto_level_enabled))
         self.auto_level_check.toggled.connect(self._on_auto_level_changed)
         footer_layout.addWidget(self.auto_level_check)
@@ -619,6 +671,26 @@ class SoundboardDialog(QDialog):
                 border-radius: 13px;
                 padding: 6px 10px;
             }
+            QCheckBox#soundboardSwitch {
+                spacing: 8px;
+                font-weight: 800;
+                color: rgba(236, 247, 255, 220);
+            }
+            QCheckBox#soundboardSwitch::indicator {
+                width: 38px;
+                height: 20px;
+                border-radius: 10px;
+                border: 1px solid rgba(147, 164, 184, 105);
+                background: rgba(50, 60, 78, 190);
+            }
+            QCheckBox#soundboardSwitch::indicator:checked {
+                border: 1px solid rgba(62, 216, 255, 160);
+                background: qlineargradient(
+                    x1:0, y1:0, x2:1, y2:0,
+                    stop:0 rgba(62, 216, 255, 210),
+                    stop:1 rgba(255, 92, 199, 210)
+                );
+            }
             QCheckBox {
                 background: transparent;
                 font-size: 11px;
@@ -680,6 +752,7 @@ class SoundboardDialog(QDialog):
         columns = 4
         for index, slot in enumerate(self.slots):
             pad = SoundboardPadWidget(slot, self)
+            pad.set_auto_level_mode(self.auto_level_enabled)
             pad.changed.connect(self.save)
             pad.play_requested.connect(self.play_slot)
             self.pad_widgets.append(pad)
@@ -771,8 +844,16 @@ class SoundboardDialog(QDialog):
 
     def _on_auto_level_changed(self, checked: bool) -> None:
         self.auto_level_enabled = bool(checked)
+
+        for pad in getattr(self, "pad_widgets", []):
+            pad.set_auto_level_mode(self.auto_level_enabled)
+
         self.save()
-        self.status_label.setText("Auto level: ON" if checked else "Auto level: OFF")
+        self.status_label.setText(
+            "Auto level: ON · pad sliders = trim -24/+24 dB"
+            if checked
+            else "Auto level: OFF · pad sliders = volume %"
+        )
 
     def _analyze_auto_gain(self, path: Path) -> float:
         try:
@@ -836,11 +917,108 @@ class SoundboardDialog(QDialog):
 
         return gain
 
+    def _processed_auto_level_path(self, slot: dict[str, Any], path: Path) -> Path:
+        if not self.auto_level_enabled:
+            return path
+
+        try:
+            trim_db = float(slot.get("trim_db", SOUNDBOARD_TRIM_DB_DEFAULT))
+        except Exception:
+            trim_db = SOUNDBOARD_TRIM_DB_DEFAULT
+
+        trim_db = max(SOUNDBOARD_TRIM_DB_MIN, min(SOUNDBOARD_TRIM_DB_MAX, trim_db))
+
+        try:
+            stat = path.stat()
+            cache_payload = {
+                "path": str(path.resolve()),
+                "mtime_ns": stat.st_mtime_ns,
+                "size": stat.st_size,
+                "trim_db": round(trim_db, 2),
+                "i": SOUNDBOARD_LOUDNORM_I,
+                "tp": SOUNDBOARD_LOUDNORM_TP,
+                "limiter": SOUNDBOARD_LIMITER_LIMIT,
+                "v": 2,
+            }
+        except Exception:
+            return path
+
+        key = hashlib.sha256(
+            json.dumps(cache_payload, sort_keys=True).encode("utf-8")
+        ).hexdigest()[:24]
+
+        SOUNDBOARD_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        output = SOUNDBOARD_CACHE_DIR / f"{key}.wav"
+
+        if output.is_file():
+            return output
+
+        tmp = output.with_suffix(".tmp.wav")
+
+        # Important:
+        # - loudnorm rapproche les fichiers entre eux.
+        # - volume=trim_db applique le +/- dB réel.
+        # - alimiter empêche le clipping au lieu de laisser saturer.
+        audio_filter = (
+            f"loudnorm=I={SOUNDBOARD_LOUDNORM_I}:"
+            f"TP={SOUNDBOARD_LOUDNORM_TP}:LRA=11,"
+            f"volume={trim_db}dB,"
+            f"alimiter=limit={SOUNDBOARD_LIMITER_LIMIT}"
+        )
+
+        try:
+            proc = subprocess.run(
+                [
+                    "ffmpeg",
+                    "-y",
+                    "-hide_banner",
+                    "-nostdin",
+                    "-i",
+                    str(path),
+                    "-filter:a",
+                    audio_filter,
+                    "-ar",
+                    "48000",
+                    "-ac",
+                    "2",
+                    str(tmp),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+        except FileNotFoundError:
+            self.status_label.setText("Auto level cache: ffmpeg introuvable")
+            return path
+        except Exception as exc:
+            self.status_label.setText(f"Auto level cache erreur: {exc}")
+            return path
+
+        if proc.returncode != 0 or not tmp.is_file():
+            self.status_label.setText("Auto level cache: ffmpeg failed")
+            try:
+                tmp.unlink()
+            except Exception:
+                pass
+            return path
+
+        try:
+            tmp.replace(output)
+        except Exception:
+            return path
+
+        return output
+
     def _effective_volume(self, slot: dict[str, Any], path: Path, pad_volume: int) -> float:
-        base = max(0.0, min(100.0, float(pad_volume)))
         global_factor = max(0.0, min(1.0, float(self.global_volume) / 100.0))
-        auto_gain = self._auto_gain_for_slot(slot, path)
-        return max(0.0, min(100.0, base * global_factor * auto_gain))
+
+        if self.auto_level_enabled:
+            # En mode Auto, le +/- dB est appliqué dans le fichier cache ffmpeg.
+            # Ici on garde seulement le volume global, borné à 100%.
+            return max(0.0, min(100.0, 100.0 * global_factor))
+
+        base = max(0.0, min(100.0, float(pad_volume)))
+        return max(0.0, min(100.0, base * global_factor))
 
     def stop_all(self) -> None:
         stopped = 0
@@ -935,6 +1113,7 @@ class SoundboardDialog(QDialog):
         if target_channel not in PLAYBACK_TARGETS:
             target_channel = "media"
 
+        playback_path = self._processed_auto_level_path(slot, path)
         effective_volume = self._effective_volume(slot, path, volume)
 
         bus_found = _ensure_soundboard_bus()
@@ -948,7 +1127,7 @@ class SoundboardDialog(QDialog):
         if bus_found:
             output_found = self._start_player(
                 key=f"{slot_id}:soundboard",
-                path=path,
+                path=playback_path,
                 sink_name=SOUNDBOARD_BUS,
                 volume=effective_volume,
             )
