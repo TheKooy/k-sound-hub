@@ -177,6 +177,7 @@ def page(status: str = "") -> bytes:
     settings = read_soundboard_settings()
     global_volume = int(settings.get("global_volume", 100))
     auto_level_text = "ON" if settings.get("auto_level_enabled") else "OFF"
+    escaped_token = html.escape(TOKEN, quote=True)
     buttons = []
 
     for index, slot in enumerate(slots):
@@ -188,18 +189,23 @@ def page(status: str = "") -> bytes:
 
         buttons.append(
             f"""
-            <form method="POST" action="/play?token={html.escape(TOKEN)}">
-              <input type="hidden" name="slot" value="{html.escape(slot_id)}">
-              <button class="pad" {disabled}>
-                <strong>{html.escape(label)}</strong>
-                <span>{html.escape(slot_id)} · {html.escape(subtitle)}</span>
-              </button>
-            </form>
+            <button
+              class="pad"
+              type="button"
+              data-slot="{html.escape(slot_id, quote=True)}"
+              onclick="playSlotFromButton(this)"
+              {disabled}
+            >
+              <strong>{html.escape(label)}</strong>
+              <span>{html.escape(slot_id)} · {html.escape(subtitle)}</span>
+            </button>
             """
         )
 
     if not buttons:
         buttons.append("<p class='empty'>Aucun pad trouvé. Configure la soundboard dans K-Sound Hub d'abord.</p>")
+
+    initial_status = html.escape(status or "Ready")
 
     body = f"""
     <!doctype html>
@@ -215,6 +221,7 @@ def page(status: str = "") -> bytes:
           color-scheme: dark;
           --bg: #070a12;
           --card: rgba(16, 22, 34, .92);
+          --bar: rgba(5, 8, 15, .94);
           --cyan: #3ed8ff;
           --pink: #ff5cc7;
           --text: #ecf7ff;
@@ -235,7 +242,7 @@ def page(status: str = "") -> bytes:
             radial-gradient(circle at 85% 20%, rgba(255,92,199,.22), transparent 30%),
             linear-gradient(135deg, #05070d, #101827 55%, #080b12);
           color: var(--text);
-          padding: 18px;
+          padding: 18px 18px 112px;
         }}
         header {{
           border: 1px solid rgba(62,216,255,.28);
@@ -257,37 +264,14 @@ def page(status: str = "") -> bytes:
         .status {{
           margin-top: 8px;
           color: var(--cyan);
-        }}
-        .control-panel {{
-          border: 1px solid rgba(62,216,255,.22);
-          border-radius: 20px;
-          background: rgba(8, 12, 22, .72);
-          padding: 14px;
-          margin-bottom: 14px;
-          box-shadow: 0 14px 34px rgba(0,0,0,.22);
-        }}
-        .control-row {{
-          display: grid;
-          grid-template-columns: auto 1fr auto;
-          gap: 12px;
-          align-items: center;
-        }}
-        input[type="range"] {{
-          width: 100%;
-          accent-color: var(--cyan);
-        }}
-        .tiny {{
-          color: var(--muted);
-          font-size: 12px;
-          margin-top: 8px;
+          min-height: 18px;
         }}
         .grid {{
           display: grid;
           grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
           gap: 12px;
         }}
-        form {{ margin: 0; }}
-        .pad, .stop {{
+        .pad {{
           width: 100%;
           min-height: 92px;
           border: 1px solid rgba(62,216,255,.34);
@@ -299,7 +283,7 @@ def page(status: str = "") -> bytes:
           box-shadow: 0 14px 34px rgba(0,0,0,.28);
           touch-action: manipulation;
         }}
-        .pad:active, .stop:active {{
+        .pad:active, .pad.sending {{
           transform: scale(.98);
           border-color: rgba(255,92,199,.85);
         }}
@@ -317,16 +301,69 @@ def page(status: str = "") -> bytes:
           font-size: 12px;
           word-break: break-word;
         }}
-        .stop {{
-          min-height: 58px;
-          margin-bottom: 14px;
-          border-color: rgba(255,92,199,.55);
-          text-align: center;
-          font-weight: 900;
-          letter-spacing: .04em;
-        }}
         .empty {{
           color: var(--muted);
+        }}
+        .bottom-bar {{
+          position: fixed;
+          left: 0;
+          right: 0;
+          bottom: 0;
+          z-index: 50;
+          display: grid;
+          grid-template-columns: minmax(0, 1fr) 54px;
+          gap: 10px;
+          align-items: center;
+          padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
+          border-top: 1px solid rgba(62,216,255,.24);
+          background: var(--bar);
+          backdrop-filter: blur(18px);
+          box-shadow: 0 -16px 42px rgba(0,0,0,.38);
+        }}
+        .bottom-volume {{
+          min-width: 0;
+        }}
+        .volume-line {{
+          display: grid;
+          grid-template-columns: 1fr auto;
+          gap: 10px;
+          align-items: center;
+        }}
+        input[type="range"] {{
+          width: 100%;
+          accent-color: var(--cyan);
+        }}
+        #globalVolValue {{
+          min-width: 42px;
+          text-align: right;
+          color: var(--cyan);
+          font-weight: 800;
+          font-size: 13px;
+        }}
+        .tiny {{
+          color: var(--muted);
+          font-size: 11px;
+          margin-top: 4px;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }}
+        .stop-mini {{
+          width: 54px;
+          height: 54px;
+          border: 1px solid rgba(255,92,199,.62);
+          border-radius: 18px;
+          background: rgba(35, 9, 28, .92);
+          color: var(--text);
+          font-size: 24px;
+          line-height: 1;
+          font-weight: 900;
+          box-shadow: 0 12px 28px rgba(0,0,0,.32);
+          touch-action: manipulation;
+        }}
+        .stop-mini:active {{
+          transform: scale(.96);
+          border-color: rgba(255,92,199,1);
         }}
       </style>
     </head>
@@ -334,48 +371,84 @@ def page(status: str = "") -> bytes:
       <header>
         <h1>K-SOUND SOUNDBOARD</h1>
         <div class="hint">Télécommande Android locale. Pairing sécurisé côté LAN.</div>
-        {f'<div class="status">{html.escape(status)}</div>' if status else ''}
+        <div id="remoteStatus" class="status">{initial_status}</div>
       </header>
 
-      <form method="POST" action="/stop?token={html.escape(TOKEN)}">
-        <button class="stop">STOP ALL</button>
-      </form>
+      <main class="grid">
+        {''.join(buttons)}
+      </main>
 
-      <section class="control-panel">
-        <div class="control-row">
-          <strong>Volume global</strong>
-          <input
-            id="globalVolumeSlider"
-            type="range"
-            min="0"
-            max="100"
-            name="volume"
-            value="{global_volume}"
-            oninput="scheduleVolumeUpdate(this.value)"
-            onchange="sendVolumeNow(this.value)"
-          >
-          <span id="globalVolValue">{global_volume}%</span>
+      <section class="bottom-bar" aria-label="Contrôles soundboard">
+        <div class="bottom-volume">
+          <div class="volume-line">
+            <input
+              id="globalVolumeSlider"
+              type="range"
+              min="0"
+              max="100"
+              name="volume"
+              value="{global_volume}"
+              oninput="scheduleVolumeUpdate(this.value)"
+              onchange="sendVolumeNow(this.value)"
+            >
+            <span id="globalVolValue">{global_volume}%</span>
+          </div>
+          <div class="tiny">
+            Auto level PC: {auto_level_text} · <span id="volumeSendState">Ready</span>
+          </div>
         </div>
-        <div class="tiny">
-          Auto level PC: {auto_level_text} · <span id="volumeSendState">Ready</span>
-        </div>
+        <button class="stop-mini" type="button" onclick="stopAllSounds()" title="Stop all" aria-label="Stop all">⏹</button>
       </section>
 
       <script>
         let volumeTimer = null;
         let lastSentVolume = "{global_volume}";
 
+        function setRemoteStatus(text) {{
+          const node = document.getElementById("remoteStatus");
+          if (node) node.textContent = text;
+        }}
+
         function setVolumeState(text) {{
           const node = document.getElementById("volumeSendState");
           if (node) node.textContent = text;
         }}
 
+        async function postAction(path, body, okText) {{
+          try {{
+            const response = await fetch(path + "?token={escaped_token}", {{
+              method: "POST",
+              headers: {{
+                "Content-Type": "application/x-www-form-urlencoded",
+                "X-Requested-With": "fetch"
+              }},
+              body: body || ""
+            }});
+            if (!response.ok) throw new Error("HTTP " + response.status);
+            setRemoteStatus(okText);
+            return true;
+          }} catch (error) {{
+            setRemoteStatus("Erreur envoi");
+            return false;
+          }}
+        }}
+
+        function playSlotFromButton(button) {{
+          const slot = button.dataset.slot || "";
+          if (!slot || button.disabled) return;
+          button.classList.add("sending");
+          window.setTimeout(() => button.classList.remove("sending"), 140);
+          postAction("/play", "slot=" + encodeURIComponent(slot), "Play " + slot + " envoyé");
+        }}
+
+        function stopAllSounds() {{
+          postAction("/stop", "", "Stop all envoyé");
+        }}
+
         function scheduleVolumeUpdate(value) {{
           document.getElementById("globalVolValue").textContent = value + "%";
           setVolumeState("Pending...");
-          if (volumeTimer) {{
-            clearTimeout(volumeTimer);
-          }}
+          if (volumeTimer) clearTimeout(volumeTimer);
           volumeTimer = setTimeout(() => sendVolumeNow(value), 180);
         }}
 
@@ -392,10 +465,11 @@ def page(status: str = "") -> bytes:
           lastSentVolume = String(value);
           setVolumeState("Sending...");
 
-          fetch("/volume?token={html.escape(TOKEN)}", {{
+          fetch("/volume?token={escaped_token}", {{
             method: "POST",
             headers: {{
-              "Content-Type": "application/x-www-form-urlencoded"
+              "Content-Type": "application/x-www-form-urlencoded",
+              "X-Requested-With": "fetch"
             }},
             body: "volume=" + encodeURIComponent(value)
           }})
@@ -408,15 +482,12 @@ def page(status: str = "") -> bytes:
           }});
         }}
       </script>
-
-      <main class="grid">
-        {''.join(buttons)}
-      </main>
     </body>
     </html>
     """
 
     return body.encode("utf-8")
+
 
 
 class Handler(BaseHTTPRequestHandler):

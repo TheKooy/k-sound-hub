@@ -9,6 +9,7 @@ import android.view.View;
 import android.view.Window;
 import android.view.WindowManager;
 import android.webkit.WebSettings;
+import android.webkit.WebStorage;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.Button;
@@ -254,12 +255,21 @@ public class MainActivity extends Activity {
         settings.setUseWideViewPort(true);
         settings.setMediaPlaybackRequiresUserGesture(false);
 
+        // Always reload the current PC web UI. The soundboard UI lives on the
+        // K-Sound Hub web server, so stale WebView cache can hide UI changes.
+        settings.setCacheMode(WebSettings.LOAD_NO_CACHE);
+        webView.clearCache(true);
+        webView.clearHistory();
+        WebStorage.getInstance().deleteAllData();
+
         webView.setWebViewClient(new WebViewClient());
         setContentView(webView);
         immersive();
 
         try {
-            String url = baseUrl + "/?token=" + URLEncoder.encode(token, "UTF-8");
+            String url = baseUrl
+                + "/?token=" + URLEncoder.encode(token, "UTF-8")
+                + "&v=" + System.currentTimeMillis();
             webView.loadUrl(url);
         } catch (Exception e) {
             showPairingUi("Erreur URL: " + e.getMessage());
