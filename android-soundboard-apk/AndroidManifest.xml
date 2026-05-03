@@ -1,5 +1,11 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="com.kooy.ksoundsoundboard">
+    package="com.kooy.ksoundsoundboard"
+    android:versionCode="26050317"
+    android:versionName="0.2605031748">
+
+    <uses-sdk
+        android:minSdkVersion="23"
+        android:targetSdkVersion="28" />
 
     <uses-permission android:name="android.permission.INTERNET" />
 
@@ -14,7 +20,6 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:screenOrientation="landscape"
             android:configChanges="keyboardHidden|orientation|screenSize">
 
             <intent-filter>

@@ -10,10 +10,13 @@ import time
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QMimeData, QPoint
+from PySide6.QtGui import QColor, QDrag, QPainter, QPixmap
+from PySide6.QtCore import QEvent, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtMultimedia import QAudioOutput, QMediaDevices, QMediaPlayer
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QDialog,
     QFileDialog,
@@ -25,6 +28,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -37,6 +41,7 @@ SOUNDBOARD_PATH = CONFIG_DIR / "soundboard.json"
 SOUNDBOARD_PAIRING_PATH = CONFIG_DIR / "soundboard_pairing.json"
 SOUNDBOARD_PAIRING_TTL_SECONDS = 300
 SOUNDBOARD_CACHE_DIR = CONFIG_DIR / "soundboard-cache"
+SOUNDBOARD_LAST_DIR_PATH = CONFIG_DIR / "soundboard_last_dir.txt"
 SOUNDBOARD_LOUDNORM_I = -18.0
 SOUNDBOARD_LOUDNORM_TP = -1.5
 SOUNDBOARD_LIMITER_LIMIT = 0.95
@@ -47,6 +52,9 @@ SOUNDBOARD_TARGET_PEAK_DB = -12.0
 SOUNDBOARD_TRIM_DB_DEFAULT = 0.0
 SOUNDBOARD_TRIM_DB_MIN = -24
 SOUNDBOARD_TRIM_DB_MAX = 24
+SOUNDBOARD_PAD_SCALE_DEFAULT = 100
+SOUNDBOARD_PAD_SCALE_MIN = 50
+SOUNDBOARD_PAD_SCALE_MAX = 200
 PLAYBACK_TARGETS = ["media", "game", "chat", "more", "all"]
 SOUNDBOARD_BUS = "soundboard"
 SOUNDBOARD_MONITOR_MEDIA_NAME = "K-Sound-Hub-Soundboard-Monitor"
@@ -378,15 +386,28 @@ class SoundboardNoWheelSlider(NoWheelSlider):
 class SoundboardPadWidget(QFrame):
     changed = Signal()
     play_requested = Signal(str)
+    move_requested = Signal(str, str)
+    swap_requested = Signal(str, str)
+    drag_started = Signal(str, int, int)
+    drag_moved = Signal(str, int, int)
+    drag_finished = Signal(str, int, int)
 
     def __init__(self, slot: dict[str, Any], parent=None):
         super().__init__(parent)
         self.slot = slot
         self.auto_level_mode = False
+        self._drag_start_pos = None
+        self._custom_drag_active = False
+        self._custom_drag_target = None
         self.setObjectName("soundboardPad")
         self.setMinimumWidth(230)
+        self._edit_mode = False
+        self._drag_start_pos = None
+        self._manual_drag_active = False
 
         root = QVBoxLayout(self)
+        self._root_layout = root
+        self._root_layout = root
         root.setContentsMargins(12, 12, 12, 12)
         root.setSpacing(8)
 
@@ -395,7 +416,9 @@ class SoundboardPadWidget(QFrame):
         top.setSpacing(8)
 
         self.label_edit = QLineEdit(str(slot.get("label", "SOUND")))
-        self.label_edit.setPlaceholderText("Nom du son")
+        self.label_edit.setAlignment(Qt.AlignLeft)
+        self.label_edit.setCursorPosition(0)
+        self.label_edit.setPlaceholderText("Sound name")
         self.label_edit.editingFinished.connect(self._commit_label)
         top.addWidget(self.label_edit, 1)
 
@@ -407,6 +430,26 @@ class SoundboardPadWidget(QFrame):
 
         root.addLayout(top)
 
+        self.move_controls = QWidget()
+        move_layout = QHBoxLayout(self.move_controls)
+        move_layout.setContentsMargins(0, 0, 0, 0)
+        move_layout.setSpacing(6)
+
+        for text, direction in (("↑", "up"), ("←", "left"), ("→", "right"), ("↓", "down")):
+            button = QPushButton(text)
+            button.setObjectName("soundPadMove")
+            button.setToolTip(f"Move {direction}")
+            button.clicked.connect(
+                lambda _checked=False, value=direction: self.move_requested.emit(
+                    str(self.slot.get("id", "")),
+                    value,
+                )
+            )
+            move_layout.addWidget(button)
+
+        self.move_controls.setVisible(False)
+        root.addWidget(self.move_controls)
+
         self.file_label = QLabel(self._path_label())
         self.file_label.setObjectName("mutedLabel")
         self.file_label.setWordWrap(True)
@@ -416,7 +459,7 @@ class SoundboardPadWidget(QFrame):
         file_row.setContentsMargins(0, 0, 0, 0)
         file_row.setSpacing(6)
 
-        choose_btn = QPushButton("Choisir son")
+        choose_btn = QPushButton("Choose")
         choose_btn.setObjectName("ghostButton")
         choose_btn.clicked.connect(self._choose_file)
         file_row.addWidget(choose_btn)
@@ -453,7 +496,7 @@ class SoundboardPadWidget(QFrame):
         route_row.setContentsMargins(0, 0, 0, 0)
         route_row.setSpacing(8)
 
-        route_label = QLabel("Moi")
+        route_label = QLabel("Hear")
         route_label.setObjectName("mutedLabel")
         route_row.addWidget(route_label)
 
@@ -464,7 +507,7 @@ class SoundboardPadWidget(QFrame):
         self.output_selector.currentTextChanged.connect(self._commit_output_channel)
         route_row.addWidget(self.output_selector, 1)
 
-        self.micro_check = QCheckBox("MIC via canal")
+        self.micro_check = QCheckBox("MIC via channel")
         self.micro_check.setChecked(bool(slot.get("send_to_micro", False)))
         self.micro_check.toggled.connect(self._commit_send_to_micro)
         route_row.addWidget(self.micro_check)
@@ -472,19 +515,276 @@ class SoundboardPadWidget(QFrame):
         root.addLayout(route_row)
 
         self.shortcut_edit = QLineEdit(str(slot.get("shortcut", "")))
-        self.shortcut_edit.setPlaceholderText("Shortcut app: ex. Ctrl+Alt+1")
+        self.shortcut_edit.setAlignment(Qt.AlignLeft)
+        self.shortcut_edit.setCursorPosition(0)
+        self.shortcut_edit.setPlaceholderText("App shortcut: e.g. Ctrl+Alt+1")
         self.shortcut_edit.editingFinished.connect(self._commit_shortcut)
         root.addWidget(self.shortcut_edit)
+
+        def _pt(widget, fallback):
+            size = widget.font().pointSizeF()
+            if size <= 0:
+                size = float(widget.font().pointSize() if widget.font().pointSize() > 0 else fallback)
+            return float(size)
+
+        self._font_bases = {
+            "label_edit": _pt(self.label_edit, 10.0),
+            "play_btn": _pt(self.play_btn, 10.0),
+            "file_label": _pt(self.file_label, 9.0),
+            "volume_mode_label": _pt(self.volume_mode_label, 9.0),
+            "volume_value": _pt(self.volume_value, 9.0),
+            "micro_check": _pt(self.micro_check, 9.0),
+            "shortcut_edit": _pt(self.shortcut_edit, 9.0),
+        }
+
+        self._base_font_sizes: dict[QWidget, float] = {}
+        for widget in [self, *self.findChildren(QWidget)]:
+            font = widget.font()
+            point_size = font.pointSizeF()
+            if point_size <= 0:
+                point_size = float(font.pointSize() if font.pointSize() > 0 else 10.0)
+            self._base_font_sizes[widget] = point_size
+
+    def set_pad_scale(self, scale_percent: int) -> None:
+        try:
+            value = int(scale_percent)
+        except Exception:
+            value = SOUNDBOARD_PAD_SCALE_DEFAULT
+
+        value = max(SOUNDBOARD_PAD_SCALE_MIN, min(SOUNDBOARD_PAD_SCALE_MAX, value))
+        card_factor = value / 100.0
+
+        if card_factor < 1.0:
+            font_factor = 1.0 - ((1.0 - card_factor) * 0.22)
+        else:
+            font_factor = 1.0 + ((card_factor - 1.0) * 0.16)
+
+        self.setMinimumWidth(max(118, int(230 * card_factor)))
+
+        margin = max(7, int(12 * max(card_factor, 0.72)))
+        spacing = max(5, int(8 * max(card_factor, 0.78)))
+        self._root_layout.setContentsMargins(margin, margin, margin, margin)
+        self._root_layout.setSpacing(spacing)
+
+        self.play_btn.setMinimumWidth(max(34, int(44 * max(card_factor, 0.78))))
+        self.play_btn.setMinimumHeight(max(28, int(34 * max(card_factor, 0.82))))
+
+        self.label_edit.setMinimumHeight(max(30, int(32 * max(card_factor, 0.90))))
+        self.shortcut_edit.setMinimumHeight(max(26, int(30 * max(card_factor, 0.86))))
+        self.file_label.setMinimumHeight(max(18, int(22 * max(card_factor, 0.86))))
+
+        self._apply_font_size(self.label_edit, self._font_bases["label_edit"] * font_factor, 9.0, 15.5)
+        self._apply_font_size(self.play_btn, self._font_bases["play_btn"] * font_factor, 9.0, 15.0)
+        self._apply_font_size(self.file_label, self._font_bases["file_label"] * font_factor, 8.2, 13.5)
+        self._apply_font_size(self.volume_mode_label, self._font_bases["volume_mode_label"] * font_factor, 8.0, 12.5)
+        self._apply_font_size(self.volume_value, self._font_bases["volume_value"] * font_factor, 8.0, 12.5)
+        self._apply_font_size(self.micro_check, self._font_bases["micro_check"] * font_factor, 8.0, 12.5)
+        self._apply_font_size(self.shortcut_edit, self._font_bases["shortcut_edit"] * font_factor, 8.0, 12.0)
+
+        self.label_edit.setAlignment(Qt.AlignLeft)
+        self.label_edit.setCursorPosition(0)
+        self.label_edit.deselect()
+
+        self.shortcut_edit.setAlignment(Qt.AlignLeft)
+        self.shortcut_edit.setCursorPosition(0)
+        self.shortcut_edit.deselect()
+
+
+
+
+    def _slot_key(self) -> str:
+        return str(self.slot.get("id", ""))
+
+    def _refresh_dynamic_style(self) -> None:
+        self.style().unpolish(self)
+        self.style().polish(self)
+        self.update()
+
+    def _set_visual_state(self, mode: str) -> None:
+        mode = str(mode or "").strip().lower()
+        self.setProperty("dragging", mode == "source")
+        self.setProperty("dropTarget", mode == "target")
+        self._refresh_dynamic_style()
+
+    def _apply_font_size(self, widget, points: float, min_pt: float, max_pt: float) -> None:
+        size = max(min_pt, min(max_pt, float(points)))
+        font = widget.font()
+        font.setPointSizeF(size)
+        widget.setFont(font)
+        widget.update()
+
+    def _set_child_mouse_transparency(self, enabled: bool) -> None:
+        # In edit mode, the whole card should behave as one drag handle.
+        # Otherwise child widgets like QLineEdit/QPushButton can steal press/release
+        # events and leave the manual drag stuck.
+        for child in self.findChildren(QWidget):
+            if child is not self:
+                child.setAttribute(Qt.WA_TransparentForMouseEvents, bool(enabled))
+
+    def _safe_release_manual_drag(self) -> None:
+        try:
+            self.releaseMouse()
+        except Exception:
+            pass
+
+        self._manual_drag_active = False
+        self._drag_start_pos = None
+        self._set_visual_state("")
+
+    def set_edit_mode(self, enabled: bool) -> None:
+        self._edit_mode = bool(enabled)
+        self.setAcceptDrops(False)
+        self.move_controls.setVisible(False)
+        self._set_child_mouse_transparency(self._edit_mode)
+
+        if hasattr(self, "play_btn"):
+            self.play_btn.setEnabled(not self._edit_mode)
+
+        self.setCursor(Qt.OpenHandCursor if self._edit_mode else Qt.ArrowCursor)
+        self._safe_release_manual_drag()
+
+
+
+    def _set_drop_target_visual(self, enabled: bool) -> None:
+        self.setProperty("dropTarget", bool(enabled))
+
+        if enabled:
+            # Direct per-widget style because dynamic QSS properties are not
+            # always repolished visibly enough on this QFrame with child widgets.
+            self.setStyleSheet("""
+                QFrame#soundboardPad {
+                    border: 2px solid rgba(62, 216, 255, 1.00);
+                    background-color: rgba(62, 216, 255, 0.32);
+                    border-radius: 18px;
+                }
+            """)
+        else:
+            self.setStyleSheet("")
+
+        self.style().unpolish(self)
+        self.style().polish(self)
+        self.update()
+
+    def _set_drag_source_visual(self, enabled: bool) -> None:
+        self.setProperty("dragging", bool(enabled))
+        self.style().unpolish(self)
+        self.style().polish(self)
+        self.update()
+
+    def _pad_at_global_pos(self, global_pos):
+        widget = QApplication.widgetAt(global_pos)
+        while widget is not None:
+            if isinstance(widget, SoundboardPadWidget):
+                return widget
+            widget = widget.parentWidget() if hasattr(widget, "parentWidget") else None
+        return None
+
+    def _set_drag_status(self, text: str) -> None:
+        dialog = self.parent()
+        if dialog is not None and hasattr(dialog, "status_label"):
+            dialog.status_label.setText(text)
+
+    def _clear_custom_drag_visuals(self) -> None:
+        self._set_drag_source_visual(False)
+
+        target = getattr(self, "_custom_drag_target", None)
+        if target is not None and target is not self:
+            try:
+                target._set_drop_target_visual(False)
+            except Exception:
+                pass
+
+        self._custom_drag_target = None
+
+    def mousePressEvent(self, event) -> None:
+        if self._edit_mode and event.button() == Qt.LeftButton:
+            self._drag_start_pos = event.position().toPoint()
+            event.accept()
+            return
+
+        super().mousePressEvent(event)
+
+
+
+    def mouseMoveEvent(self, event) -> None:
+        if not self._edit_mode or self._drag_start_pos is None:
+            super().mouseMoveEvent(event)
+            return
+
+        if not (event.buttons() & Qt.LeftButton):
+            super().mouseMoveEvent(event)
+            return
+
+        if not self._manual_drag_active:
+            if (event.position().toPoint() - self._drag_start_pos).manhattanLength() < 8:
+                return
+
+            self._manual_drag_active = True
+            self._set_visual_state("source")
+
+            try:
+                self.grabMouse(Qt.ClosedHandCursor)
+            except Exception:
+                pass
+
+            global_pos = event.globalPosition().toPoint()
+            self.drag_started.emit(self._slot_key(), global_pos.x(), global_pos.y())
+            self.drag_moved.emit(self._slot_key(), global_pos.x(), global_pos.y())
+            event.accept()
+            return
+
+        global_pos = event.globalPosition().toPoint()
+        self.drag_moved.emit(self._slot_key(), global_pos.x(), global_pos.y())
+        event.accept()
+
+
+
+    def dragEnterEvent(self, event) -> None:
+        event.ignore()
+
+
+
+    def dragMoveEvent(self, event) -> None:
+        event.ignore()
+
+
+
+    def dragLeaveEvent(self, event) -> None:
+        self._set_drop_target_visual(False)
+        event.ignore()
+
+    def dropEvent(self, event) -> None:
+        event.ignore()
+
+
+
+    def mouseReleaseEvent(self, event) -> None:
+        if self._edit_mode and event.button() == Qt.LeftButton:
+            was_dragging = bool(self._manual_drag_active)
+            global_pos = event.globalPosition().toPoint()
+
+            self._safe_release_manual_drag()
+
+            if was_dragging:
+                self.drag_finished.emit(self._slot_key(), global_pos.x(), global_pos.y())
+
+            event.accept()
+            return
+
+        super().mouseReleaseEvent(event)
+
 
     def _path_label(self) -> str:
         path = str(self.slot.get("path", "")).strip()
         if not path:
-            return "Aucun fichier audio choisi"
+            return "No audio selected"
         return Path(path).name
 
     def _commit_label(self) -> None:
         self.slot["label"] = self.label_edit.text().strip() or str(self.slot.get("id", "SOUND"))
+        self.label_edit.setCursorPosition(0)
         self.changed.emit()
+
 
     def _format_trim_db(self, value: float) -> str:
         sign = "+" if value > 0 else ""
@@ -536,31 +836,89 @@ class SoundboardPadWidget(QFrame):
 
     def _commit_shortcut(self) -> None:
         self.slot["shortcut"] = self.shortcut_edit.text().strip()
+        self.shortcut_edit.setCursorPosition(0)
         self.changed.emit()
+
 
     def _choose_file(self) -> None:
         current = str(self.slot.get("path", "") or "")
-        start = str(Path(current).expanduser().parent) if current else str(Path.home())
-        filename, _ = QFileDialog.getOpenFileName(self, "Choisir un son", start, SUPPORTED_AUDIO_FILTER)
+
+        start_candidates: list[Path] = []
+        if current:
+            start_candidates.append(Path(current).expanduser().parent)
+
+        try:
+            last_dir = SOUNDBOARD_LAST_DIR_PATH.read_text(encoding="utf-8").strip()
+            if last_dir:
+                start_candidates.append(Path(last_dir).expanduser())
+        except Exception:
+            pass
+
+        start_candidates.append(Path.home())
+
+        start_dir = Path.home()
+        for candidate in start_candidates:
+            try:
+                if candidate.is_dir():
+                    start_dir = candidate
+                    break
+            except Exception:
+                continue
+
+        filename, _ = QFileDialog.getOpenFileName(
+            self,
+            "Choose a sound",
+            str(start_dir),
+            SUPPORTED_AUDIO_FILTER,
+        )
         if not filename:
             return
+
+        selected_path = Path(filename).expanduser()
+
+        try:
+            SOUNDBOARD_LAST_DIR_PATH.parent.mkdir(parents=True, exist_ok=True)
+            SOUNDBOARD_LAST_DIR_PATH.write_text(str(selected_path.parent) + "\n", encoding="utf-8")
+            SOUNDBOARD_LAST_DIR_PATH.chmod(0o600)
+        except Exception:
+            pass
 
         self.slot["path"] = filename
 
         current_label = self.label_edit.text().strip()
         if not current_label or current_label.startswith("SOUND "):
-            auto_label = Path(filename).stem.replace("_", " ").replace("-", " ").strip()
+            auto_label = selected_path.stem.replace("_", " ").replace("-", " ").strip()
             if auto_label:
                 self.slot["label"] = auto_label
                 self.label_edit.setText(auto_label)
+                self.label_edit.setCursorPosition(0)
 
         self.file_label.setText(self._path_label())
         self.changed.emit()
 
+
     def _clear_file(self) -> None:
+        current = str(self.slot.get("path", "") or "").strip()
+        label = str(self.slot.get("label", self.slot.get("id", "this pad")) or "this pad")
+
+        if not current:
+            return
+
+        answer = QMessageBox.question(
+            self,
+            "Clear sound",
+            f"Remove the assigned sound from '{label}'?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+
+        if answer != QMessageBox.Yes:
+            return
+
         self.slot["path"] = ""
         self.file_label.setText(self._path_label())
         self.changed.emit()
+
 
 
 class SoundboardDialog(QDialog):
@@ -573,9 +931,15 @@ class SoundboardDialog(QDialog):
         self.slots = self._load_slots()
         self.global_volume = self._load_global_volume()
         self.auto_level_enabled = self._load_auto_level_enabled()
+        self.pad_scale = self._load_pad_scale()
         self.pad_widgets: list[SoundboardPadWidget] = []
         self._players: dict[str, tuple[QMediaPlayer, QAudioOutput]] = {}
         self._shortcuts: list[QShortcut] = []
+        self.edit_mode = False
+        self._drag_source_id = ""
+        self._drag_target_id = ""
+        self._rebuilding_grid = False
+        self._last_grid_columns = 0
 
         root = QVBoxLayout(self)
         root.setContentsMargins(14, 14, 14, 14)
@@ -593,8 +957,8 @@ class SoundboardDialog(QDialog):
         header_layout.addWidget(title)
 
         subtitle = QLabel(
-            "Pads audio avec volume indépendant. Le son sort toujours dans le canal SOUNDBOARD. "
-            "'Moi' choisit où tu l’entends. Pour le micro: MICRO → Apps → + → SOUNDBOARD."
+            "Audio pads with independent volume. Sound always plays through the SOUNDBOARD bus. "
+            "'Hear' selects where you monitor it. For mic send: MICRO → Apps → + → SOUNDBOARD."
         )
         subtitle.setObjectName("mutedLabel")
         subtitle.setWordWrap(True)
@@ -605,14 +969,20 @@ class SoundboardDialog(QDialog):
         self.status_label = QLabel("Ready")
         self.status_label.setObjectName("mutedLabel")
 
-        scroll = QScrollArea()
+        self.scroll = QScrollArea()
+        scroll = self.scroll
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll.viewport().setAutoFillBackground(False)
         scroll.viewport().setObjectName("scrollViewport")
 
-        host = QWidget()
+        self.grid_host = QWidget()
+        host = self.grid_host
         host.setObjectName("columnsHost")
+
+        for drop_widget in (scroll, scroll.viewport(), host):
+            drop_widget.setAcceptDrops(False)
+            drop_widget.installEventFilter(self)
 
         self.grid = QGridLayout(host)
         self.grid.setContentsMargins(0, 0, 0, 0)
@@ -636,13 +1006,15 @@ class SoundboardDialog(QDialog):
         self.auto_level_check.toggled.connect(self._on_auto_level_changed)
         footer_layout.addWidget(self.auto_level_check)
 
-        global_label = QLabel("Global")
+        global_label = QLabel("🔊")
         global_label.setObjectName("mutedLabel")
+        global_label.setToolTip("Volume soundboard")
         footer_layout.addWidget(global_label)
 
         self.global_volume_slider = SoundboardNoWheelSlider(Qt.Horizontal)
         self.global_volume_slider.setRange(0, 100)
-        self.global_volume_slider.setFixedWidth(130)
+        self.global_volume_slider.setMinimumWidth(55)
+        self.global_volume_slider.setMaximumWidth(130)
         self.global_volume_slider.setValue(int(self.global_volume))
         self.global_volume_slider.valueChanged.connect(self._on_global_volume_changed)
         footer_layout.addWidget(self.global_volume_slider)
@@ -651,6 +1023,74 @@ class SoundboardDialog(QDialog):
         self.global_volume_value.setObjectName("mutedLabel")
         self.global_volume_value.setMinimumWidth(38)
         footer_layout.addWidget(self.global_volume_value)
+
+        self.scale_btn = QPushButton("Scale")
+        self.scale_btn.setObjectName("soundboardScaleButton")
+        self.scale_btn.setCheckable(True)
+        self.scale_btn.setMinimumWidth(58)
+        self.scale_btn.setMaximumWidth(78)
+        self.scale_btn.toggled.connect(self._on_scale_panel_toggled)
+        footer_layout.addWidget(self.scale_btn)
+
+        self.scale_label = QLabel("Scale")
+        self.scale_label.setObjectName("mutedLabel")
+        footer_layout.addWidget(self.scale_label)
+
+        self.pad_scale_slider = SoundboardNoWheelSlider(Qt.Horizontal)
+        self.pad_scale_slider.setRange(SOUNDBOARD_PAD_SCALE_MIN, SOUNDBOARD_PAD_SCALE_MAX)
+        self.pad_scale_slider.setMinimumWidth(0)
+        self.pad_scale_slider.setMaximumWidth(0)
+        self.pad_scale_slider.setValue(int(self.pad_scale))
+        self.pad_scale_slider.setTracking(False)
+        self.pad_scale_slider.sliderMoved.connect(self._on_pad_scale_preview)
+        self.pad_scale_slider.valueChanged.connect(self._on_pad_scale_changed)
+        footer_layout.addWidget(self.pad_scale_slider)
+
+        self.pad_scale_value = QLabel(f"{int(self.pad_scale)}%")
+        self.pad_scale_value.setObjectName("mutedLabel")
+        self.pad_scale_value.setMinimumWidth(42)
+        footer_layout.addWidget(self.pad_scale_value)
+
+        self.scale_options_widget = QWidget()
+        self.scale_options_widget.setObjectName("scaleOptionsWidget")
+        scale_options_layout = QHBoxLayout(self.scale_options_widget)
+        scale_options_layout.setContentsMargins(0, 0, 0, 0)
+        scale_options_layout.setSpacing(4)
+
+        self.scale_option_buttons: dict[int, QPushButton] = {}
+        for label, value in (
+            ("0.5×", 50),
+            ("0.75×", 75),
+            ("1×", 100),
+            ("1.25×", 125),
+            ("1.5×", 150),
+            ("2×", 200),
+        ):
+            button = QPushButton(label)
+            button.setObjectName("soundboardScaleOption")
+            button.setCheckable(True)
+            button.setMinimumWidth(0)
+            button.clicked.connect(lambda _checked=False, v=value: self._on_pad_scale_option(v))
+            scale_options_layout.addWidget(button)
+            self.scale_option_buttons[value] = button
+
+        footer_layout.addWidget(self.scale_options_widget)
+
+        for scale_widget in (
+            self.scale_label,
+            self.pad_scale_slider,
+            self.pad_scale_value,
+            self.scale_options_widget,
+        ):
+            scale_widget.setVisible(False)
+
+        self.edit_btn = QPushButton("Edit")
+        self.edit_btn.setObjectName("soundboardEditButton")
+        self.edit_btn.setCheckable(True)
+        self.edit_btn.setMinimumWidth(56)
+        self.edit_btn.setMaximumWidth(72)
+        self.edit_btn.toggled.connect(self._on_edit_toggled)
+        footer_layout.addWidget(self.edit_btn)
 
         add_btn = QPushButton("+ 4 pads")
         add_btn.setObjectName("ghostButton")
@@ -679,6 +1119,16 @@ class SoundboardDialog(QDialog):
 
         root.addWidget(footer)
 
+        footer.setMinimumWidth(0)
+        footer.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        self.status_label.setMinimumWidth(0)
+        self.status_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+
+        for footer_child in footer.findChildren(QWidget):
+            footer_child.setMinimumWidth(0)
+
+        self.setMinimumSize(260, 320)
+
         self.setStyleSheet(
             """
             QFrame#soundboardPad {
@@ -689,11 +1139,58 @@ class SoundboardDialog(QDialog):
             QFrame#soundboardPad:hover {
                 border: 1px solid rgba(255, 92, 199, 84);
             }
+            QFrame#soundboardPad[dragging="true"] {
+                opacity: 0.65;
+                border-color: rgba(255, 92, 199, 0.95);
+                background: rgba(255, 92, 199, 0.10);
+            }
+            QFrame#soundboardPad[dropTarget="true"] {
+                border: 2px solid rgba(62, 216, 255, 1.00);
+                background: rgba(62, 216, 255, 0.32);
+            }
             QPushButton#soundPadPlay {
                 font-size: 18px;
                 font-weight: 900;
                 border-radius: 13px;
                 padding: 6px 10px;
+            }
+            QPushButton#soundPadMove {
+                font-size: 14px;
+                font-weight: 900;
+                border-radius: 10px;
+                padding: 4px 8px;
+            }
+            QPushButton#soundboardEditButton {
+                border: 1px solid rgba(62, 216, 255, 0.55);
+                border-radius: 10px;
+                padding: 4px 8px;
+                font-size: 11px;
+                font-weight: 900;
+                color: rgba(236, 247, 255, 230);
+                background: rgba(12, 18, 30, 0.82);
+            }
+            QPushButton#soundboardEditButton:checked {
+                border: 1px solid rgba(255, 92, 199, 1.00);
+                color: #071018;
+                background: qlineargradient(
+                    x1:0, y1:0, x2:1, y2:0,
+                    stop:0 rgba(62, 216, 255, 0.95),
+                    stop:1 rgba(255, 92, 199, 0.95)
+                );
+            }
+            QPushButton#soundboardScaleButton {
+                border: 1px solid rgba(62, 216, 255, 0.55);
+                border-radius: 10px;
+                padding: 4px 8px;
+                font-size: 11px;
+                font-weight: 900;
+                color: rgba(236, 247, 255, 230);
+                background: rgba(12, 18, 30, 0.82);
+            }
+            QPushButton#soundboardScaleButton:checked {
+                border: 1px solid rgba(62, 216, 255, 1.00);
+                color: #071018;
+                background: rgba(62, 216, 255, 0.90);
             }
             QCheckBox#soundboardSwitch {
                 spacing: 8px;
@@ -715,6 +1212,45 @@ class SoundboardDialog(QDialog):
                     stop:1 rgba(255, 92, 199, 210)
                 );
             }
+            /* KSH compact footer controls */
+            QPushButton#soundboardEditButton,
+            QPushButton#soundboardScaleButton {
+                min-height: 24px;
+                max-height: 24px;
+                padding: 2px 8px;
+                border-radius: 9px;
+                font-size: 10px;
+                font-weight: 800;
+            }
+            QPushButton#soundboardEditButton:checked {
+                border: 2px solid rgba(255, 92, 199, 0.95);
+                background: rgba(255, 92, 199, 0.22);
+                color: rgba(255, 240, 250, 245);
+            }
+            QPushButton#soundboardScaleButton:checked {
+                border: 2px solid rgba(62, 216, 255, 0.95);
+                background: rgba(62, 216, 255, 0.30);
+                color: rgba(236, 247, 255, 245);
+            }
+            QPushButton#soundboardScaleOption {
+                min-height: 24px;
+                max-height: 24px;
+                padding: 2px 7px;
+                border-radius: 9px;
+                font-size: 10px;
+                font-weight: 800;
+                border: 1px solid rgba(62, 216, 255, 0.45);
+                background: rgba(12, 18, 30, 0.82);
+                color: rgba(236, 247, 255, 220);
+            }
+            QPushButton#soundboardScaleOption:checked {
+                border: 2px solid rgba(62, 216, 255, 0.95);
+                background: rgba(62, 216, 255, 0.30);
+                color: rgba(236, 247, 255, 245);
+            }
+            QWidget#scaleOptionsWidget {
+                background: transparent;
+            }
             QCheckBox {
                 background: transparent;
                 font-size: 11px;
@@ -724,6 +1260,20 @@ class SoundboardDialog(QDialog):
 
         self._rebuild_grid()
         self._rebuild_shortcuts()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+
+        if getattr(self, "_rebuilding_grid", False):
+            return
+
+        try:
+            columns = self._columns_for_pad_scale()
+        except Exception:
+            return
+
+        if columns != getattr(self, "_last_grid_columns", 0):
+            QTimer.singleShot(0, self._rebuild_grid)
 
     def _load_slots(self) -> list[dict[str, Any]]:
         if not SOUNDBOARD_PATH.is_file():
@@ -747,6 +1297,7 @@ class SoundboardDialog(QDialog):
                 {
                     "global_volume": int(getattr(self, "global_volume", SOUNDBOARD_GLOBAL_VOLUME_DEFAULT)),
                     "auto_level_enabled": bool(getattr(self, "auto_level_enabled", SOUNDBOARD_AUTO_LEVEL_DEFAULT)),
+                    "pad_scale": int(getattr(self, "pad_scale", SOUNDBOARD_PAD_SCALE_DEFAULT)),
                     "slots": self.slots,
                 },
                 indent=2,
@@ -764,25 +1315,283 @@ class SoundboardDialog(QDialog):
         self._rebuild_grid()
         self.save()
 
+    def _columns_for_pad_scale(self) -> int:
+        try:
+            scale = int(getattr(self, "pad_scale", SOUNDBOARD_PAD_SCALE_DEFAULT))
+        except Exception:
+            scale = SOUNDBOARD_PAD_SCALE_DEFAULT
+
+        card_factor = max(0.5, min(2.0, scale / 100.0))
+        target_width = max(150, int(230 * card_factor))
+
+        viewport_width = 0
+        scroll = getattr(self, "scroll", None)
+        if scroll is not None:
+            try:
+                viewport_width = int(scroll.viewport().width())
+            except Exception:
+                viewport_width = 0
+
+        if viewport_width <= 0:
+            return 4
+
+        if scale >= 175:
+            max_columns = 2
+        elif scale >= 135:
+            max_columns = 3
+        elif scale <= 60:
+            max_columns = 6
+        elif scale <= 85:
+            max_columns = 5
+        else:
+            max_columns = 4
+
+        columns_by_width = max(1, viewport_width // target_width)
+        return max(1, min(max_columns, columns_by_width))
+
+
+
     def _rebuild_grid(self) -> None:
-        while self.grid.count():
-            item = self.grid.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
+        if getattr(self, "_rebuilding_grid", False):
+            return
 
-        self.pad_widgets.clear()
+        self._rebuilding_grid = True
+        try:
+            while self.grid.count():
+                item = self.grid.takeAt(0)
+                widget = item.widget()
+                if widget is not None:
+                    widget.deleteLater()
 
-        columns = 4
-        for index, slot in enumerate(self.slots):
-            pad = SoundboardPadWidget(slot, self)
-            pad.set_auto_level_mode(self.auto_level_enabled)
-            pad.changed.connect(self.save)
-            pad.play_requested.connect(self.play_slot)
-            self.pad_widgets.append(pad)
-            self.grid.addWidget(pad, index // columns, index % columns)
+            self.pad_widgets.clear()
 
-        self.grid.setRowStretch((len(self.slots) + columns - 1) // columns, 1)
+            columns = self._columns_for_pad_scale()
+            self._last_grid_columns = columns
+
+            for index, slot in enumerate(self.slots):
+                pad = SoundboardPadWidget(slot, self)
+                pad.set_auto_level_mode(self.auto_level_enabled)
+                pad.changed.connect(self.save)
+                pad.play_requested.connect(self.play_slot)
+                pad.move_requested.connect(self.move_slot_by_key)
+                pad.swap_requested.connect(self.swap_slots_by_keys)
+                pad.drag_started.connect(self._on_pad_drag_started)
+                pad.drag_moved.connect(self._on_pad_drag_moved)
+                pad.drag_finished.connect(self._on_pad_drag_finished)
+                pad.set_edit_mode(self.edit_mode)
+                pad.set_pad_scale(self.pad_scale)
+                self.pad_widgets.append(pad)
+                self.grid.addWidget(pad, index // columns, index % columns)
+
+            self.grid.setRowStretch((len(self.slots) + columns - 1) // columns, 1)
+        finally:
+            self._rebuilding_grid = False
+
+
+
+    def eventFilter(self, watched, event) -> bool:
+        if (
+            getattr(self, "edit_mode", False)
+            and event.type() in {QEvent.Type.DragEnter, QEvent.Type.DragMove, QEvent.Type.Drop}
+            and hasattr(event, "mimeData")
+            and event.mimeData().hasFormat("application/x-ksound-soundboard-slot")
+        ):
+            event.setDropAction(Qt.MoveAction)
+            event.accept()
+            return True
+
+        return super().eventFilter(watched, event)
+
+    def _pad_by_slot_id(self, slot_id: str):
+        slot_id = str(slot_id or "").strip()
+        for pad in self.pad_widgets:
+            if str(pad.slot.get("id", "")) == slot_id:
+                return pad
+        return None
+
+    def _clear_pad_drag_visuals(self) -> None:
+        for pad in self.pad_widgets:
+            try:
+                pad._set_visual_state("")
+            except Exception:
+                pass
+
+    def _find_target_pad_from_global(self, x: int, y: int):
+        widget = QApplication.widgetAt(QPoint(int(x), int(y)))
+        while widget is not None:
+            if isinstance(widget, SoundboardPadWidget):
+                return widget
+            widget = widget.parentWidget()
+        return None
+
+    def _on_pad_drag_started(self, source_id: str, x: int, y: int) -> None:
+        if not self.edit_mode:
+            return
+
+        self._drag_source_id = str(source_id or "").strip()
+        self._drag_target_id = ""
+        self._clear_pad_drag_visuals()
+
+        source_pad = self._pad_by_slot_id(self._drag_source_id)
+        if source_pad is not None:
+            source_pad._set_visual_state("source")
+
+        self._on_pad_drag_moved(source_id, x, y)
+
+    def _on_pad_drag_moved(self, source_id: str, x: int, y: int) -> None:
+        if not self.edit_mode:
+            return
+
+        source_id = str(source_id or "").strip()
+        if not source_id or source_id != self._drag_source_id:
+            return
+
+        source_pad = self._pad_by_slot_id(source_id)
+        if source_pad is None:
+            return
+
+        target_pad = self._find_target_pad_from_global(x, y)
+
+        self._clear_pad_drag_visuals()
+        source_pad._set_visual_state("source")
+
+        if target_pad is not None:
+            target_id = str(target_pad.slot.get("id", "")).strip()
+            if target_id and target_id != source_id:
+                target_pad._set_visual_state("target")
+                self._drag_target_id = target_id
+                self.status_label.setText(f"Move {source_id} → {target_id}")
+                return
+
+        self._drag_target_id = ""
+        self.status_label.setText(f"Moving {source_id}")
+
+    def _on_pad_drag_finished(self, source_id: str, x: int, y: int) -> None:
+        source_id = str(source_id or "").strip()
+
+        if not self.edit_mode or not source_id:
+            self._clear_pad_drag_visuals()
+            self._drag_source_id = ""
+            self._drag_target_id = ""
+            return
+
+        target_pad = self._find_target_pad_from_global(x, y)
+        target_id = str(target_pad.slot.get("id", "")).strip() if target_pad is not None else self._drag_target_id
+
+        self._clear_pad_drag_visuals()
+        self._drag_source_id = ""
+        self._drag_target_id = ""
+
+        if target_id and target_id != source_id:
+            self.swap_slots_by_keys(source_id, target_id)
+        else:
+            self.status_label.setText("Edit mode: drag a pad onto another")
+
+
+    def _on_edit_toggled(self, checked: bool) -> None:
+        self.edit_mode = bool(checked)
+        self._drag_source_id = ""
+        self._drag_target_id = ""
+        self._clear_pad_drag_visuals()
+
+        for pad in self.pad_widgets:
+            try:
+                pad._safe_release_manual_drag()
+            except Exception:
+                pass
+            pad.set_edit_mode(self.edit_mode)
+
+        self.status_label.setText(
+            "Edit mode: drag a pad onto another"
+            if self.edit_mode
+            else "Edit mode: OFF"
+        )
+
+
+
+    def swap_slots_by_keys(self, source_id: str, target_id: str) -> bool:
+        source_id = str(source_id or "").strip()
+        target_id = str(target_id or "").strip()
+
+        source_index = next((i for i, item in enumerate(self.slots) if str(item.get("id", "")) == source_id), -1)
+        target_index = next((i for i, item in enumerate(self.slots) if str(item.get("id", "")) == target_id), -1)
+
+        if source_index < 0 or target_index < 0 or source_index == target_index:
+            self.status_label.setText("Move unavailable")
+            return False
+
+        self.slots[source_index], self.slots[target_index] = self.slots[target_index], self.slots[source_index]
+        self._rebuild_grid()
+        self.save()
+        self.status_label.setText(f"Moved {source_id} ↔ {target_id}")
+        return True
+
+    def reorder_slots_by_ids(self, order) -> bool:
+        if not isinstance(order, list):
+            self.status_label.setText("Invalid soundboard order")
+            return False
+
+        by_id = {str(slot.get("id", "")): slot for slot in self.slots}
+        used: set[str] = set()
+        reordered: list[dict[str, Any]] = []
+
+        for raw_id in order:
+            slot_id = str(raw_id or "").strip()
+            if slot_id and slot_id in by_id and slot_id not in used:
+                reordered.append(by_id[slot_id])
+                used.add(slot_id)
+
+        for slot in self.slots:
+            slot_id = str(slot.get("id", ""))
+            if slot_id not in used:
+                reordered.append(slot)
+
+        if len(reordered) != len(self.slots):
+            self.status_label.setText("Incomplete soundboard order")
+            return False
+
+        old_order = [str(slot.get("id", "")) for slot in self.slots]
+        new_order = [str(slot.get("id", "")) for slot in reordered]
+        if old_order == new_order:
+            return True
+
+        self.slots = reordered
+        self._rebuild_grid()
+        self.save()
+        self.status_label.setText("Soundboard order saved")
+        return True
+
+    def move_slot_by_key(self, slot_id: str, direction: str) -> bool:
+        slot_id = str(slot_id or "").strip()
+        direction = str(direction or "").strip().lower()
+        columns = self._columns_for_pad_scale()
+
+        index = next((i for i, item in enumerate(self.slots) if str(item.get("id", "")) == slot_id), -1)
+        if index < 0:
+            self.status_label.setText(f"Slot not found: {slot_id}")
+            return False
+
+        column = index % columns
+        target = -1
+
+        if direction == "left" and column > 0:
+            target = index - 1
+        elif direction == "right" and column < columns - 1 and index + 1 < len(self.slots):
+            target = index + 1
+        elif direction == "up" and index - columns >= 0:
+            target = index - columns
+        elif direction == "down" and index + columns < len(self.slots):
+            target = index + columns
+
+        if target < 0 or target >= len(self.slots):
+            self.status_label.setText("Move unavailable")
+            return False
+
+        self.slots[index], self.slots[target] = self.slots[target], self.slots[index]
+        self._rebuild_grid()
+        self.save()
+        self.status_label.setText(f"Moved {slot_id}: {direction}")
+        return True
 
     def create_android_pairing(self) -> None:
         pin = f"{secrets.randbelow(1_000_000):06d}"
@@ -843,6 +1652,18 @@ class SoundboardDialog(QDialog):
         except Exception:
             return SOUNDBOARD_AUTO_LEVEL_DEFAULT
 
+    def _load_pad_scale(self) -> int:
+        if not SOUNDBOARD_PATH.is_file():
+            return SOUNDBOARD_PAD_SCALE_DEFAULT
+
+        try:
+            data = json.loads(SOUNDBOARD_PATH.read_text(encoding="utf-8"))
+            value = int(data.get("pad_scale", SOUNDBOARD_PAD_SCALE_DEFAULT))
+        except Exception:
+            return SOUNDBOARD_PAD_SCALE_DEFAULT
+
+        return max(SOUNDBOARD_PAD_SCALE_MIN, min(SOUNDBOARD_PAD_SCALE_MAX, value))
+
     def set_global_volume(self, value) -> None:
         try:
             volume = int(value)
@@ -860,6 +1681,57 @@ class SoundboardDialog(QDialog):
             self.global_volume_value.setText(f"{int(self.global_volume)}%")
 
         self.save()
+
+    def _update_scale_option_buttons(self) -> None:
+        current = int(getattr(self, "pad_scale", SOUNDBOARD_PAD_SCALE_DEFAULT))
+        for value, button in getattr(self, "scale_option_buttons", {}).items():
+            button.blockSignals(True)
+            button.setChecked(int(value) == current)
+            button.blockSignals(False)
+
+    def _on_pad_scale_option(self, value: int) -> None:
+        self.pad_scale = max(SOUNDBOARD_PAD_SCALE_MIN, min(SOUNDBOARD_PAD_SCALE_MAX, int(value)))
+
+        if hasattr(self, "pad_scale_slider"):
+            self.pad_scale_slider.blockSignals(True)
+            self.pad_scale_slider.setValue(self.pad_scale)
+            self.pad_scale_slider.blockSignals(False)
+
+        if hasattr(self, "pad_scale_value"):
+            self.pad_scale_value.setText(f"{int(self.pad_scale)}%")
+
+        self._update_scale_option_buttons()
+        self._rebuild_grid()
+        self.save()
+
+    def _on_scale_panel_toggled(self, checked: bool) -> None:
+        visible = bool(checked)
+
+        for scale_widget in (
+            getattr(self, "scale_label", None),
+            getattr(self, "pad_scale_slider", None),
+            getattr(self, "pad_scale_value", None),
+        ):
+            if scale_widget is not None:
+                scale_widget.setVisible(False)
+
+        options = getattr(self, "scale_options_widget", None)
+        if options is not None:
+            options.setVisible(visible)
+
+        if hasattr(self, "scale_btn"):
+            self.scale_btn.setText("Scale ON" if visible else "Scale")
+
+        self._update_scale_option_buttons()
+
+
+    def _on_pad_scale_preview(self, value: int) -> None:
+        if hasattr(self, "pad_scale_value"):
+            self.pad_scale_value.setText(f"{int(value)}%")
+
+    def _on_pad_scale_changed(self, value: int) -> None:
+        self._on_pad_scale_option(int(value))
+
 
     def _on_global_volume_changed(self, value: int) -> None:
         self.global_volume = max(0, min(100, int(value)))
@@ -1124,12 +1996,12 @@ class SoundboardDialog(QDialog):
     def play_slot(self, slot_id: str) -> None:
         slot = next((item for item in self.slots if str(item.get("id")) == str(slot_id)), None)
         if slot is None:
-            self.status_label.setText(f"Slot introuvable: {slot_id}")
+            self.status_label.setText(f"Slot not found: {slot_id}")
             return
 
         path = Path(str(slot.get("path", "")).strip()).expanduser()
         if not path.is_file():
-            self.status_label.setText(f"Aucun son valide pour {slot.get('label', slot_id)}")
+            self.status_label.setText(f"No valid sound for {slot.get('label', slot_id)}")
             return
 
         volume = int(slot.get("volume", 80))

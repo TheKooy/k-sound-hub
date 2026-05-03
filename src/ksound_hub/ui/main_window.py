@@ -472,6 +472,19 @@ class MainWindow(QMainWindow):
             dialog.set_global_volume(payload.get("volume"))
             return
 
+        if command in {"soundboard-move-slot", "soundboard_move_slot"}:
+            slot = str(payload.get("slot") or payload.get("id") or payload.get("label") or "")
+            direction = str(payload.get("direction") or "")
+            dialog = self._ensure_soundboard_dialog()
+            dialog.move_slot_by_key(slot, direction)
+            return
+
+        if command in {"soundboard-reorder-slots", "soundboard_reorder_slots"}:
+            order = payload.get("order")
+            dialog = self._ensure_soundboard_dialog()
+            dialog.reorder_slots_by_ids(order if isinstance(order, list) else [])
+            return
+
         if command in {"soundboard", "soundboard-play", "soundboard_play"}:
             slot = str(payload.get("slot") or payload.get("id") or payload.get("label") or "")
             dialog = self._ensure_soundboard_dialog()

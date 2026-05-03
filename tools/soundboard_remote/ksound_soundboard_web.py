@@ -76,6 +76,7 @@ def read_soundboard_settings() -> dict:
     defaults = {
         "global_volume": 100,
         "auto_level_enabled": False,
+        "pad_scale": 100,
     }
 
     if not CONFIG_PATH.is_file():
@@ -92,8 +93,36 @@ def read_soundboard_settings() -> dict:
         defaults["global_volume"] = 100
 
     defaults["auto_level_enabled"] = bool(data.get("auto_level_enabled", False))
+
+    try:
+        defaults["pad_scale"] = max(35, min(130, int(data.get("pad_scale", 100))))
+    except Exception:
+        defaults["pad_scale"] = 100
+
     return defaults
 
+
+
+def update_soundboard_setting(key: str, value) -> None:
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+
+    data = {}
+    if CONFIG_PATH.is_file():
+        try:
+            loaded = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                data = loaded
+        except Exception:
+            data = {}
+
+    data[key] = value
+
+    if "slots" not in data:
+        data["slots"] = read_slots()
+
+    tmp = CONFIG_PATH.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    tmp.replace(CONFIG_PATH)
 
 def send_ipc(payload: dict) -> tuple[bool, str]:
     candidates = [
@@ -177,39 +206,60 @@ def page(status: str = "") -> bytes:
     settings = read_soundboard_settings()
     global_volume = int(settings.get("global_volume", 100))
     auto_level_text = "ON" if settings.get("auto_level_enabled") else "OFF"
+
+    pad_scale = max(35, min(130, int(settings.get("pad_scale", 100))))
+    pad_factor = pad_scale / 100.0
+    pad_min_width = max(92, int(145 * pad_factor))
+    pad_min_height = max(58, int(92 * pad_factor))
+    pad_padding = max(8, int(14 * pad_factor))
+    pad_radius = max(14, int(20 * pad_factor))
+    pad_wrap_radius = max(16, int(22 * pad_factor))
+    pad_gap = max(7, int(12 * pad_factor))
+    pad_title_font = max(13, int(17 * pad_factor))
+    pad_subtitle_font = max(10, int(12 * pad_factor))
+    pad_title_margin = max(4, int(8 * pad_factor))
+
     escaped_token = html.escape(TOKEN, quote=True)
     buttons = []
 
     for index, slot in enumerate(slots):
         slot_id = str(slot.get("id") or f"sb{index + 1}")
         label = str(slot.get("label") or slot_id)
-        path = str(slot.get("path") or "")
-        disabled = "" if path else "disabled"
-        subtitle = Path(path).name if path else "Aucun son"
+        path_text = str(slot.get("path") or "")
+        disabled = "" if path_text else "disabled"
+        subtitle = Path(path_text).name if path_text else "No sound"
 
         buttons.append(
             f"""
-            <button
-              class="pad"
-              type="button"
+            <div
+              class="pad-wrap"
               data-slot="{html.escape(slot_id, quote=True)}"
-              onclick="playSlotFromButton(this)"
-              {disabled}
+              data-label="{html.escape(label, quote=True)}"
+              data-index="{index}"
             >
-              <strong>{html.escape(label)}</strong>
-              <span>{html.escape(slot_id)} · {html.escape(subtitle)}</span>
-            </button>
+              <button
+                class="pad"
+                type="button"
+                data-slot="{html.escape(slot_id, quote=True)}"
+                data-label="{html.escape(label, quote=True)}"
+                onclick="playSlotFromButton(this)"
+                {disabled}
+              >
+                <strong>{html.escape(label)}</strong>
+                <span>{html.escape(slot_id)} · {html.escape(subtitle)}</span>
+              </button>
+            </div>
             """
         )
 
     if not buttons:
-        buttons.append("<p class='empty'>Aucun pad trouvé. Configure la soundboard dans K-Sound Hub d'abord.</p>")
+        buttons.append("<p class='empty'>No pads found. Configure the soundboard in K-Sound Hub first.</p>")
 
     initial_status = html.escape(status or "Ready")
 
     body = f"""
     <!doctype html>
-    <html lang="fr">
+    <html lang="en">
     <head>
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -244,9 +294,12 @@ def page(status: str = "") -> bytes:
           color: var(--text);
           padding: 18px 18px 112px;
         }}
+        body.edit-mode header {{
+          border-color: rgba(255,92,199,.65);
+        }}
         header {{
           border: 1px solid rgba(62,216,255,.28);
-          border-radius: 22px;
+          border-radius: {pad_wrap_radius}px;
           background: rgba(8, 12, 22, .78);
           padding: 16px;
           margin-bottom: 14px;
@@ -268,17 +321,25 @@ def page(status: str = "") -> bytes:
         }}
         .grid {{
           display: grid;
-          grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
-          gap: 12px;
+          grid-template-columns: repeat(auto-fit, minmax({pad_min_width}px, 1fr));
+          gap: {pad_gap}px;
+        }}
+        .pad-wrap {{
+          position: relative;
+          min-width: 0;
+          border-radius: 22px;
+        }}
+        body.edit-mode .pad-wrap {{
+          touch-action: none;
         }}
         .pad {{
           width: 100%;
-          min-height: 92px;
+          min-height: {pad_min_height}px;
           border: 1px solid rgba(62,216,255,.34);
-          border-radius: 20px;
+          border-radius: {pad_radius}px;
           background: var(--card);
           color: var(--text);
-          padding: 14px;
+          padding: {pad_padding}px;
           text-align: left;
           box-shadow: 0 14px 34px rgba(0,0,0,.28);
           touch-action: manipulation;
@@ -287,19 +348,59 @@ def page(status: str = "") -> bytes:
           transform: scale(.98);
           border-color: rgba(255,92,199,.85);
         }}
+        body.edit-mode .pad {{
+          border-color: rgba(255,92,199,.58);
+          cursor: grab;
+        }}
         .pad:disabled {{
           opacity: .38;
         }}
         .pad strong {{
           display: block;
-          font-size: 17px;
-          margin-bottom: 8px;
+          font-size: {pad_title_font}px;
+          margin-bottom: {pad_title_margin}px;
         }}
         .pad span {{
           display: block;
           color: var(--muted);
-          font-size: 12px;
+          font-size: {pad_subtitle_font}px;
           word-break: break-word;
+        }}
+        .pad-wrap.drag-source .pad {{
+          opacity: .58;
+          border-color: rgba(255,92,199,1);
+          box-shadow: 0 0 0 2px rgba(255,92,199,.20), 0 14px 34px rgba(0,0,0,.28);
+          transform: scale(.98);
+        }}
+        .pad-wrap.drop-target .pad {{
+          border-color: rgba(62,216,255,1);
+          box-shadow: 0 0 0 2px rgba(62,216,255,.24), 0 14px 34px rgba(0,0,0,.28);
+          transform: scale(1.01);
+        }}
+        .pad-wrap.drag-source::after,
+        .pad-wrap.drop-target::after {{
+          position: absolute;
+          top: 8px;
+          right: 8px;
+          z-index: 4;
+          min-width: 52px;
+          padding: 4px 8px;
+          border-radius: 999px;
+          font-size: 10px;
+          font-weight: 900;
+          letter-spacing: .08em;
+          text-align: center;
+          box-shadow: 0 10px 20px rgba(0,0,0,.30);
+        }}
+        .pad-wrap.drag-source::after {{
+          content: "SOURCE";
+          color: #071018;
+          background: rgba(255,92,199,.96);
+        }}
+        .pad-wrap.drop-target::after {{
+          content: "TARGET";
+          color: #071018;
+          background: rgba(62,216,255,.96);
         }}
         .empty {{
           color: var(--muted);
@@ -311,7 +412,7 @@ def page(status: str = "") -> bytes:
           bottom: 0;
           z-index: 50;
           display: grid;
-          grid-template-columns: minmax(0, 1fr) 54px;
+          grid-template-columns: 54px minmax(0, 1fr) 54px;
           gap: 10px;
           align-items: center;
           padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
@@ -325,9 +426,13 @@ def page(status: str = "") -> bytes:
         }}
         .volume-line {{
           display: grid;
-          grid-template-columns: 1fr auto;
+          grid-template-columns: auto 1fr auto;
           gap: 10px;
           align-items: center;
+        }}
+        .vol-icon {{
+          font-size: 18px;
+          line-height: 1;
         }}
         input[type="range"] {{
           width: 100%;
@@ -348,39 +453,51 @@ def page(status: str = "") -> bytes:
           overflow: hidden;
           text-overflow: ellipsis;
         }}
-        .stop-mini {{
+        .edit-mini, .stop-mini {{
           width: 54px;
           height: 54px;
-          border: 1px solid rgba(255,92,199,.62);
           border-radius: 18px;
-          background: rgba(35, 9, 28, .92);
           color: var(--text);
-          font-size: 24px;
+          font-size: 22px;
           line-height: 1;
           font-weight: 900;
           box-shadow: 0 12px 28px rgba(0,0,0,.32);
           touch-action: manipulation;
         }}
-        .stop-mini:active {{
+        .edit-mini {{
+          border: 1px solid rgba(62,216,255,.62);
+          background: rgba(9, 26, 35, .92);
+        }}
+        body.edit-mode .edit-mini {{
+          border-color: rgba(255,92,199,.95);
+          background: rgba(35, 9, 28, .92);
+        }}
+        .stop-mini {{
+          border: 1px solid rgba(255,92,199,.62);
+          background: rgba(35, 9, 28, .92);
+          font-size: 24px;
+        }}
+        .edit-mini:active, .stop-mini:active {{
           transform: scale(.96);
-          border-color: rgba(255,92,199,1);
         }}
       </style>
     </head>
     <body>
       <header>
         <h1>K-SOUND SOUNDBOARD</h1>
-        <div class="hint">Télécommande Android locale. Pairing sécurisé côté LAN.</div>
+        <div class="hint">Local Android remote. Secure LAN pairing.</div>
         <div id="remoteStatus" class="status">{initial_status}</div>
       </header>
 
-      <main class="grid">
+      <main id="padsGrid" class="grid">
         {''.join(buttons)}
       </main>
 
-      <section class="bottom-bar" aria-label="Contrôles soundboard">
+      <section class="bottom-bar" aria-label="Soundboard controls">
+        <button id="editButton" class="edit-mini" type="button" onclick="toggleEditMode()" title="Edit" aria-label="Edit">✎</button>
         <div class="bottom-volume">
           <div class="volume-line">
+            <span class="vol-icon">🔊</span>
             <input
               id="globalVolumeSlider"
               type="range"
@@ -394,7 +511,7 @@ def page(status: str = "") -> bytes:
             <span id="globalVolValue">{global_volume}%</span>
           </div>
           <div class="tiny">
-            Auto level PC: {auto_level_text} · <span id="volumeSendState">Ready</span>
+            Auto level PC: {auto_level_text} · Scale: {pad_scale}% · <span id="volumeSendState">Ready</span>
           </div>
         </div>
         <button class="stop-mini" type="button" onclick="stopAllSounds()" title="Stop all" aria-label="Stop all">⏹</button>
@@ -403,6 +520,9 @@ def page(status: str = "") -> bytes:
       <script>
         let volumeTimer = null;
         let lastSentVolume = "{global_volume}";
+        let volumeDragging = false;
+        let editMode = false;
+        let dragState = null;
 
         function setRemoteStatus(text) {{
           const node = document.getElementById("remoteStatus");
@@ -412,6 +532,75 @@ def page(status: str = "") -> bytes:
         function setVolumeState(text) {{
           const node = document.getElementById("volumeSendState");
           if (node) node.textContent = text;
+        }}
+
+        function padWraps() {{
+          return Array.from(document.querySelectorAll(".pad-wrap"));
+        }}
+
+        function refreshPadIndexes() {{
+          padWraps().forEach((node, index) => {{
+            node.dataset.index = String(index);
+          }});
+        }}
+
+        function orderPayload() {{
+          return JSON.stringify(
+            padWraps()
+              .map(node => node.dataset.slot || "")
+              .filter(Boolean)
+          );
+        }}
+
+        function clearDropTargets() {{
+          padWraps().forEach(node => node.classList.remove("drop-target"));
+        }}
+
+        function clearDragStateClasses() {{
+          padWraps().forEach(node => node.classList.remove("drag-source", "drop-target"));
+        }}
+
+        function labelOfWrap(wrap) {{
+          if (!wrap) return "";
+          return wrap.dataset.label || wrap.dataset.slot || "";
+        }}
+
+        function swapNodes(firstIndex, secondIndex) {{
+          const wraps = padWraps();
+          const a = wraps[firstIndex];
+          const b = wraps[secondIndex];
+          if (!a || !b || a === b) return false;
+
+          const parent = a.parentNode;
+          if (a.nextSibling === b) {{
+            parent.insertBefore(b, a);
+          }} else if (b.nextSibling === a) {{
+            parent.insertBefore(a, b);
+          }} else {{
+            const aNext = a.nextSibling;
+            parent.insertBefore(a, b);
+            parent.insertBefore(b, aNext);
+          }}
+          refreshPadIndexes();
+          return true;
+        }}
+
+        async function saveCurrentOrder() {{
+          return postAction(
+            "/reorder",
+            "order=" + encodeURIComponent(orderPayload()),
+            "Order saved"
+          );
+        }}
+
+        function toggleEditMode() {{
+          editMode = !editMode;
+          document.body.classList.toggle("edit-mode", editMode);
+          const editButton = document.getElementById("editButton");
+          if (editButton) editButton.textContent = editMode ? "✓" : "✎";
+          clearDragStateClasses();
+          dragState = null;
+          setRemoteStatus(editMode ? "Edit mode: drag a pad onto another" : "Ready");
         }}
 
         async function postAction(path, body, okText) {{
@@ -428,21 +617,138 @@ def page(status: str = "") -> bytes:
             setRemoteStatus(okText);
             return true;
           }} catch (error) {{
-            setRemoteStatus("Erreur envoi");
+            setRemoteStatus("Send error");
             return false;
           }}
         }}
 
         function playSlotFromButton(button) {{
+          if (editMode) {{
+            setRemoteStatus("Edit mode active");
+            return;
+          }}
           const slot = button.dataset.slot || "";
           if (!slot || button.disabled) return;
           button.classList.add("sending");
           window.setTimeout(() => button.classList.remove("sending"), 140);
-          postAction("/play", "slot=" + encodeURIComponent(slot), "Play " + slot + " envoyé");
+          postAction("/play", "slot=" + encodeURIComponent(slot), "Play " + slot + " sent");
         }}
 
+        function dragTargetFromPoint(clientX, clientY) {{
+          const element = document.elementFromPoint(clientX, clientY);
+          if (!element) return null;
+          return element.closest(".pad-wrap");
+        }}
+
+        function onPadPointerDown(event) {{
+          if (!editMode) return;
+          if (event.button !== undefined && event.button !== 0) return;
+
+          const wrap = event.currentTarget;
+          dragState = {{
+            wrap,
+            pointerId: event.pointerId,
+            startX: event.clientX,
+            startY: event.clientY,
+            active: false,
+            target: null
+          }};
+          wrap.setPointerCapture?.(event.pointerId);
+          event.preventDefault();
+        }}
+
+        function onPadPointerMove(event) {{
+          if (!editMode || !dragState || dragState.pointerId !== event.pointerId) return;
+
+          const dx = event.clientX - dragState.startX;
+          const dy = event.clientY - dragState.startY;
+          if (!dragState.active && Math.hypot(dx, dy) < 10) return;
+
+          dragState.active = true;
+          clearDragStateClasses();
+
+          dragState.wrap.classList.add("drag-source");
+
+          const target = dragTargetFromPoint(event.clientX, event.clientY);
+          if (target && target !== dragState.wrap) {{
+            target.classList.add("drop-target");
+            dragState.target = target;
+            setRemoteStatus("Move: " + labelOfWrap(dragState.wrap) + " → " + labelOfWrap(target));
+          }} else {{
+            dragState.target = null;
+            setRemoteStatus("Moving: " + labelOfWrap(dragState.wrap));
+          }}
+
+          event.preventDefault();
+        }}
+
+        async function onPadPointerUp(event) {{
+          if (!dragState || dragState.pointerId !== event.pointerId) return;
+
+          const state = dragState;
+          dragState = null;
+
+          state.wrap.releasePointerCapture?.(event.pointerId);
+          clearDragStateClasses();
+
+          if (!editMode || !state.active || !state.target || state.target === state.wrap) {{
+            setRemoteStatus(editMode ? "Edit mode: drag a pad onto another" : "Ready");
+            event.preventDefault();
+            return;
+          }}
+
+          const wraps = padWraps();
+          const sourceIndex = wraps.indexOf(state.wrap);
+          const targetIndex = wraps.indexOf(state.target);
+
+          if (sourceIndex >= 0 && targetIndex >= 0 && swapNodes(sourceIndex, targetIndex)) {{
+            const ok = await saveCurrentOrder();
+            if (!ok) location.reload();
+          }}
+
+          event.preventDefault();
+        }}
+
+        function initDragReorder() {{
+          padWraps().forEach(wrap => {{
+            wrap.addEventListener("pointerdown", onPadPointerDown);
+            wrap.addEventListener("pointermove", onPadPointerMove);
+            wrap.addEventListener("pointerup", onPadPointerUp);
+            wrap.addEventListener("pointercancel", onPadPointerUp);
+          }});
+        }}
+
+
+        async function refreshSettingsFromServer() {{
+          if (volumeDragging || volumeTimer) return;
+
+          try {{
+            const response = await fetch("/settings?token={escaped_token}", {{
+              method: "GET",
+              headers: {{ "X-Requested-With": "fetch" }}
+            }});
+            if (!response.ok) return;
+
+            const data = await response.json();
+            if (data && Number.isFinite(Number(data.global_volume))) {{
+              const volume = String(Math.max(0, Math.min(100, Number(data.global_volume))));
+              const slider = document.getElementById("globalVolumeSlider");
+              const valueNode = document.getElementById("globalVolValue");
+
+              if (slider && String(slider.value) !== volume) {{
+                slider.value = volume;
+              }}
+              if (valueNode) {{
+                valueNode.textContent = volume + "%";
+              }}
+              lastSentVolume = volume;
+            }}
+          }} catch (_error) {{
+            // Keep the remote usable even if polling fails.
+          }}
+        }}
         function stopAllSounds() {{
-          postAction("/stop", "", "Stop all envoyé");
+          postAction("/stop", "", "Stop all sent");
         }}
 
         function scheduleVolumeUpdate(value) {{
@@ -478,15 +784,35 @@ def page(status: str = "") -> bytes:
             setVolumeState("Saved");
           }})
           .catch(() => {{
-            setVolumeState("Erreur envoi");
+            setVolumeState("Send error");
           }});
         }}
+
+        const volumeSlider = document.getElementById("globalVolumeSlider");
+        if (volumeSlider) {{
+          volumeSlider.addEventListener("pointerdown", () => {{ volumeDragging = true; }});
+          volumeSlider.addEventListener("pointerup", () => {{
+            volumeDragging = false;
+            refreshSettingsFromServer();
+          }});
+          volumeSlider.addEventListener("touchend", () => {{
+            volumeDragging = false;
+            refreshSettingsFromServer();
+          }});
+        }}
+
+        refreshPadIndexes();
+        initDragReorder();
+        window.setInterval(refreshSettingsFromServer, 2000);
       </script>
     </body>
     </html>
     """
 
     return body.encode("utf-8")
+
+
+
 
 
 
@@ -507,41 +833,34 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
 
-        if parsed.path == "/api/info":
-            json_response(self, 200, {
-                "service": DISCOVERY_SERVICE,
-                "version": 1,
-                "name": SERVICE_NAME,
-                "http_port": HTTP_PORT,
-                "discovery_port": DISCOVERY_PORT,
-                "pairing_available": read_valid_pairing() is not None,
-            })
-            return
-
+        # Pairing must be reachable without the normal web token.
+        # Always answer JSON so the Android app never tries to parse plain
+        # "Forbidden" as a JSONObject.
         if parsed.path == "/api/pair":
             query = parse_qs(parsed.query)
-            pin = query.get("pin", [""])[0]
+            pin = query.get("pin", [""])[0].strip()
+
+            if not pin:
+                json_response(self, 400, {"ok": False, "error": "Missing pairing code"})
+                return
+
             if consume_pairing_if_pin_matches(pin):
-                json_response(self, 200, {
-                    "ok": True,
-                    "token": TOKEN,
-                    "name": SERVICE_NAME,
-                    "http_port": HTTP_PORT,
-                })
-            else:
-                json_response(self, 403, {
-                    "ok": False,
-                    "error": "Code pairing invalide ou expiré",
-                })
+                json_response(self, 200, {"ok": True, "token": TOKEN})
+                return
+
+            json_response(self, 403, {"ok": False, "error": "Invalid or expired pairing code"})
             return
 
         if not self._token_ok():
-            self.send_response(403)
-            self.end_headers()
-            self.wfile.write(b"Forbidden: missing or invalid token")
+            json_response(self, 403, {"ok": False, "error": "Forbidden"})
+            return
+
+        if parsed.path == "/settings":
+            json_response(self, 200, read_soundboard_settings())
             return
 
         self._send_page()
+
 
     def do_POST(self) -> None:
         if not self._token_ok():
@@ -558,12 +877,36 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/play":
             slot = form.get("slot", [""])[0]
             ok, msg = send_ipc({"command": "soundboard-play", "slot": slot})
-            self._send_page(f"Play {slot}: {msg if not ok else 'envoyé'}")
+            self._send_page(f"Play {slot}: {msg if not ok else 'sent'}")
             return
 
         if parsed.path == "/stop":
             ok, msg = send_ipc({"command": "soundboard-stop-all"})
-            self._send_page(f"Stop all: {msg if not ok else 'envoyé'}")
+            self._send_page(f"Stop all: {msg if not ok else 'sent'}")
+            return
+
+        if parsed.path == "/reorder":
+            raw_order = form.get("order", ["[]"])[0]
+            try:
+                order = json.loads(raw_order)
+            except Exception:
+                order = []
+            ok, msg = send_ipc({
+                "command": "soundboard-reorder-slots",
+                "order": order,
+            })
+            self._send_page(f"Reorder: {msg if not ok else 'sent'}")
+            return
+
+        if parsed.path == "/move":
+            slot = form.get("slot", [""])[0]
+            direction = form.get("direction", [""])[0]
+            ok, msg = send_ipc({
+                "command": "soundboard-move-slot",
+                "slot": slot,
+                "direction": direction,
+            })
+            self._send_page(f"Move {slot}: {msg if not ok else 'sent'}")
             return
 
         if parsed.path == "/volume":
@@ -573,8 +916,10 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 volume = 100
 
+            update_soundboard_setting("global_volume", volume)
+
             ok, msg = send_ipc({"command": "soundboard-set-global-volume", "volume": volume})
-            self._send_page(f"Volume global {volume}%: {msg if not ok else 'envoyé'}")
+            self._send_page(f"Volume global {volume}%: {msg if not ok else 'sent'}")
             return
 
         self.send_response(404)
