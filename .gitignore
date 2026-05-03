@@ -108,3 +108,7 @@ packaging/linux/ksound-hub.desktop
 .native_micro_engine_stage1_backup_*/
 .soundboard_global_volume_autolevel_*/
 .web_css_braces_fix_backup_*.py
+# K-Sound Hub local patch/backup directories
+/.android_*/
+/.ksh_*/
+/.soundboard_*/
