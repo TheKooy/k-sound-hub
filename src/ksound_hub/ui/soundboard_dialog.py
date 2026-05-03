@@ -6,6 +6,7 @@ import os
 import re
 import secrets
 import subprocess
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -1008,6 +1009,9 @@ class SoundboardDialog(QDialog):
         self.pad_scale = self._load_pad_scale()
         self.pad_widgets: list[SoundboardPadWidget] = []
         self._players: dict[str, tuple[QMediaPlayer, QAudioOutput]] = {}
+        self._player_source_paths: dict[str, str] = {}
+        self._soundboard_bus_ready = False
+        self._soundboard_monitor_routes_ready: set[str] = set()
         self._shortcuts: list[QShortcut] = []
         self.edit_mode = False
         self._drag_source_id = ""
@@ -1021,6 +1025,12 @@ class SoundboardDialog(QDialog):
         self._delete_confirm_timer = QTimer(self)
         self._delete_confirm_timer.setSingleShot(True)
         self._delete_confirm_timer.timeout.connect(self._reset_delete_button_confirm)
+
+        self._cache_building_keys: set[str] = set()
+        self._cache_warm_thread_active = False
+        self._cache_warmup_timer = QTimer(self)
+        self._cache_warmup_timer.setSingleShot(True)
+        self._cache_warmup_timer.timeout.connect(self._start_background_soundboard_cache)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(14, 14, 14, 14)
@@ -1391,6 +1401,10 @@ class SoundboardDialog(QDialog):
 
         self._rebuild_grid()
         self._rebuild_shortcuts()
+        QTimer.singleShot(450, self._preload_soundboard_players)
+        QTimer.singleShot(900, self._start_background_soundboard_cache)
+        QTimer.singleShot(2600, self._preload_soundboard_players)
+        QTimer.singleShot(6500, self._preload_soundboard_players)
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -1440,6 +1454,10 @@ class SoundboardDialog(QDialog):
         )
         self.status_label.setText(f"Saved: {SOUNDBOARD_PATH}")
         self._rebuild_shortcuts()
+
+        timer = getattr(self, "_cache_warmup_timer", None)
+        if timer is not None and bool(getattr(self, "auto_level_enabled", False)):
+            timer.start(700)
 
     def add_one_slot(self) -> None:
         self.slots = _ensure_unique_slot_ids(self.slots)
@@ -2064,54 +2082,54 @@ class SoundboardDialog(QDialog):
 
         return gain
 
-    def _processed_auto_level_path(self, slot: dict[str, Any], path: Path) -> Path:
-        if not self.auto_level_enabled:
-            return path
-
+    def _auto_level_trim_db(self, slot: dict[str, Any]) -> float:
         try:
             trim_db = float(slot.get("trim_db", SOUNDBOARD_TRIM_DB_DEFAULT))
         except Exception:
             trim_db = SOUNDBOARD_TRIM_DB_DEFAULT
 
-        trim_db = max(SOUNDBOARD_TRIM_DB_MIN, min(SOUNDBOARD_TRIM_DB_MAX, trim_db))
+        return max(SOUNDBOARD_TRIM_DB_MIN, min(SOUNDBOARD_TRIM_DB_MAX, trim_db))
 
+    def _auto_level_cache_output(self, path: Path, trim_db: float) -> Path | None:
         try:
             stat = path.stat()
             cache_payload = {
                 "path": str(path.resolve()),
                 "mtime_ns": stat.st_mtime_ns,
                 "size": stat.st_size,
-                "trim_db": round(trim_db, 2),
+                "trim_db": round(float(trim_db), 2),
                 "i": SOUNDBOARD_LOUDNORM_I,
                 "tp": SOUNDBOARD_LOUDNORM_TP,
                 "limiter": SOUNDBOARD_LIMITER_LIMIT,
                 "v": 2,
             }
         except Exception:
-            return path
+            return None
 
         key = hashlib.sha256(
             json.dumps(cache_payload, sort_keys=True).encode("utf-8")
         ).hexdigest()[:24]
 
-        SOUNDBOARD_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        output = SOUNDBOARD_CACHE_DIR / f"{key}.wav"
+        return SOUNDBOARD_CACHE_DIR / f"{key}.wav"
 
-        if output.is_file():
-            return output
-
-        tmp = output.with_suffix(".tmp.wav")
-
-        # Important:
-        # - loudnorm rapproche les fichiers entre eux.
-        # - volume=trim_db applique le +/- dB réel.
-        # - alimiter empêche le clipping au lieu de laisser saturer.
-        audio_filter = (
+    def _auto_level_audio_filter(self, trim_db: float) -> str:
+        return (
             f"loudnorm=I={SOUNDBOARD_LOUDNORM_I}:"
             f"TP={SOUNDBOARD_LOUDNORM_TP}:LRA=11,"
-            f"volume={trim_db}dB,"
+            f"volume={float(trim_db):.2f}dB,"
             f"alimiter=limit={SOUNDBOARD_LIMITER_LIMIT}"
         )
+
+    def _build_auto_level_cache_file(self, path: Path, output: Path, trim_db: float) -> bool:
+        if output.is_file():
+            return True
+
+        try:
+            SOUNDBOARD_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            return False
+
+        tmp = output.with_suffix(".tmp.wav")
 
         try:
             proc = subprocess.run(
@@ -2123,7 +2141,7 @@ class SoundboardDialog(QDialog):
                     "-i",
                     str(path),
                     "-filter:a",
-                    audio_filter,
+                    self._auto_level_audio_filter(trim_db),
                     "-ar",
                     "48000",
                     "-ac",
@@ -2134,27 +2152,180 @@ class SoundboardDialog(QDialog):
                 text=True,
                 timeout=60,
             )
-        except FileNotFoundError:
-            self.status_label.setText("Auto level cache: ffmpeg introuvable")
-            return path
-        except Exception as exc:
-            self.status_label.setText(f"Auto level cache erreur: {exc}")
-            return path
-
-        if proc.returncode != 0 or not tmp.is_file():
-            self.status_label.setText("Auto level cache: ffmpeg failed")
+        except Exception:
             try:
                 tmp.unlink()
             except Exception:
                 pass
-            return path
+            return False
+
+        if proc.returncode != 0 or not tmp.is_file():
+            try:
+                tmp.unlink()
+            except Exception:
+                pass
+            return False
 
         try:
             tmp.replace(output)
         except Exception:
+            return False
+
+        return output.is_file()
+
+    def _processed_auto_level_path(self, slot: dict[str, Any], path: Path) -> Path:
+        if not self.auto_level_enabled:
             return path
 
-        return output
+        trim_db = self._auto_level_trim_db(slot)
+        output = self._auto_level_cache_output(path, trim_db)
+        if output is None:
+            return path
+
+        if output.is_file():
+            return output
+
+        if self._build_auto_level_cache_file(path, output, trim_db):
+            return output
+
+        return path
+
+    def _fast_playback_path(self, slot: dict[str, Any], path: Path) -> Path:
+        if not self.auto_level_enabled:
+            return path
+
+        trim_db = self._auto_level_trim_db(slot)
+        output = self._auto_level_cache_output(path, trim_db)
+        if output is None:
+            return path
+
+        if output.is_file():
+            return output
+
+        self._queue_auto_level_cache_build(path, output, trim_db)
+        return path
+
+    def _queue_auto_level_cache_build(self, path: Path, output: Path, trim_db: float) -> None:
+        if output.is_file():
+            return
+
+        key = str(output)
+        building = getattr(self, "_cache_building_keys", set())
+        if key in building:
+            return
+
+        building.add(key)
+        self._cache_building_keys = building
+
+        def worker() -> None:
+            try:
+                self._build_auto_level_cache_file(path, output, trim_db)
+            finally:
+                try:
+                    self._cache_building_keys.discard(key)
+                except Exception:
+                    pass
+
+        threading.Thread(
+            target=worker,
+            name="ksound-soundboard-cache",
+            daemon=True,
+        ).start()
+
+    def _start_background_soundboard_cache(self) -> None:
+        if not bool(getattr(self, "auto_level_enabled", False)):
+            return
+
+        if bool(getattr(self, "_cache_warm_thread_active", False)):
+            return
+
+        jobs: list[tuple[Path, Path, float]] = []
+
+        for slot in list(getattr(self, "slots", [])):
+            if not isinstance(slot, dict):
+                continue
+
+            path = Path(str(slot.get("path", "") or "").strip()).expanduser()
+            if not path.is_file():
+                continue
+
+            trim_db = self._auto_level_trim_db(slot)
+            output = self._auto_level_cache_output(path, trim_db)
+            if output is not None and not output.is_file():
+                jobs.append((path, output, trim_db))
+
+        if not jobs:
+            self._preload_soundboard_players()
+            return
+
+        self._cache_warm_thread_active = True
+
+        def worker() -> None:
+            try:
+                for source_path, output_path, trim in jobs:
+                    self._build_auto_level_cache_file(source_path, output_path, trim)
+            finally:
+                self._cache_warm_thread_active = False
+
+        threading.Thread(
+            target=worker,
+            name="ksound-soundboard-cache-warmup",
+            daemon=True,
+        ).start()
+
+    def _preload_soundboard_players(self) -> None:
+        bus_found, _monitor_found = self._ensure_soundboard_output_ready("media")
+        if not bus_found:
+            return
+
+        for slot in list(getattr(self, "slots", [])):
+            if not isinstance(slot, dict):
+                continue
+
+            slot_id = str(slot.get("id", "") or "").strip()
+            if not slot_id:
+                continue
+
+            path = Path(str(slot.get("path", "") or "").strip()).expanduser()
+            if not path.is_file():
+                continue
+
+            try:
+                volume = int(slot.get("volume", 80))
+            except Exception:
+                volume = 80
+
+            playback_path = self._fast_playback_path(slot, path)
+            effective_volume = self._effective_volume(slot, path, volume)
+
+            self._prime_player_source(
+                key=f"{slot_id}:soundboard",
+                path=playback_path,
+                sink_name=SOUNDBOARD_BUS,
+                volume=effective_volume,
+            )
+
+    def _ensure_soundboard_output_ready(self, target_channel: str) -> tuple[bool, bool]:
+        target_channel = str(target_channel or "media").strip().lower()
+        if target_channel not in PLAYBACK_TARGETS:
+            target_channel = "media"
+
+        if not bool(getattr(self, "_soundboard_bus_ready", False)):
+            self._soundboard_bus_ready = bool(_ensure_soundboard_bus())
+
+        if not self._soundboard_bus_ready:
+            return False, False
+
+        routes_ready = getattr(self, "_soundboard_monitor_routes_ready", set())
+        if target_channel in routes_ready:
+            return True, True
+
+        monitor_found = bool(_ensure_soundboard_monitor_route(target_channel))
+        if monitor_found:
+            routes_ready.add(target_channel)
+            self._soundboard_monitor_routes_ready = routes_ready
+
+        return True, monitor_found
 
     def _effective_volume(self, slot: dict[str, Any], path: Path, pad_volume: int) -> float:
         global_factor = max(0.0, min(1.0, float(self.global_volume) / 100.0))
@@ -2231,11 +2402,28 @@ class SoundboardDialog(QDialog):
 
         return player, audio, device_found
 
+    def _prime_player_source(self, *, key: str, path: Path, sink_name: str, volume: float) -> bool:
+        player, audio, device_found = self._player_for_key(key, sink_name)
+        audio.setVolume(max(0.0, min(1.0, float(volume) / 100.0)))
+
+        source_path = str(path)
+        if self._player_source_paths.get(key) != source_path:
+            player.setSource(QUrl.fromLocalFile(source_path))
+            self._player_source_paths[key] = source_path
+
+        return device_found
+
     def _start_player(self, *, key: str, path: Path, sink_name: str, volume: float) -> bool:
         player, audio, device_found = self._player_for_key(key, sink_name)
         audio.setVolume(max(0.0, min(1.0, float(volume) / 100.0)))
+
+        source_path = str(path)
         player.stop()
-        player.setSource(QUrl.fromLocalFile(str(path)))
+
+        if self._player_source_paths.get(key) != source_path:
+            player.setSource(QUrl.fromLocalFile(source_path))
+            self._player_source_paths[key] = source_path
+
         player.setPosition(0)
         player.play()
         return device_found
@@ -2255,21 +2443,20 @@ class SoundboardDialog(QDialog):
             self.status_label.setText(f"No valid sound for {slot.get('label', slot_id)}")
             return
 
-        volume = int(slot.get("volume", 80))
+        try:
+            volume = int(slot.get("volume", 80))
+        except Exception:
+            volume = 80
+
         target_channel = str(slot.get("output_channel") or "media").strip().lower()
         if target_channel not in PLAYBACK_TARGETS:
             target_channel = "media"
 
-        playback_path = self._processed_auto_level_path(slot, path)
+        playback_path = self._fast_playback_path(slot, path)
         effective_volume = self._effective_volume(slot, path, volume)
 
-        bus_found = _ensure_soundboard_bus()
-        monitor_found = _ensure_soundboard_monitor_route(target_channel) if bus_found else False
+        bus_found, monitor_found = self._ensure_soundboard_output_ready(target_channel)
 
-        # Source unique:
-        # - le son naît dans le sink SOUNDBOARD
-        # - soundboard.monitor est recopié vers le canal "Moi"
-        # - MICRO peut prendre SOUNDBOARD séparément via MICRO → Apps → + → SOUNDBOARD
         output_found = False
         if bus_found:
             output_found = self._start_player(
