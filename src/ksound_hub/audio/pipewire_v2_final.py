@@ -533,6 +533,16 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
                 self._stop_native_micro_engine()
 
         # Fallback legacy path.
+        # Important: when KSH_NATIVE_MIC=0, the legacy path still needs the
+        # final virtual microphone endpoint. Without this, the fallback can
+        # disable the native micro engine but leave no working "micro" source.
+        self._ensure_micro_endpoint()
+
+        channel = self._find_channel(settings, "micro")
+        if channel is not None:
+            self._ensure_physical_micro_loopbacks(channel)
+            self._run_no_fail(["pactl", "set-default-source", "micro"])
+
         self._apply_micro_links(settings)
 
     def _return_monitor_media_name(self, key: str) -> str:
@@ -822,6 +832,28 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
             return self._native_micro_levels_cache_payload
 
     def meter_levels(self, channel_key: str) -> tuple[float, float]:
+        def boost_micro_meter(pair: tuple[float, float]) -> tuple[float, float]:
+            if channel_key != "micro":
+                return pair
+
+            try:
+                scale = float(os.environ.get("KSH_MIC_METER_BOOST", "4.0"))
+            except Exception:
+                scale = 4.0
+
+            try:
+                floor = float(os.environ.get("KSH_MIC_METER_FLOOR", "0.0015"))
+            except Exception:
+                floor = 0.0015
+
+            def one(value: float) -> float:
+                raw = max(0.0, min(1.0, float(value)))
+                if raw < floor:
+                    return 0.0
+                return max(0.0, min(1.0, raw * scale))
+
+            return one(pair[0]), one(pair[1])
+
         if channel_key in PLAYBACK_KEYS:
             payload = self._read_v2_levels_payload()
             levels = payload.get("channels", {}).get(channel_key)
@@ -835,13 +867,17 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
             return (0.0, 0.0)
 
         if channel_key in {"micro", "return-mic"}:
+            if not self._native_micro_enabled():
+                return boost_micro_meter(super().meter_levels(channel_key))
+
             payload = self._read_native_micro_levels_payload()
             levels = payload.get("channels", {}).get(channel_key)
             if isinstance(levels, list) and len(levels) >= 2:
                 try:
-                    return float(levels[0]), float(levels[1])
+                    return boost_micro_meter((float(levels[0]), float(levels[1])))
                 except Exception:
                     return (0.0, 0.0)
-            return (0.0, 0.0)
+
+            return boost_micro_meter(super().meter_levels(channel_key))
 
         return super().meter_levels(channel_key)

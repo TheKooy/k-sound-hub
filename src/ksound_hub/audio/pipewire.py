@@ -863,6 +863,18 @@ class PipeWireAudioEngine(AudioEngine):
         return proc.stdout.strip().splitlines()[-1].strip() if proc.stdout.strip() else ""
 
     def _ensure_physical_micro_loopbacks(self, channel: ChannelConfig) -> None:
+        """Keep the legacy physical mic path deterministic.
+
+        Old behavior loaded both physical mics to micro_bus and then tried to
+        mute the inactive one through media.name. That is fragile because pactl
+        module args with spaces can collapse media.name to "K-Sound".
+
+        New behavior:
+        - only the selected physical source is connected to micro_bus
+        - inactive physical mic loopbacks are unloaded
+        - loopback names contain no spaces
+        - latency is relaxed a bit for stability during fallback testing
+        """
         if not self._sink_exists("micro_bus"):
             return
 
@@ -872,66 +884,52 @@ class PipeWireAudioEngine(AudioEngine):
         known_sources = [
             (
                 "alsa_input.usb-RODE_Microphones_RODE_NT-USB-00.iec958-stereo",
-                "K-Sound Hub Mic Physical RODE",
+                "KSH_MIC_PHYSICAL_RODE",
             ),
             (
                 "alsa_input.usb-SteelSeries_Arctis_Nova_Pro_Wireless-00.mono-fallback",
-                "K-Sound Hub Mic Physical ANPW",
+                "KSH_MIC_PHYSICAL_ANPW",
             ),
         ]
 
-        pending_changes: list[tuple[str, bool]] = []
-
         for source_name, media_name in known_sources:
-            if not self._source_exists(source_name):
-                for module_id in self._find_loopback_module_ids_by_media_name(media_name):
+            existing_ids = self._find_loopback_module_ids(
+                source_name=source_name,
+                sink_name="micro_bus",
+            )
+
+            should_enable = source_name in desired_sources and self._source_exists(source_name)
+
+            if not should_enable:
+                for module_id in existing_ids:
                     self._run_no_fail(["pactl", "unload-module", module_id])
                 continue
 
-            existing_ids = self._find_loopback_module_ids(source_name=source_name, sink_name="micro_bus")
-            if not existing_ids:
-                proc = self._run(
-                    [
-                        "pactl",
-                        "load-module",
-                        "module-loopback",
-                        f"source={source_name}",
-                        "sink=micro_bus",
-                        "latency_msec=20",
-                        "source_dont_move=true",
-                        "sink_dont_move=true",
-                        f"sink_input_properties=media.name={media_name}",
-                    ]
-                )
-                if proc.returncode != 0:
-                    continue
-
-            should_enable = source_name in desired_sources
-            wanted_muted = not should_enable
-            current_states = self._sink_input_muted_by_media_name(media_name)
-
-            if not current_states:
+            if existing_ids:
                 continue
 
-            if any(state != wanted_muted for state in current_states):
-                pending_changes.append((media_name, wanted_muted))
-
-        selection_changed = self._physical_micro_selection_signature != desired_signature
-
-        if selection_changed and pending_changes and self._sink_exists("retour"):
-            self._run_no_fail(["pactl", "set-sink-mute", "retour", "1"])
-            time.sleep(0.025)
-
-        for media_name, wanted_muted in pending_changes:
-            self._set_sink_input_mute_by_media_name(media_name, wanted_muted)
-
-        if selection_changed and pending_changes:
-            time.sleep(0.025)
+            self._run_no_fail(
+                [
+                    "pactl",
+                    "load-module",
+                    "module-loopback",
+                    f"source={source_name}",
+                    "sink=micro_bus",
+                    "latency_msec=60",
+                    "channels=2",
+                    "source_dont_move=true",
+                    "sink_dont_move=true",
+                    f"sink_input_properties=media.name={media_name}",
+                ]
+            )
 
         self._physical_micro_selection_signature = desired_signature
 
         if self._source_exists("micro"):
+            self._run_no_fail(["pactl", "set-source-mute", "micro", "0"])
+            self._run_no_fail(["pactl", "set-source-volume", "micro", "100%"])
             self._run_no_fail(["pactl", "set-default-source", "micro"])
+
 
     def _pw_link_available(self) -> bool:
         return shutil.which("pw-link") is not None

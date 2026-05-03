@@ -12,6 +12,14 @@ export KSH_CONFIG_DIR="${KSH_CONFIG_DIR:-$HOME/.config/ksound-hub-v2}"
 export KSH_IPC_SOCKET_PATH="${KSH_IPC_SOCKET_PATH:-/tmp/ksound_hub_audio_v2_$(id -u).sock}"
 export KSH_HUD_STATE_DIR="${KSH_HUD_STATE_DIR:-$HOME/.config/audio-stack/hud_overlay}"
 
+# Stable micro path defaults.
+# KSH_NATIVE_MIC=0 keeps the legacy PipeWire loopback micro path active
+# while the native micro engine remains under investigation.
+export KSH_NATIVE_MIC="${KSH_NATIVE_MIC:-0}"
+export KSH_MIC_METER_BOOST="${KSH_MIC_METER_BOOST:-4.0}"
+export KSH_MIC_METER_FLOOR="${KSH_MIC_METER_FLOOR:-0.0015}"
+export KSH_LEGACY_MIC_GAIN_PERCENT="${KSH_LEGACY_MIC_GAIN_PERCENT:-115}"
+
 RUNTIME_DIR="$KSH_CONFIG_DIR/runtime"
 LOCK_FILE="$RUNTIME_DIR/app.lock"
 IPC_SOCKET="$KSH_IPC_SOCKET_PATH"
