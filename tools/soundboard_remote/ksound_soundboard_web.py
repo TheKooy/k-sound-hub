@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import html
 import json
+import hashlib
 import os
 import secrets
 import socket
@@ -102,6 +103,31 @@ def read_soundboard_settings() -> dict:
     return defaults
 
 
+
+
+
+def soundboard_revision() -> str:
+    try:
+        data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return "missing"
+
+    slots = data.get("slots", []) if isinstance(data, dict) else []
+    payload = json.dumps(slots, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()
+
+
+def read_soundboard_state() -> dict:
+    settings = read_soundboard_settings()
+    slots = read_slots()
+
+    return {
+        "revision": soundboard_revision(),
+        "slot_count": len(slots),
+        "global_volume": int(settings.get("global_volume", 100)),
+        "auto_level_enabled": bool(settings.get("auto_level_enabled", False)),
+        "pad_scale": int(settings.get("pad_scale", 100)),
+    }
 
 def update_soundboard_setting(key: str, value) -> None:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
@@ -204,6 +230,7 @@ def json_response(handler: BaseHTTPRequestHandler, status: int, payload: dict) -
 def page(status: str = "") -> bytes:
     slots = read_slots()
     settings = read_soundboard_settings()
+    config_revision = html.escape(soundboard_revision(), quote=True)
     global_volume = int(settings.get("global_volume", 100))
     auto_level_text = "ON" if settings.get("auto_level_enabled") else "OFF"
 
@@ -322,24 +349,26 @@ def page(status: str = "") -> bytes:
         .grid {{
           display: grid;
           grid-template-columns: repeat(auto-fit, minmax({pad_min_width}px, 1fr));
-          gap: {pad_gap}px;
+          gap: var(--ksh-pad-gap, {pad_gap}px);
         }}
         .pad-wrap {{
           position: relative;
           min-width: 0;
-          border-radius: 22px;
+          border-radius: var(--ksh-wrap-radius, 22px);
         }}
-        body.edit-mode .pad-wrap {{
+        body.edit-mode .grid,
+        body.edit-mode .pad-wrap,
+        body.edit-mode .pad {{
           touch-action: none;
         }}
         .pad {{
           width: 100%;
-          min-height: {pad_min_height}px;
+          min-height: var(--ksh-pad-height, {pad_min_height}px);
           border: 1px solid rgba(62,216,255,.34);
-          border-radius: {pad_radius}px;
+          border-radius: var(--ksh-pad-radius, {pad_radius}px);
           background: var(--card);
           color: var(--text);
-          padding: {pad_padding}px;
+          padding: var(--ksh-pad-padding, {pad_padding}px);
           text-align: left;
           box-shadow: 0 14px 34px rgba(0,0,0,.28);
           touch-action: manipulation;
@@ -357,13 +386,13 @@ def page(status: str = "") -> bytes:
         }}
         .pad strong {{
           display: block;
-          font-size: {pad_title_font}px;
-          margin-bottom: {pad_title_margin}px;
+          font-size: var(--ksh-title-font, {pad_title_font}px);
+          margin-bottom: var(--ksh-title-margin, {pad_title_margin}px);
         }}
         .pad span {{
           display: block;
           color: var(--muted);
-          font-size: {pad_subtitle_font}px;
+          font-size: var(--ksh-subtitle-font, {pad_subtitle_font}px);
           word-break: break-word;
         }}
         .pad-wrap.drag-source .pad {{
@@ -371,6 +400,11 @@ def page(status: str = "") -> bytes:
           border-color: rgba(255,92,199,1);
           box-shadow: 0 0 0 2px rgba(255,92,199,.20), 0 14px 34px rgba(0,0,0,.28);
           transform: scale(.98);
+        }}
+        .pad-wrap.click-source .pad {{
+          border-color: rgba(255,92,199,1);
+          box-shadow: 0 0 0 2px rgba(255,92,199,.24), 0 14px 34px rgba(0,0,0,.28);
+          transform: scale(.99);
         }}
         .pad-wrap.drop-target .pad {{
           border-color: rgba(62,216,255,1);
@@ -510,9 +544,7 @@ def page(status: str = "") -> bytes:
             >
             <span id="globalVolValue">{global_volume}%</span>
           </div>
-          <div class="tiny">
-            Auto level PC: {auto_level_text} · Scale: {pad_scale}% · <span id="volumeSendState">Ready</span>
-          </div>
+          <span id="volumeSendState" style="display:none">Ready</span>
         </div>
         <button class="stop-mini" type="button" onclick="stopAllSounds()" title="Stop all" aria-label="Stop all">⏹</button>
       </section>
@@ -521,8 +553,18 @@ def page(status: str = "") -> bytes:
         let volumeTimer = null;
         let lastSentVolume = "{global_volume}";
         let volumeDragging = false;
-        let editMode = false;
+        let editMode = window.sessionStorage.getItem("ksoundSoundboardEditMode") === "1";
+        let lastEditToggleAt = 0;
         let dragState = null;
+        let clickDropSourceWrap = null;
+        let activePointers = new Map();
+        let pinchState = null;
+        let pinchRaf = 0;
+        let pendingPreviewColumns = null;
+        let gestureCooldownUntil = 0;
+        let currentColumns = Number(window.localStorage.getItem("ksoundSoundboardColumns") || "0");
+        let soundboardRevision = "{config_revision}";
+        let refreshInFlight = false;
 
         function setRemoteStatus(text) {{
           const node = document.getElementById("remoteStatus");
@@ -532,6 +574,41 @@ def page(status: str = "") -> bytes:
         function setVolumeState(text) {{
           const node = document.getElementById("volumeSendState");
           if (node) node.textContent = text;
+        }}
+
+        function saveScrollPositionForReload() {{
+          try {{
+            const y = Math.max(
+              0,
+              Number(window.scrollY || document.documentElement.scrollTop || document.body.scrollTop || 0)
+            );
+            window.sessionStorage.setItem("ksoundSoundboardScrollY", String(y));
+          }} catch (_error) {{}}
+        }}
+
+        function restoreScrollPositionAfterReload() {{
+          let y = null;
+
+          try {{
+            if ("scrollRestoration" in history) {{
+              history.scrollRestoration = "manual";
+            }}
+
+            const raw = window.sessionStorage.getItem("ksoundSoundboardScrollY");
+            if (raw !== null) {{
+              window.sessionStorage.removeItem("ksoundSoundboardScrollY");
+              y = Math.max(0, Number(raw) || 0);
+            }}
+          }} catch (_error) {{
+            y = null;
+          }}
+
+          if (y === null) return;
+
+          const restore = () => window.scrollTo(0, y);
+          requestAnimationFrame(restore);
+          window.setTimeout(restore, 80);
+          window.setTimeout(restore, 260);
         }}
 
         function padWraps() {{
@@ -565,6 +642,217 @@ def page(status: str = "") -> bytes:
           return wrap.dataset.label || wrap.dataset.slot || "";
         }}
 
+        function clampColumns(value) {{
+          const n = Math.round(Number(value) || 4);
+          return Math.max(1, Math.min(8, n));
+        }}
+
+        function clampColumnsFloat(value) {{
+          const n = Number(value) || 4;
+          return Math.max(1, Math.min(8, n));
+        }}
+
+        function estimateColumns() {{
+          const wraps = padWraps();
+          if (!wraps.length) return clampColumns(currentColumns || 4);
+
+          const firstTop = wraps[0].offsetTop;
+          let count = 0;
+          for (const wrap of wraps) {{
+            if (Math.abs(wrap.offsetTop - firstTop) <= 4) count += 1;
+            else break;
+          }}
+          return clampColumns(count || currentColumns || 4);
+        }}
+
+        function visualScaleForColumns(columns) {{
+          const safeColumns = clampColumnsFloat(columns);
+
+          const points = [
+            [1, 2.00],
+            [2, 1.62],
+            [3, 1.28],
+            [4, 1.00],
+            [5, 0.88],
+            [6, 0.78],
+            [7, 0.70],
+            [8, 0.64]
+          ];
+
+          if (safeColumns <= points[0][0]) return points[0][1];
+          if (safeColumns >= points[points.length - 1][0]) return points[points.length - 1][1];
+
+          for (let i = 0; i < points.length - 1; i++) {{
+            const left = points[i];
+            const right = points[i + 1];
+
+            if (safeColumns >= left[0] && safeColumns <= right[0]) {{
+              const t = (safeColumns - left[0]) / (right[0] - left[0]);
+              return left[1] + ((right[1] - left[1]) * t);
+            }}
+          }}
+
+          return 1.0;
+        }}
+
+        function applyPadVisualScale(columns) {{
+          const factor = visualScaleForColumns(columns);
+
+          const rootStyle = document.documentElement.style;
+          rootStyle.setProperty("--ksh-pad-gap", Math.round(12 * factor) + "px");
+          rootStyle.setProperty("--ksh-pad-height", Math.round(92 * factor) + "px");
+          rootStyle.setProperty("--ksh-pad-padding", Math.round(14 * factor) + "px");
+          rootStyle.setProperty("--ksh-pad-radius", Math.round(20 * factor) + "px");
+          rootStyle.setProperty("--ksh-wrap-radius", Math.round(22 * factor) + "px");
+          rootStyle.setProperty("--ksh-title-font", Math.max(12, Math.round(17 * factor)) + "px");
+          rootStyle.setProperty("--ksh-subtitle-font", Math.max(10, Math.round(12 * factor)) + "px");
+          rootStyle.setProperty("--ksh-title-margin", Math.max(4, Math.round(8 * factor)) + "px");
+        }}
+
+        function setGridColumns(columns) {{
+          currentColumns = clampColumns(columns);
+          const grid = document.getElementById("padsGrid");
+          if (grid) {{
+            grid.style.gridTemplateColumns = "repeat(" + currentColumns + ", minmax(0, 1fr))";
+          }}
+        }}
+
+        function applyColumns(columns, persist = true, visualColumns = null) {{
+          setGridColumns(columns);
+          applyPadVisualScale(visualColumns === null ? currentColumns : visualColumns);
+
+          if (persist) {{
+            window.localStorage.setItem("ksoundSoundboardColumns", String(currentColumns));
+          }}
+        }}
+
+        function pointerDistance(a, b) {{
+          const dx = a.x - b.x;
+          const dy = a.y - b.y;
+          return Math.hypot(dx, dy);
+        }}
+
+        function updatePointer(event) {{
+          if (activePointers.has(event.pointerId)) {{
+            activePointers.set(event.pointerId, {{ x: event.clientX, y: event.clientY }});
+          }}
+        }}
+
+        function clearPinchPreview() {{
+          if (pinchRaf) {{
+            cancelAnimationFrame(pinchRaf);
+            pinchRaf = 0;
+          }}
+
+          pendingPreviewColumns = null;
+
+          const grid = document.getElementById("padsGrid");
+          if (grid) {{
+            grid.style.transform = "";
+            grid.style.transformOrigin = "top center";
+          }}
+        }}
+
+        function schedulePinchPreview(_rawColumns) {{
+          // Discrete mode: no continuous GPU transform preview.
+          // The grid only switches when the rounded column state changes.
+          return;
+        }}
+
+        function releaseDragCapture() {{
+          if (!dragState || !dragState.wrap) return;
+
+          try {{
+            dragState.wrap.releasePointerCapture?.(dragState.pointerId);
+          }} catch (_error) {{}}
+        }}
+
+        function finishPinch(commit = true) {{
+          if (!pinchState) {{
+            activePointers.clear();
+            clearPinchPreview();
+            return false;
+          }}
+
+          const commitColumns = clampColumns(pinchState.commitColumns || currentColumns || estimateColumns());
+
+          pinchState = null;
+          activePointers.clear();
+          releaseDragCapture();
+          dragState = null;
+          clearDragStateClasses();
+          clearPinchPreview();
+
+          if (commit) {{
+            applyColumns(commitColumns, true);
+            setRemoteStatus("Grid: " + commitColumns + " per row");
+          }}
+
+          gestureCooldownUntil = Date.now() + 260;
+          return true;
+        }}
+
+        function hardResetGesture(message = "") {{
+          if (pinchState) {{
+            finishPinch(true);
+          }} else {{
+            activePointers.clear();
+            releaseDragCapture();
+            dragState = null;
+            clearDragStateClasses();
+            clearClickDropSelection();
+            clearPinchPreview();
+          }}
+
+          if (message) setRemoteStatus(message);
+        }}
+
+        function startPinchIfReady() {{
+          if (!editMode || activePointers.size < 2) return false;
+
+          const points = Array.from(activePointers.values()).slice(0, 2);
+          const distance = pointerDistance(points[0], points[1]);
+          if (distance <= 0) return false;
+
+          const startColumns = currentColumns ? clampColumns(currentColumns) : estimateColumns();
+
+          releaseDragCapture();
+
+          pinchState = {{
+            startDistance: distance,
+            startColumns: startColumns,
+            startScale: visualScaleForColumns(startColumns),
+            commitColumns: startColumns
+          }};
+
+          dragState = null;
+          clearDragStateClasses();
+          setRemoteStatus("Edit mode: pinch to resize grid");
+          return true;
+        }}
+
+        function updatePinchColumns() {{
+          if (!pinchState || activePointers.size < 2) return false;
+
+          const points = Array.from(activePointers.values()).slice(0, 2);
+          const distance = pointerDistance(points[0], points[1]);
+          if (distance <= 0 || pinchState.startDistance <= 0) return true;
+
+          const ratio = distance / pinchState.startDistance;
+          const rawColumns = clampColumnsFloat(pinchState.startColumns / ratio);
+          const nextColumns = clampColumns(rawColumns);
+
+          // Important: only change layout when the discrete 8..1 state changes.
+          // No transform scale, no frame-by-frame CSS spam, no localStorage writes here.
+          if (nextColumns !== pinchState.commitColumns) {{
+            pinchState.commitColumns = nextColumns;
+            applyColumns(nextColumns, false);
+            setRemoteStatus("Grid target: " + nextColumns + " per row");
+          }}
+
+          return true;
+        }}
+
         function swapNodes(firstIndex, secondIndex) {{
           const wraps = padWraps();
           const a = wraps[firstIndex];
@@ -593,14 +881,46 @@ def page(status: str = "") -> bytes:
           );
         }}
 
-        function toggleEditMode() {{
-          editMode = !editMode;
+        function applyEditModeVisuals() {{
           document.body.classList.toggle("edit-mode", editMode);
+
           const editButton = document.getElementById("editButton");
-          if (editButton) editButton.textContent = editMode ? "✓" : "✎";
-          clearDragStateClasses();
-          dragState = null;
-          setRemoteStatus(editMode ? "Edit mode: drag a pad onto another" : "Ready");
+          if (editButton) {{
+            editButton.textContent = editMode ? "✓" : "✎";
+            editButton.setAttribute("aria-pressed", editMode ? "true" : "false");
+          }}
+        }}
+
+        function setEditMode(enabled, announce = true) {{
+          editMode = Boolean(enabled);
+
+          try {{
+            window.sessionStorage.setItem("ksoundSoundboardEditMode", editMode ? "1" : "0");
+          }} catch (_error) {{}}
+
+          hardResetGesture();
+          applyEditModeVisuals();
+
+          if (announce) {{
+            setRemoteStatus(editMode ? "Edit mode: drag, tap source then target, or pinch to resize" : "Ready");
+          }}
+
+          if (!editMode) {{
+            window.setTimeout(refreshSettingsFromServer, 80);
+          }}
+        }}
+
+        function toggleEditMode() {{
+          const now = Date.now();
+
+          // Some Android WebViews can emit duplicate click/tap events.
+          // Edit must behave as a manual toggle, not flicker ON then OFF.
+          if (now - lastEditToggleAt < 350) {{
+            return;
+          }}
+
+          lastEditToggleAt = now;
+          setEditMode(!editMode, true);
         }}
 
         async function postAction(path, body, okText) {{
@@ -624,9 +944,14 @@ def page(status: str = "") -> bytes:
 
         function playSlotFromButton(button) {{
           if (editMode) {{
-            setRemoteStatus("Edit mode active");
             return;
           }}
+
+          if (pinchState || activePointers.size > 0 || Date.now() < gestureCooldownUntil) {{
+            setRemoteStatus("Gesture active");
+            return;
+          }}
+
           const slot = button.dataset.slot || "";
           if (!slot || button.disabled) return;
           button.classList.add("sending");
@@ -640,9 +965,204 @@ def page(status: str = "") -> bytes:
           return element.closest(".pad-wrap");
         }}
 
+        function pointerIsInsidePadsGrid(event) {{
+          const target = event.target;
+          return Boolean(target && target.closest && target.closest("#padsGrid"));
+        }}
+
+        function cancelPointerEvent(event) {{
+          event.preventDefault();
+          event.stopPropagation();
+          event.stopImmediatePropagation?.();
+        }}
+
+        function forcePinchPriority(event) {{
+          activePointers.set(event.pointerId, {{ x: event.clientX, y: event.clientY }});
+
+          if (activePointers.size < 2) {{
+            return false;
+          }}
+
+          releaseDragCapture();
+          dragState = null;
+          clearDragStateClasses();
+
+          if (!pinchState) {{
+            startPinchIfReady();
+          }}
+
+          updatePinchColumns();
+          cancelPointerEvent(event);
+          return true;
+        }}
+
+        function onGlobalPointerDown(event) {{
+          if (!editMode) return;
+          if (event.button !== undefined && event.button !== 0) return;
+
+          // First finger must start on the pads grid.
+          // Once one finger is already active, any second finger immediately becomes pinch.
+          if (!pointerIsInsidePadsGrid(event) && activePointers.size === 0) {{
+            return;
+          }}
+
+          if (Date.now() < gestureCooldownUntil) {{
+            cancelPointerEvent(event);
+            return;
+          }}
+
+          forcePinchPriority(event);
+        }}
+
+        function syncActivePointersFromTouches(touches) {{
+          activePointers.clear();
+
+          for (let i = 0; i < touches.length; i++) {{
+            const touch = touches[i];
+            activePointers.set("touch-" + i, {{ x: touch.clientX, y: touch.clientY }});
+          }}
+        }}
+
+        function forceTouchPinchPriority(event) {{
+          if (!editMode) return false;
+          if (!event.touches || event.touches.length < 2) return false;
+
+          syncActivePointersFromTouches(event.touches);
+
+          releaseDragCapture();
+          dragState = null;
+          clearDragStateClasses();
+
+          if (!pinchState) {{
+            startPinchIfReady();
+          }}
+
+          updatePinchColumns();
+          cancelPointerEvent(event);
+          return true;
+        }}
+
+        function onGlobalTouchStart(event) {{
+          if (!editMode) return;
+
+          // Android/WebView fallback:
+          // as soon as two fingers exist, pinch wins over pad press/drag/click.
+          forceTouchPinchPriority(event);
+        }}
+
+        function onGlobalTouchMove(event) {{
+          if (!editMode) return;
+
+          if (event.touches && event.touches.length >= 2) {{
+            forceTouchPinchPriority(event);
+            return;
+          }}
+
+          if (pinchState) {{
+            finishPinch(true);
+            cancelPointerEvent(event);
+          }}
+        }}
+
+        function onGlobalTouchEnd(event) {{
+          if (!editMode) return;
+
+          if (event.touches && event.touches.length >= 2) {{
+            forceTouchPinchPriority(event);
+            return;
+          }}
+
+          if (pinchState) {{
+            finishPinch(true);
+            cancelPointerEvent(event);
+            return;
+          }}
+
+          if (!event.touches || event.touches.length === 0) {{
+            activePointers.clear();
+          }}
+        }}
+
+        function onGlobalClick(event) {{
+          if (!editMode) return;
+
+          // Prevent delayed synthetic clicks after a pinch/gesture.
+          if (pinchState || activePointers.size >= 2 || Date.now() < gestureCooldownUntil) {{
+            cancelPointerEvent(event);
+          }}
+        }}
+
+        function clearClickDropSelection() {{
+          padWraps().forEach(node => node.classList.remove("click-source"));
+          clickDropSourceWrap = null;
+        }}
+
+        function setClickDropSelection(wrap) {{
+          clearClickDropSelection();
+
+          if (!wrap) return;
+
+          clickDropSourceWrap = wrap;
+          wrap.classList.add("click-source");
+          setRemoteStatus("Selected: " + labelOfWrap(wrap) + " → tap destination");
+        }}
+
+        async function handleClickDropTap(wrap) {{
+          if (!editMode || !wrap) return false;
+
+          // Pinch always wins over tap/drop.
+          if (pinchState || activePointers.size >= 2 || Date.now() < gestureCooldownUntil) {{
+            return false;
+          }}
+
+          if (!clickDropSourceWrap) {{
+            setClickDropSelection(wrap);
+            return true;
+          }}
+
+          if (clickDropSourceWrap === wrap) {{
+            clearClickDropSelection();
+            setRemoteStatus("Selection cleared");
+            return true;
+          }}
+
+          const wraps = padWraps();
+          const sourceIndex = wraps.indexOf(clickDropSourceWrap);
+          const targetIndex = wraps.indexOf(wrap);
+          const sourceLabel = labelOfWrap(clickDropSourceWrap);
+          const targetLabel = labelOfWrap(wrap);
+
+          clearClickDropSelection();
+
+          if (sourceIndex < 0 || targetIndex < 0 || sourceIndex === targetIndex) {{
+            setRemoteStatus("Drop unavailable");
+            return true;
+          }}
+
+          if (swapNodes(sourceIndex, targetIndex)) {{
+            setRemoteStatus("Drop: " + sourceLabel + " → " + targetLabel);
+            const ok = await saveCurrentOrder();
+            if (!ok) location.reload();
+          }}
+
+          return true;
+        }}
+
         function onPadPointerDown(event) {{
           if (!editMode) return;
           if (event.button !== undefined && event.button !== 0) return;
+
+          if (Date.now() < gestureCooldownUntil) {{
+            cancelPointerEvent(event);
+            return;
+          }}
+
+          activePointers.set(event.pointerId, {{ x: event.clientX, y: event.clientY }});
+
+          if (activePointers.size >= 2) {{
+            forcePinchPriority(event);
+            return;
+          }}
 
           const wrap = event.currentTarget;
           dragState = {{
@@ -653,18 +1173,39 @@ def page(status: str = "") -> bytes:
             active: false,
             target: null
           }};
-          wrap.setPointerCapture?.(event.pointerId);
+
+          try {{
+            wrap.setPointerCapture?.(event.pointerId);
+          }} catch (_error) {{}}
+
           event.preventDefault();
         }}
 
         function onPadPointerMove(event) {{
-          if (!editMode || !dragState || dragState.pointerId !== event.pointerId) return;
+          if (!editMode) return;
+
+          updatePointer(event);
+
+          if (pinchState || activePointers.size >= 2) {{
+            releaseDragCapture();
+            dragState = null;
+            clearDragStateClasses();
+
+            if (!pinchState) startPinchIfReady();
+            updatePinchColumns();
+
+            cancelPointerEvent(event);
+            return;
+          }}
+
+          if (!dragState || dragState.pointerId !== event.pointerId) return;
 
           const dx = event.clientX - dragState.startX;
           const dy = event.clientY - dragState.startY;
           if (!dragState.active && Math.hypot(dx, dy) < 10) return;
 
           dragState.active = true;
+          clearClickDropSelection();
           clearDragStateClasses();
 
           dragState.wrap.classList.add("drag-source");
@@ -683,16 +1224,44 @@ def page(status: str = "") -> bytes:
         }}
 
         async function onPadPointerUp(event) {{
+          activePointers.delete(event.pointerId);
+
+          if (pinchState) {{
+            if (activePointers.size < 2) {{
+              finishPinch(true);
+            }} else {{
+              updatePinchColumns();
+            }}
+
+            cancelPointerEvent(event);
+            return;
+          }}
+
           if (!dragState || dragState.pointerId !== event.pointerId) return;
 
           const state = dragState;
           dragState = null;
 
-          state.wrap.releasePointerCapture?.(event.pointerId);
+          try {{
+            state.wrap.releasePointerCapture?.(event.pointerId);
+          }} catch (_error) {{}}
+
           clearDragStateClasses();
 
-          if (!editMode || !state.active || !state.target || state.target === state.wrap) {{
-            setRemoteStatus(editMode ? "Edit mode: drag a pad onto another" : "Ready");
+          if (!editMode) {{
+            setRemoteStatus("Ready");
+            event.preventDefault();
+            return;
+          }}
+
+          if (!state.active) {{
+            await handleClickDropTap(state.wrap);
+            event.preventDefault();
+            return;
+          }}
+
+          if (!state.target || state.target === state.wrap) {{
+            setRemoteStatus("Edit mode: drag, tap source then target, or pinch to resize");
             event.preventDefault();
             return;
           }}
@@ -709,28 +1278,83 @@ def page(status: str = "") -> bytes:
           event.preventDefault();
         }}
 
+        function onPadPointerCancel(event) {{
+          activePointers.delete(event.pointerId);
+
+          if (pinchState) {{
+            finishPinch(true);
+            cancelPointerEvent(event);
+            return;
+          }}
+
+          if (dragState && dragState.pointerId === event.pointerId) {{
+            releaseDragCapture();
+            dragState = null;
+            clearDragStateClasses();
+            setRemoteStatus(editMode ? "Edit mode: drag, tap source then target, or pinch to resize" : "Ready");
+          }}
+
+          event.preventDefault();
+        }}
+
         function initDragReorder() {{
+          window.addEventListener("pointerdown", onGlobalPointerDown, {{ passive: false, capture: true }});
+          window.addEventListener("touchstart", onGlobalTouchStart, {{ passive: false, capture: true }});
+          window.addEventListener("touchmove", onGlobalTouchMove, {{ passive: false, capture: true }});
+          window.addEventListener("touchend", onGlobalTouchEnd, {{ passive: false, capture: true }});
+          window.addEventListener("touchcancel", onGlobalTouchEnd, {{ passive: false, capture: true }});
+          window.addEventListener("click", onGlobalClick, {{ passive: false, capture: true }});
+
           padWraps().forEach(wrap => {{
-            wrap.addEventListener("pointerdown", onPadPointerDown);
-            wrap.addEventListener("pointermove", onPadPointerMove);
-            wrap.addEventListener("pointerup", onPadPointerUp);
-            wrap.addEventListener("pointercancel", onPadPointerUp);
+            wrap.addEventListener("pointerdown", onPadPointerDown, {{ passive: false }});
+            wrap.addEventListener("lostpointercapture", onPadPointerCancel, {{ passive: false }});
+          }});
+
+          window.addEventListener("pointermove", onPadPointerMove, {{ passive: false }});
+          window.addEventListener("pointerup", onPadPointerUp, {{ passive: false }});
+          window.addEventListener("pointercancel", onPadPointerCancel, {{ passive: false }});
+          window.addEventListener("blur", () => hardResetGesture("Ready"));
+
+          document.addEventListener("visibilitychange", () => {{
+            if (document.hidden) {{
+              hardResetGesture("Ready");
+            }} else {{
+              refreshSettingsFromServer();
+            }}
           }});
         }}
 
 
         async function refreshSettingsFromServer() {{
-          if (volumeDragging || volumeTimer) return;
+          if (refreshInFlight) return;
+          if (editMode) return;
+          if (pinchState || activePointers.size > 0) return;
+
+          refreshInFlight = true;
 
           try {{
-            const response = await fetch("/settings?token={escaped_token}", {{
+            const response = await fetch("/state?token={escaped_token}&v=" + Date.now(), {{
               method: "GET",
+              cache: "no-store",
               headers: {{ "X-Requested-With": "fetch" }}
             }});
             if (!response.ok) return;
 
             const data = await response.json();
-            if (data && Number.isFinite(Number(data.global_volume))) {{
+            const revision = String((data && data.revision) || "");
+
+            if (revision && soundboardRevision && revision !== soundboardRevision) {{
+              setRemoteStatus("Refreshing...");
+              saveScrollPositionForReload();
+              window.location.replace("/?token={escaped_token}&v=" + Date.now());
+              return;
+            }}
+
+            if (revision) {{
+              soundboardRevision = revision;
+            }}
+
+            if (!volumeDragging && !volumeTimer && data && Number.isFinite(Number(data.global_volume))) {{
               const volume = String(Math.max(0, Math.min(100, Number(data.global_volume))));
               const slider = document.getElementById("globalVolumeSlider");
               const valueNode = document.getElementById("globalVolValue");
@@ -745,6 +1369,8 @@ def page(status: str = "") -> bytes:
             }}
           }} catch (_error) {{
             // Keep the remote usable even if polling fails.
+          }} finally {{
+            refreshInFlight = false;
           }}
         }}
         function stopAllSounds() {{
@@ -802,8 +1428,16 @@ def page(status: str = "") -> bytes:
         }}
 
         refreshPadIndexes();
+        if (currentColumns) {{
+          applyColumns(currentColumns);
+        }} else {{
+          applyPadVisualScale(estimateColumns());
+        }}
         initDragReorder();
-        window.setInterval(refreshSettingsFromServer, 2000);
+        setEditMode(editMode, false);
+        restoreScrollPositionAfterReload();
+        window.setInterval(refreshSettingsFromServer, 750);
+        window.setTimeout(refreshSettingsFromServer, 250);
       </script>
     </body>
     </html>
@@ -853,6 +1487,10 @@ class Handler(BaseHTTPRequestHandler):
 
         if not self._token_ok():
             json_response(self, 403, {"ok": False, "error": "Forbidden"})
+            return
+
+        if parsed.path == "/state":
+            json_response(self, 200, read_soundboard_state())
             return
 
         if parsed.path == "/settings":

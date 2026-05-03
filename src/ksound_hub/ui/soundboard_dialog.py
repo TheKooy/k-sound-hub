@@ -64,20 +64,42 @@ def _slot_id(index: int) -> str:
     return f"sb{index + 1}"
 
 
+def _default_slot_number(number: int) -> dict[str, Any]:
+    number = max(1, int(number))
+    return {
+        "id": _slot_id(number - 1),
+        "label": f"SOUND {number}",
+        "path": "",
+        "volume": 80,
+        "shortcut": "",
+        "output_channel": "media",
+        "send_to_micro": False,
+        "trim_db": SOUNDBOARD_TRIM_DB_DEFAULT,
+    }
+
+
 def _default_slots(count: int = 12) -> list[dict[str, Any]]:
-    return [
-        {
-            "id": _slot_id(index),
-            "label": f"SOUND {index + 1}",
-            "path": "",
-            "volume": 80,
-            "shortcut": "",
-            "output_channel": "media",
-            "send_to_micro": False,
-            "trim_db": SOUNDBOARD_TRIM_DB_DEFAULT,
-        }
-        for index in range(count)
-    ]
+    return [_default_slot_number(index + 1) for index in range(count)]
+
+
+def _next_slot_number(slots: list[dict[str, Any]]) -> int:
+    used_ids = {
+        str(slot.get("id", "") or "").strip()
+        for slot in slots
+        if isinstance(slot, dict)
+    }
+
+    numbers: list[int] = []
+    for slot_id in used_ids:
+        match = re.fullmatch(r"sb(\d+)", slot_id)
+        if match:
+            numbers.append(int(match.group(1)))
+
+    number = max(numbers or [0]) + 1
+    while _slot_id(number - 1) in used_ids:
+        number += 1
+
+    return number
 
 
 def _clean_slot(raw: dict[str, Any], fallback_index: int) -> dict[str, Any]:
@@ -120,6 +142,37 @@ def _clean_slot(raw: dict[str, Any], fallback_index: int) -> dict[str, Any]:
         "analyzed_path": analyzed_path,
         "trim_db": trim_db,
     }
+
+
+def _ensure_unique_slot_ids(slots: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    fixed: list[dict[str, Any]] = []
+    used_ids: set[str] = set()
+    next_number = 1
+
+    for index, raw in enumerate(slots):
+        slot = _clean_slot(raw if isinstance(raw, dict) else {}, index)
+        slot_id = str(slot.get("id", "") or "").strip()
+
+        if not slot_id or slot_id in used_ids:
+            while _slot_id(next_number - 1) in used_ids:
+                next_number += 1
+
+            slot_id = _slot_id(next_number - 1)
+            slot["id"] = slot_id
+
+            label = str(slot.get("label", "") or "").strip()
+            if not label or re.fullmatch(r"SOUND\s+\d+", label, flags=re.IGNORECASE):
+                slot["label"] = f"SOUND {next_number}"
+
+        used_ids.add(slot_id)
+
+        match = re.fullmatch(r"sb(\d+)", slot_id)
+        if match:
+            next_number = max(next_number, int(match.group(1)) + 1)
+
+        fixed.append(slot)
+
+    return fixed
 
 
 def _normalize_key(value: str) -> str:
@@ -391,6 +444,7 @@ class SoundboardPadWidget(QFrame):
     drag_started = Signal(str, int, int)
     drag_moved = Signal(str, int, int)
     drag_finished = Signal(str, int, int)
+    edit_clicked = Signal(str)
 
     def __init__(self, slot: dict[str, Any], parent=None):
         super().__init__(parent)
@@ -402,11 +456,9 @@ class SoundboardPadWidget(QFrame):
         self.setObjectName("soundboardPad")
         self.setMinimumWidth(230)
         self._edit_mode = False
-        self._drag_start_pos = None
         self._manual_drag_active = False
 
         root = QVBoxLayout(self)
-        self._root_layout = root
         self._root_layout = root
         root.setContentsMargins(12, 12, 12, 12)
         root.setSpacing(8)
@@ -464,10 +516,15 @@ class SoundboardPadWidget(QFrame):
         choose_btn.clicked.connect(self._choose_file)
         file_row.addWidget(choose_btn)
 
-        clear_btn = QPushButton("Clear")
-        clear_btn.setObjectName("ghostButton")
-        clear_btn.clicked.connect(self._clear_file)
-        file_row.addWidget(clear_btn)
+        self._clear_confirm_pending = False
+        self._clear_confirm_timer = QTimer(self)
+        self._clear_confirm_timer.setSingleShot(True)
+        self._clear_confirm_timer.timeout.connect(self._reset_clear_confirm)
+
+        self.clear_btn = QPushButton("Clear")
+        self.clear_btn.setObjectName("soundPadClearButton")
+        self.clear_btn.clicked.connect(self._clear_file)
+        file_row.addWidget(self.clear_btn)
 
         root.addLayout(file_row)
 
@@ -767,6 +824,8 @@ class SoundboardPadWidget(QFrame):
 
             if was_dragging:
                 self.drag_finished.emit(self._slot_key(), global_pos.x(), global_pos.y())
+            else:
+                self.edit_clicked.emit(self._slot_key())
 
             event.accept()
             return
@@ -897,25 +956,40 @@ class SoundboardPadWidget(QFrame):
         self.changed.emit()
 
 
+    def _reset_clear_confirm(self) -> None:
+        self._clear_confirm_pending = False
+        if hasattr(self, "clear_btn"):
+            self.clear_btn.setText("Clear")
+            self.clear_btn.setToolTip("")
+            self.clear_btn.setProperty("clearConfirm", False)
+            self.clear_btn.style().unpolish(self.clear_btn)
+            self.clear_btn.style().polish(self.clear_btn)
+
     def _clear_file(self) -> None:
         current = str(self.slot.get("path", "") or "").strip()
-        label = str(self.slot.get("label", self.slot.get("id", "this pad")) or "this pad")
 
         if not current:
+            self._reset_clear_confirm()
             return
 
-        answer = QMessageBox.question(
-            self,
-            "Clear sound",
-            f"Remove the assigned sound from '{label}'?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
-        )
-
-        if answer != QMessageBox.Yes:
+        if not self._clear_confirm_pending:
+            self._clear_confirm_pending = True
+            self.clear_btn.setText("Confirm")
+            self.clear_btn.setToolTip("Click again within 4 seconds to remove this sound")
+            self.clear_btn.setProperty("clearConfirm", True)
+            self.clear_btn.style().unpolish(self.clear_btn)
+            self.clear_btn.style().polish(self.clear_btn)
+            self._clear_confirm_timer.start(4000)
             return
+
+        self._clear_confirm_timer.stop()
+        self._reset_clear_confirm()
 
         self.slot["path"] = ""
+
+        for cache_key in ("auto_gain", "analyzed_path", "processed_path"):
+            self.slot.pop(cache_key, None)
+
         self.file_label.setText(self._path_label())
         self.changed.emit()
 
@@ -938,8 +1012,15 @@ class SoundboardDialog(QDialog):
         self.edit_mode = False
         self._drag_source_id = ""
         self._drag_target_id = ""
+        self._selected_slot_id = ""
         self._rebuilding_grid = False
         self._last_grid_columns = 0
+        self._click_drop_source_id = ""
+        self._selected_delete_id = ""
+        self._delete_confirm_pending = False
+        self._delete_confirm_timer = QTimer(self)
+        self._delete_confirm_timer.setSingleShot(True)
+        self._delete_confirm_timer.timeout.connect(self._reset_delete_button_confirm)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(14, 14, 14, 14)
@@ -1092,9 +1173,15 @@ class SoundboardDialog(QDialog):
         self.edit_btn.toggled.connect(self._on_edit_toggled)
         footer_layout.addWidget(self.edit_btn)
 
-        add_btn = QPushButton("+ 4 pads")
+        self.delete_selected_btn = QPushButton("Delete")
+        self.delete_selected_btn.setObjectName("soundboardDeleteButton")
+        self.delete_selected_btn.setVisible(False)
+        self.delete_selected_btn.clicked.connect(self.delete_selected_slot)
+        footer_layout.addWidget(self.delete_selected_btn)
+
+        add_btn = QPushButton("+1 pad")
         add_btn.setObjectName("ghostButton")
-        add_btn.clicked.connect(self.add_four_slots)
+        add_btn.clicked.connect(self.add_one_slot)
         footer_layout.addWidget(add_btn)
 
         pair_btn = QPushButton("Pair Android")
@@ -1192,6 +1279,49 @@ class SoundboardDialog(QDialog):
                 color: #071018;
                 background: rgba(62, 216, 255, 0.90);
             }
+            QPushButton#soundPadClearButton[clearConfirm="true"] {
+                border: 2px solid rgba(255, 78, 78, 1.00);
+                color: rgba(255, 245, 245, 245);
+                background: rgba(190, 26, 42, 0.92);
+                font-weight: 900;
+            }
+            QPushButton#soundboardDeleteButton {
+                border: 1px solid rgba(255, 78, 78, 0.70);
+                border-radius: 10px;
+                padding: 4px 8px;
+                font-size: 11px;
+                font-weight: 900;
+                color: rgba(255, 235, 235, 245);
+                background: rgba(70, 12, 18, 0.88);
+            }
+            QPushButton#soundboardDeleteButton:hover {
+                border: 2px solid rgba(255, 78, 78, 1.00);
+                background: rgba(145, 24, 36, 0.92);
+            }
+            QPushButton[clearConfirm="true"] {
+                border: 2px solid rgba(255, 82, 102, 1.00);
+                color: #fff4f6;
+                background: rgba(180, 28, 48, 0.92);
+            }
+            QPushButton#soundboardDeleteButton {
+                border: 1px solid rgba(255, 92, 199, 0.55);
+                border-radius: 10px;
+                padding: 4px 8px;
+                font-size: 11px;
+                font-weight: 900;
+                color: rgba(236, 247, 255, 230);
+                background: rgba(35, 9, 28, 0.82);
+            }
+            QPushButton#soundboardDeleteButton:disabled {
+                color: rgba(147, 164, 184, 130);
+                border: 1px solid rgba(147, 164, 184, 65);
+                background: rgba(12, 18, 30, 0.55);
+            }
+            QPushButton#soundboardDeleteButton[deleteConfirm="true"] {
+                border: 2px solid rgba(255, 82, 102, 1.00);
+                color: #fff4f6;
+                background: rgba(180, 28, 48, 0.92);
+            }
             QCheckBox#soundboardSwitch {
                 spacing: 8px;
                 font-weight: 800;
@@ -1214,7 +1344,8 @@ class SoundboardDialog(QDialog):
             }
             /* KSH compact footer controls */
             QPushButton#soundboardEditButton,
-            QPushButton#soundboardScaleButton {
+            QPushButton#soundboardScaleButton,
+            QPushButton#soundboardDeleteButton {
                 min-height: 24px;
                 max-height: 24px;
                 padding: 2px 8px;
@@ -1288,9 +1419,10 @@ class SoundboardDialog(QDialog):
         if not isinstance(raw_slots, list) or not raw_slots:
             return _default_slots()
 
-        return [_clean_slot(item if isinstance(item, dict) else {}, index) for index, item in enumerate(raw_slots)]
+        return _ensure_unique_slot_ids(raw_slots)
 
     def save(self) -> None:
+        self.slots = _ensure_unique_slot_ids(self.slots)
         SOUNDBOARD_PATH.parent.mkdir(parents=True, exist_ok=True)
         SOUNDBOARD_PATH.write_text(
             json.dumps(
@@ -1309,11 +1441,15 @@ class SoundboardDialog(QDialog):
         self.status_label.setText(f"Saved: {SOUNDBOARD_PATH}")
         self._rebuild_shortcuts()
 
-    def add_four_slots(self) -> None:
-        start = len(self.slots)
-        self.slots.extend(_default_slots(4 + start)[start:])
+    def add_one_slot(self) -> None:
+        self.slots = _ensure_unique_slot_ids(self.slots)
+        self.slots.append(_default_slot_number(_next_slot_number(self.slots)))
         self._rebuild_grid()
         self.save()
+
+    def add_four_slots(self) -> None:
+        # Kept as a compatibility wrapper for old calls; the UI now adds one pad.
+        self.add_one_slot()
 
     def _columns_for_pad_scale(self) -> int:
         try:
@@ -1378,12 +1514,14 @@ class SoundboardDialog(QDialog):
                 pad.drag_started.connect(self._on_pad_drag_started)
                 pad.drag_moved.connect(self._on_pad_drag_moved)
                 pad.drag_finished.connect(self._on_pad_drag_finished)
+                pad.edit_clicked.connect(self._on_pad_edit_clicked)
                 pad.set_edit_mode(self.edit_mode)
                 pad.set_pad_scale(self.pad_scale)
                 self.pad_widgets.append(pad)
                 self.grid.addWidget(pad, index // columns, index % columns)
 
             self.grid.setRowStretch((len(self.slots) + columns - 1) // columns, 1)
+            self._apply_edit_selection_visuals()
         finally:
             self._rebuilding_grid = False
 
@@ -1423,6 +1561,113 @@ class SoundboardDialog(QDialog):
                 return widget
             widget = widget.parentWidget()
         return None
+
+    def _apply_edit_selection_visuals(self) -> None:
+        selected_id = str(getattr(self, "_selected_slot_id", "") or "").strip()
+
+        for pad in getattr(self, "pad_widgets", []):
+            try:
+                slot_id = str(pad.slot.get("id", "") or "").strip()
+                pad._set_drag_source_visual(bool(getattr(self, "edit_mode", False) and selected_id and slot_id == selected_id))
+            except Exception:
+                pass
+
+        self._update_delete_button_state()
+
+
+
+    def _set_edit_selection(self, slot_id: str) -> None:
+        self._selected_slot_id = str(slot_id or "").strip()
+        self._reset_delete_button_confirm()
+        self._apply_edit_selection_visuals()
+
+
+
+    def _update_delete_button_state(self) -> None:
+        button = getattr(self, "delete_selected_btn", None)
+        if button is None:
+            return
+
+        selected_id = str(getattr(self, "_selected_slot_id", "") or "").strip()
+        visible = bool(getattr(self, "edit_mode", False) and selected_id)
+
+        button.setVisible(visible)
+        button.setEnabled(visible)
+        button.setText("Delete")
+        button.setProperty("deleteConfirm", False)
+        button.style().unpolish(button)
+        button.style().polish(button)
+
+
+
+    def _on_pad_edit_clicked(self, slot_id: str) -> None:
+        if not self.edit_mode:
+            return
+
+        slot_id = str(slot_id or "").strip()
+        if not slot_id:
+            return
+
+        current = str(getattr(self, "_selected_slot_id", "") or "").strip()
+
+        if not current:
+            self._set_edit_selection(slot_id)
+            self.status_label.setText(f"Selected {slot_id}. Click another pad to swap, or Delete to remove it.")
+            return
+
+        if current == slot_id:
+            self._set_edit_selection("")
+            self.status_label.setText("Selection cleared")
+            return
+
+        source_id = current
+        self._set_edit_selection("")
+        self.swap_slots_by_keys(source_id, slot_id)
+
+
+
+    def _reset_delete_button_confirm(self) -> None:
+        self._delete_confirm_pending = False
+
+        timer = getattr(self, "_delete_confirm_timer", None)
+        if timer is not None and timer.isActive():
+            timer.stop()
+
+        button = getattr(self, "delete_selected_btn", None)
+        if button is not None:
+            button.setText("Delete")
+            button.setProperty("deleteConfirm", False)
+            button.setEnabled(bool(getattr(self, "edit_mode", False) and getattr(self, "_selected_slot_id", "")))
+            button.style().unpolish(button)
+            button.style().polish(button)
+
+
+
+    def delete_selected_slot(self) -> bool:
+        if not self.edit_mode:
+            return False
+
+        selected_id = str(getattr(self, "_selected_slot_id", "") or "").strip()
+        if not selected_id:
+            self.status_label.setText("Select a pad first")
+            return False
+
+        index = next((i for i, item in enumerate(self.slots) if str(item.get("id", "")) == selected_id), -1)
+        if index < 0:
+            self._set_edit_selection("")
+            self.status_label.setText("Selected pad not found")
+            return False
+
+        removed = self.slots.pop(index)
+        label = str(removed.get("label", selected_id) or selected_id)
+
+        self._set_edit_selection("")
+        self._rebuild_grid()
+        self.save()
+        self.status_label.setText(f"Deleted {label}")
+        return True
+
+
 
     def _on_pad_drag_started(self, source_id: str, x: int, y: int) -> None:
         if not self.edit_mode:
@@ -1492,6 +1737,10 @@ class SoundboardDialog(QDialog):
         self.edit_mode = bool(checked)
         self._drag_source_id = ""
         self._drag_target_id = ""
+        self._click_drop_source_id = ""
+        self._selected_delete_id = ""
+        self._delete_confirm_timer.stop()
+        self._reset_delete_button_confirm()
         self._clear_pad_drag_visuals()
 
         for pad in self.pad_widgets:
@@ -1501,8 +1750,10 @@ class SoundboardDialog(QDialog):
                 pass
             pad.set_edit_mode(self.edit_mode)
 
+        self._update_delete_button_state()
+
         self.status_label.setText(
-            "Edit mode: drag a pad onto another"
+            "Edit mode: drag, click-to-drop, or select a pad to delete"
             if self.edit_mode
             else "Edit mode: OFF"
         )
