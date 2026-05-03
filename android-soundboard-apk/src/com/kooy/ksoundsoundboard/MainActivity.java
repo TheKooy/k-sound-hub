@@ -37,7 +37,7 @@ import java.net.URLEncoder;
 
 public class MainActivity extends Activity {
     private static final int DISCOVERY_PORT = 8766;
-    private static final String DISCOVERY_REQUEST = "KSH_DISCOVER_V1";
+    private static final String DISCOVERY_REQUEST = "KSH_DISCOVER_V2";
     private static final String EXPECTED_SERVICE = "KSH_SOUNDBOARD";
 
     private SharedPreferences prefs;

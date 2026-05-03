@@ -24,7 +24,7 @@ HTTP_PORT = int(os.environ.get("KSOUND_SOUNDBOARD_WEB_PORT", "8765"))
 DISCOVERY_PORT = int(os.environ.get("KSOUND_SOUNDBOARD_DISCOVERY_PORT", "8766"))
 
 SERVICE_NAME = "K-Sound Hub Soundboard"
-DISCOVERY_REQUEST = b"KSH_DISCOVER_V1"
+DISCOVERY_REQUEST = b"KSH_DISCOVER_V2"
 DISCOVERY_SERVICE = "KSH_SOUNDBOARD"
 
 
@@ -154,7 +154,6 @@ def send_ipc(payload: dict) -> tuple[bool, str]:
     candidates = [
         os.environ.get("KSH_IPC_SOCKET_PATH", ""),
         f"/tmp/ksound_hub_audio_v2_{os.getuid()}.sock",
-        f"/tmp/ksound_hub_audio_{os.getuid()}.sock",
     ]
 
     last_error = ""
@@ -1592,7 +1591,7 @@ def discovery_loop(stop_event: threading.Event) -> None:
 
             payload = {
                 "service": DISCOVERY_SERVICE,
-                "version": 1,
+                "version": 2,
                 "name": SERVICE_NAME,
                 "http_port": HTTP_PORT,
                 "pairing_available": read_valid_pairing() is not None,

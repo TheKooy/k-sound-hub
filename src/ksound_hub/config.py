@@ -18,7 +18,7 @@ PACKAGE_DIR = Path(__file__).resolve().parent
 ASSETS_DIR = PACKAGE_DIR / "assets"
 APP_ICON_PATH = ASSETS_DIR / "app_icon.png"
 
-CONFIG_DIR = _env_path("KSH_CONFIG_DIR", Path.home() / ".config" / "ksound-hub")
+CONFIG_DIR = _env_path("KSH_CONFIG_DIR", Path.home() / ".config" / "ksound-hub-v2")
 SETTINGS_PATH = CONFIG_DIR / "settings.json"
 LOG_DIR = CONFIG_DIR / "logs"
 RUNTIME_DIR = CONFIG_DIR / "runtime"
@@ -32,7 +32,7 @@ HUD_SHARED_CONFIG_PATH = HUD_SHARED_STATE_DIR / "config.ini"
 
 IPC_SOCKET_PATH = os.environ.get(
     "KSH_IPC_SOCKET_PATH",
-    f"/tmp/ksound_hub_audio_{os.getuid()}.sock",
+    f"/tmp/ksound_hub_audio_v2_{os.getuid()}.sock",
 )
 
 OVERLAY_DURATION_MS = 900

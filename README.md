@@ -129,7 +129,7 @@ This checks:
 Recommended launcher:
 
 ```bash
-./scripts/start_ksound_hub.sh
+./scripts/start_ksound_hub_v2.sh
 ```
 
 Alternative commands:
@@ -187,7 +187,7 @@ Autostart remains a manual choice.
 If autostart is wanted later, use the provided start script:
 
 ```bash
-$HOME/k-sound-hub/scripts/start_ksound_hub.sh
+$HOME/k-sound-hub-v2/scripts/start_ksound_hub_v2.sh
 ```
 
 If a desktop-file autostart template is present in the project, adjust its paths manually and place it in the appropriate autostart location for the desktop environment.
@@ -263,7 +263,7 @@ src/ksound_hub/
   ui/
 
 scripts/
-  start_ksound_hub.sh
+  start_ksound_hub_v2.sh
   check_k_sound_hub_env.sh
   install_desktop_entry.sh
 
@@ -279,7 +279,7 @@ packaging/linux/
 2. create and activate `.venv`
 3. install with `python -m pip install -e .`
 4. run `./scripts/check_k_sound_hub_env.sh`
-5. start with `./scripts/start_ksound_hub.sh`
+5. start with `./scripts/start_ksound_hub_v2.sh`
 6. optionally create the launcher with `./scripts/install_desktop_entry.sh`
 7. optionally copy the launcher into `~/.local/share/applications/`
 

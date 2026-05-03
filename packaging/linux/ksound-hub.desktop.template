@@ -1,8 +1,8 @@
 [Desktop Entry]
 Type=Application
 Version=1.0
-Name=K-Sound Hub
-Comment=PipeWire-first modular Linux audio hub
+Name=K-Sound Hub V2
+Comment=PipeWire-first modular Linux audio hub V2
 Exec=__EXEC__
 Icon=__ICON__
 Terminal=false

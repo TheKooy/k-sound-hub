@@ -12,17 +12,17 @@ from .config import IPC_SOCKET_PATH
 
 def resolve_ipc_socket_path() -> str:
     candidates = [
+        os.environ.get("KSH_IPC_SOCKET_PATH", ""),
         os.environ.get("KSOUND_HUB_IPC_SOCKET", ""),
-        f"/tmp/ksound_hub_audio_v2_{os.getuid()}.sock",
         IPC_SOCKET_PATH,
-        f"/tmp/ksound_hub_audio_{os.getuid()}.sock",
+        f"/tmp/ksound_hub_audio_v2_{os.getuid()}.sock",
     ]
 
     for candidate in candidates:
         if candidate and Path(candidate).exists():
             return candidate
 
-    return candidates[1]
+    return f"/tmp/ksound_hub_audio_v2_{os.getuid()}.sock"
 
 
 CHANNEL_ALIASES = {
