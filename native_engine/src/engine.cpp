@@ -530,6 +530,34 @@ void parse_state_text(const std::string& text) {
     }
 }
 
+void parse_volume_state_text(const std::string& text) {
+    std::stringstream ss(text);
+    std::string line;
+
+    while (std::getline(ss, line)) {
+        if (line.empty()) {
+            continue;
+        }
+
+        auto parts = split_tab(line);
+        if (parts.size() < 4 || parts[0] != "volume") {
+            continue;
+        }
+
+        auto it = g_channels.find(parts[1]);
+        if (it == g_channels.end()) {
+            continue;
+        }
+
+        it->second.muted = parts[2] == "1";
+        try {
+            it->second.volume = volume_percent_to_gain(std::stof(parts[3]));
+        } catch (...) {
+            // Keep previous volume on parse errors.
+        }
+    }
+}
+
 std::vector<float> process_channel(CaptureClient& capture, const ChannelState& state, std::vector<float> frames) {
     float peak = 0.0f;
     for (float sample : frames) {
@@ -623,6 +651,24 @@ void Engine::maybe_reload_state() {
     log("state_reload bytes=" + std::to_string(text.size()));
 }
 
+void Engine::maybe_reload_volume_state() {
+    if (config_.volume_state_path.empty()) {
+        return;
+    }
+
+    auto current = safe_last_write_time(config_.volume_state_path);
+    if (current == std::filesystem::file_time_type{}) {
+        return;
+    }
+    if (current == last_volume_state_write_) {
+        return;
+    }
+
+    last_volume_state_write_ = current;
+    auto text = read_text_file(config_.volume_state_path);
+    parse_volume_state_text(text);
+}
+
 void Engine::tick_once() {
     std::map<std::string, std::vector<float>> mixes;
 
@@ -695,6 +741,7 @@ int Engine::run() {
 
     log("engine_start " + try_enable_realtime());
     log("state=" + config_.state_path.string());
+    log("volume_state=" + config_.volume_state_path.string());
     log("levels=" + config_.levels_path.string());
     log("capture_latency_ms=" + std::to_string(CAPTURE_LATENCY_MS) + " playback_latency_ms=" + std::to_string(PLAYBACK_LATENCY_MS) + " playback_process_ms=" + std::to_string(PLAYBACK_PROCESS_MS) + " mix_headroom=" + std::to_string(MIX_HEADROOM));
 
@@ -703,6 +750,7 @@ int Engine::run() {
 
     while (g_running) {
         maybe_reload_state();
+        maybe_reload_volume_state();
         tick_once();
         next += period;
         std::this_thread::sleep_until(next);

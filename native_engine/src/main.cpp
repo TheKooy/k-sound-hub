@@ -20,6 +20,8 @@ int main(int argc, char** argv) {
 
         if (arg == "--state") {
             config.state_path = next();
+        } else if (arg == "--volume-state") {
+            config.volume_state_path = next();
         } else if (arg == "--levels") {
             config.levels_path = next();
         } else if (arg == "--log") {
@@ -32,8 +34,12 @@ int main(int argc, char** argv) {
         }
     }
 
+    if (config.volume_state_path.empty() && !config.state_path.empty()) {
+        config.volume_state_path = config.state_path.parent_path() / "volume_state.txt";
+    }
+
     if (config.state_path.empty() || config.levels_path.empty() || config.log_path.empty()) {
-        std::cerr << "Usage: ksound_native_engine --state <path> --levels <path> --log <path> [--period-ms <n>]\n";
+        std::cerr << "Usage: ksound_native_engine --state <path> [--volume-state <path>] --levels <path> --log <path> [--period-ms <n>]\n";
         return 2;
     }
 

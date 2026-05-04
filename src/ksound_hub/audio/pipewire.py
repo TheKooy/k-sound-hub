@@ -191,6 +191,45 @@ def _resolved_channel_node_volume(channel_volume: int, *, node_type: str, node_n
 
 
 def _is_internal_ksound_stream(block: SinkInputBlock) -> bool:
+    _ksh_media_name = (block.media_name or "").strip()
+    _ksh_node_name = (block.node_name or "").strip()
+    _ksh_app_name = (block.app_name or "").strip()
+    _ksh_binary_name = (block.binary_name or "").strip()
+
+    if _ksh_media_name.startswith("KSH_KEEPALIVE_"):
+        return True
+
+    if _ksh_media_name.startswith("KSH_MIC_PHYSICAL"):
+        return True
+
+    if _ksh_media_name in {
+        "K-Sound-Hub-Soundboard-To-Micro",
+        "K-Sounds Hub Mic Output Monitor",
+    }:
+        return True
+
+    if "Mic Output Monitor" in _ksh_media_name:
+        return True
+
+    if "Mic Physical" in _ksh_media_name and (
+        "K-Sound Hub" in _ksh_media_name or "K-Sounds Hub" in _ksh_media_name
+    ):
+        return True
+
+    if (
+        _ksh_media_name in {"K-Sound", "K-Sounds"}
+        and _ksh_node_name.startswith("output.loopback-")
+    ):
+        return True
+
+    if (
+        _ksh_media_name == "pacat"
+        and _ksh_app_name == "pacat"
+        and _ksh_binary_name == "pacat"
+        and _ksh_node_name == "pacat"
+    ):
+        return True
+
     media_name = block.media_name or ""
     internal_needles = (
         "K-Sounds Hub Mic Output Monitor",
@@ -911,15 +950,29 @@ class PipeWireAudioEngine(AudioEngine):
         return proc.stdout.strip().splitlines()[-1].strip() if proc.stdout.strip() else ""
 
     def _ensure_physical_micro_loopbacks(self, channel: ChannelConfig) -> None:
-        """Connect the selected runtime-detected microphone source to micro_bus."""
+        """Connect exactly one selected runtime-detected microphone source to micro_bus.
+
+        This is the fallback path used when the native micro engine is disabled
+        or unavailable. Keep it conservative:
+        - unload legacy personal-device modules
+        - keep only one KSH_MIC_PHYSICAL loopback
+        - do not force channels=2, because mono microphones can sound robotic
+          when Pulse/PipeWire is forced into a bad channel mapping
+        - mute the exported micro source briefly while switching to avoid cracks
+        """
         if not self._sink_exists("micro_bus"):
             return
 
-        desired_sources = set(self._resolved_micro_source_names(channel))
+        desired_sources = {
+            source for source in self._resolved_micro_source_names(channel)
+            if source and self._source_exists(source)
+        }
         desired_signature = json.dumps(sorted(desired_sources), ensure_ascii=False)
 
         proc = self._run(["pactl", "list", "short", "modules"])
         existing_by_source: dict[str, list[str]] = {}
+        legacy_ids: list[str] = []
+
         if proc.returncode == 0:
             for line in proc.stdout.splitlines():
                 parts = line.split(None, 2)
@@ -931,6 +984,17 @@ class PipeWireAudioEngine(AudioEngine):
                     continue
                 if "sink=micro_bus" not in args:
                     continue
+
+                is_legacy = (
+                    "K-Sound Hub Mic Physical" in args
+                    or "K-Sounds Hub Mic Physical" in args
+                    or "KSH_MIC_PHYSICAL_RODE" in args
+                    or "KSH_MIC_PHYSICAL_ANPW" in args
+                )
+                if is_legacy:
+                    legacy_ids.append(module_id)
+                    continue
+
                 if "sink_input_properties=media.name=KSH_MIC_PHYSICAL" not in args:
                     continue
 
@@ -943,16 +1007,37 @@ class PipeWireAudioEngine(AudioEngine):
                 if source_name:
                     existing_by_source.setdefault(source_name, []).append(module_id)
 
+        existing_sources = set(existing_by_source)
+        duplicate_count = sum(max(0, len(ids) - 1) for ids in existing_by_source.values())
+        will_change = bool(legacy_ids) or duplicate_count > 0 or existing_sources != desired_sources
+
+        if will_change:
+            if self._source_exists("micro"):
+                self._run_no_fail(["pactl", "set-source-mute", "micro", "1"])
+            if self._sink_exists("micro_bus"):
+                self._run_no_fail(["pactl", "set-sink-mute", "micro_bus", "1"])
+
+        for module_id in legacy_ids:
+            self._run_no_fail(["pactl", "unload-module", module_id])
+
         for source_name, module_ids in existing_by_source.items():
-            if source_name in desired_sources:
-                continue
-            for module_id in module_ids:
+            keep_one = source_name in desired_sources
+            for index, module_id in enumerate(module_ids):
+                if keep_one and index == 0:
+                    continue
                 self._run_no_fail(["pactl", "unload-module", module_id])
 
+        if will_change:
+            time.sleep(0.12)
+
+        kept_sources = {
+            source_name
+            for source_name, module_ids in existing_by_source.items()
+            if source_name in desired_sources and module_ids
+        }
+
         for source_name in sorted(desired_sources):
-            if not self._source_exists(source_name):
-                continue
-            if existing_by_source.get(source_name):
+            if source_name in kept_sources:
                 continue
 
             self._run_no_fail(
@@ -963,7 +1048,6 @@ class PipeWireAudioEngine(AudioEngine):
                     f"source={source_name}",
                     "sink=micro_bus",
                     "latency_msec=60",
-                    "channels=2",
                     "source_dont_move=true",
                     "sink_dont_move=true",
                     "sink_input_properties=media.name=KSH_MIC_PHYSICAL",
@@ -972,9 +1056,15 @@ class PipeWireAudioEngine(AudioEngine):
 
         self._physical_micro_selection_signature = desired_signature
 
+        if will_change:
+            time.sleep(0.12)
+
+        if self._sink_exists("micro_bus"):
+            self._run_no_fail(["pactl", "set-sink-mute", "micro_bus", "0"])
+
         if self._source_exists("micro"):
-            self._run_no_fail(["pactl", "set-source-mute", "micro", "0"])
             self._run_no_fail(["pactl", "set-source-volume", "micro", "100%"])
+            self._run_no_fail(["pactl", "set-source-mute", "micro", "0"])
 
 
     def _find_pw_port_spec(self, *, direction: str, node_names: list[str], port_name: str) -> str:

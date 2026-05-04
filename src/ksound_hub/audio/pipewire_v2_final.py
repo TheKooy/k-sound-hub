@@ -49,6 +49,7 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
         self._native_runtime_dir = self.runtime_dir / "native-engine"
         self._native_runtime_dir.mkdir(parents=True, exist_ok=True)
         self._v2_state_path = self._native_runtime_dir / "render_state.txt"
+        self._v2_volume_state_path = self._native_runtime_dir / "volume_state.txt"
         self._v2_levels_path = self._native_runtime_dir / "levels.json"
         self._v2_engine_log = self._native_runtime_dir / "native-engine.log"
         self._v2_engine_proc: subprocess.Popen | None = None
@@ -57,9 +58,11 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
         self._native_micro_levels_path = self._native_runtime_dir / "micro_levels.json"
         self._native_micro_proc: subprocess.Popen | None = None
         self._last_micro_state_signature = ""
+        self._return_mic_legacy_cleanup_done = False
         self._native_micro_levels_cache_mtime_ns = 0
         self._native_micro_levels_cache_payload: dict[str, Any] = {}
         self._last_state_signature = ""
+        self._last_volume_state_signature = ""
         self._v2_levels_cache_mtime_ns = 0
         self._v2_levels_cache_payload: dict[str, Any] = {}
         self._disable_legacy_playback_slots()
@@ -148,9 +151,17 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
 
     def _render_channel_line(self, channel: ChannelConfig) -> str:
         render_key = self._native_render_key_for_channel(channel.key)
-        target = self._resolve_playback_target(channel)
-        target_label = target.label if target is not None else "system default"
-        target_sink = target.sink_name if target is not None else ""
+        # Fast path: channel.primary_target is already the real PipeWire sink
+        # name selected by the UI. Do not call _resolve_playback_target() here
+        # on every slider tick, because that can run pactl repeatedly.
+        target_sink = (channel.primary_target or "").strip()
+        if target_sink:
+            target_label = target_sink
+        else:
+            target = self._resolve_playback_target(channel)
+            target_label = target.label if target is not None else "system default"
+            target_sink = target.sink_name if target is not None else ""
+
         profile = self._current_profile(channel)
         fields = [
             "channel",
@@ -182,6 +193,30 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
         tmp = self._v2_state_path.with_suffix(".txt.tmp")
         tmp.write_text(text, encoding="utf-8")
         tmp.replace(self._v2_state_path)
+
+    def _render_volume_state_text(self, settings: AppSettings) -> str:
+        lines = ["version\t1"]
+        for key in PLAYBACK_KEYS:
+            channel = self._find_channel(settings, key)
+            if channel is None:
+                continue
+            render_key = self._native_render_key_for_channel(channel.key)
+            lines.append(
+                f"volume\t{render_key}\t{'1' if channel.muted else '0'}\t{int(channel.volume)}"
+            )
+        return "\n".join(lines) + "\n"
+
+
+    def _write_v2_volume_state(self, settings: AppSettings) -> None:
+        text = self._render_volume_state_text(settings)
+        if text == self._last_volume_state_signature and self._v2_volume_state_path.exists():
+            return
+
+        self._last_volume_state_signature = text
+        self._v2_volume_state_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self._v2_volume_state_path.with_suffix(".txt.tmp")
+        tmp.write_text(text, encoding="utf-8")
+        tmp.replace(self._v2_volume_state_path)
 
     def _native_micro_enabled(self) -> bool:
         return str(os.environ.get("KSH_NATIVE_MIC", "1")).strip().lower() not in {"0", "false", "no", "off"}
@@ -483,12 +518,15 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
         if self._native_micro_enabled():
             try:
                 self._ensure_micro_endpoint()
-                self._configure_easyeffects_for_settings(settings)
                 self._write_native_micro_state(settings)
 
                 if self._ensure_native_micro_engine():
-                    self._configure_easyeffects_for_settings(settings)
                     self._cleanup_legacy_micro_loopbacks_for_native()
+                    self._run_no_fail(["pactl", "set-default-source", "micro"])
+                    try:
+                        self._configure_easyeffects_for_settings(settings)
+                    except Exception:
+                        pass
                     return
             except Exception:
                 self._stop_native_micro_engine()
@@ -505,6 +543,7 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
             self._run_no_fail(["pactl", "set-default-source", "micro"])
 
         self._apply_micro_links(settings)
+
 
     def _return_monitor_media_name(self, key: str) -> str:
         return RETURN_MIC_MONITOR_MEDIA_PREFIX + str(key)
@@ -565,16 +604,32 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
 
     def _ensure_return_monitor_loopback(self, *, key: str, source_name: str) -> bool:
         media_name = self._return_monitor_media_name(key)
-        existing = self._find_loopback_module_ids_by_media_name(media_name)
+        existing = self._return_monitor_existing_module_ids().get(key, [])
         if existing:
             return True
 
-        module_id = self._load_loopback_module(
-            source_name=source_name,
-            sink_name="retour",
-            media_name=media_name,
-        )
-        return bool(module_id)
+        args = [
+            "pactl",
+            "load-module",
+            "module-loopback",
+            f"source={source_name}",
+            "sink=retour",
+            "latency_msec=60" if not source_name.endswith(".monitor") and source_name != "micro" else "latency_msec=20",
+            "source_dont_move=true",
+            "sink_dont_move=true",
+        ]
+
+        # Monitor sources are stereo. Physical microphone sources may be mono;
+        # forcing channels=2 on those can cause robotic/doubled monitoring.
+        if source_name.endswith(".monitor") or source_name == "micro":
+            args.append("channels=2")
+
+        args.append(f"sink_input_properties=media.name={media_name}")
+
+        proc = self._run(args)
+        if proc.returncode != 0:
+            return False
+        return bool(proc.stdout.strip())
 
     def _apply_return_mic(self, settings: AppSettings) -> None:
         channel = self._find_channel(settings, "return-mic")
@@ -582,11 +637,14 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
         # MIC OUT standard:
         # sources micro/soundboard -> sink virtuel retour -> moteur playback normal.
         # Aucun rendu spécial par ksound_native_micro_engine.
-        self._disconnect_return_playback_links()
-        self._cleanup_legacy_return_playback_modules()
+        if not self._return_mic_legacy_cleanup_done:
+            self._disconnect_return_playback_links()
+            self._cleanup_legacy_return_playback_modules()
 
-        for module_id in self._find_loopback_module_ids_by_media_name("K-Sounds Hub Mic Output Monitor Capture"):
-            self._run_no_fail(["pactl", "unload-module", module_id])
+            for module_id in self._find_loopback_module_ids_by_media_name("K-Sounds Hub Mic Output Monitor Capture"):
+                self._run_no_fail(["pactl", "unload-module", module_id])
+
+            self._return_mic_legacy_cleanup_done = True
 
         if channel is None or not channel.enabled or int(channel.volume) <= 0:
             self._cleanup_return_monitor_sources()
@@ -610,15 +668,40 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
             return
 
         desired = self._desired_return_monitor_sources(channel)
-        self._cleanup_return_monitor_sources(keep_keys=set(desired))
+        current_keys = set(self._return_monitor_existing_module_ids())
+        desired_keys = set(desired)
+        will_change = current_keys != desired_keys
+
+        original_muted = bool(channel.muted)
+
+        if will_change:
+            # Muting only the Pulse sink is not enough because the V2 engine
+            # captures retour.monitor. Temporarily mute the rendered MIC OUT
+            # channel in native state before changing PipeWire loopbacks.
+            channel.muted = True
+            self._write_v2_state(settings)
+            self._write_v2_volume_state(settings)
+            self._ensure_v2_engine()
+            self._run_no_fail(["pactl", "set-sink-mute", "retour", "1"])
+            time.sleep(0.12)
+
+        self._cleanup_return_monitor_sources(keep_keys=desired_keys)
 
         for key, source_name in desired.items():
             self._ensure_return_monitor_loopback(key=key, source_name=source_name)
 
-        # Comme les autres canaux, le sink logique reste à 100%.
-        # Le volume utilisateur est géré par le moteur playback final.
-        self._run_no_fail(["pactl", "set-sink-mute", "retour", "0"])
+        if will_change:
+            time.sleep(0.12)
+
+        # Like other V2 playback channels, the logical sink stays at 100%.
+        # User volume is handled by the final playback engine.
         self._run_no_fail(["pactl", "set-sink-volume", "retour", "100%"])
+        self._run_no_fail(["pactl", "set-sink-mute", "retour", "0"])
+
+        if will_change:
+            channel.muted = original_muted
+            self._write_v2_state(settings)
+            self._write_v2_volume_state(settings)
 
         signature = json.dumps(
             {
@@ -650,6 +733,8 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
                     str(engine_bin),
                     "--state",
                     str(self._v2_state_path),
+                    "--volume-state",
+                    str(self._v2_volume_state_path),
                     "--levels",
                     str(self._v2_levels_path),
                     "--log",
@@ -693,14 +778,69 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
         if channel_key == "return-mic":
             self._apply_return_mic(settings)
         self._write_v2_state(settings)
+        self._write_v2_volume_state(settings)
         self._ensure_v2_engine()
         slot = self.eq_slots[channel_key]
         slot.status = "v2 native final-render active"
 
+    def apply_channel_volume_fast(self, settings: AppSettings, channel_key: str) -> None:
+        if channel_key == "micro":
+            channel = self._find_channel(settings, "micro")
+            if channel is None:
+                return
+
+            # MICRO currently uses the fallback PipeWire loopback path:
+            # physical mic source -> KSH_MIC_PHYSICAL sink-input -> micro_bus -> micro source.
+            # For volume changes, avoid reapplying the whole micro transport.
+            # Updating the KSH_MIC_PHYSICAL sink-input is the lightest live path.
+            volume = max(0, min(150, int(channel.volume)))
+            muted = "1" if channel.muted else "0"
+
+            sink_input_ids = self._find_sink_input_ids_by_media_name("KSH_MIC_PHYSICAL")
+            if sink_input_ids:
+                for sink_input_id in sink_input_ids:
+                    self._run_no_fail(["pactl", "set-sink-input-volume", sink_input_id, f"{volume}%"])
+                    self._run_no_fail(["pactl", "set-sink-input-mute", sink_input_id, muted])
+                return
+
+            # Rare fallback: if the loopback is missing, fall back to the normal
+            # micro apply path so the transport can be recreated.
+            self.apply_channel(settings, channel_key)
+            return
+
+        if channel_key not in PLAYBACK_KEYS:
+            self.apply_channel(settings, channel_key)
+            return
+
+        if channel_key in self.eq_slots:
+            self.eq_slots[channel_key].status = "v2 native final-render active"
+
+        self._write_v2_volume_state(settings)
+        self._ensure_v2_engine()
+
     def apply_channel(self, settings: AppSettings, channel_key: str) -> None:
+        if channel_key == "return-mic":
+            # MIC OUT is also rendered by the V2 playback engine, but its
+            # monitored sources are managed by _apply_return_mic(). It must be
+            # applied before the generic PLAYBACK_KEYS fast path, otherwise
+            # source add/remove changes only take effect after restart.
+            self._apply_return_mic(settings)
+            if channel_key in self.eq_slots:
+                self.eq_slots[channel_key].status = "v2 native final-render active"
+            self._write_v2_state(settings)
+            self._write_v2_volume_state(settings)
+            self._ensure_v2_engine()
+            return
+
         if channel_key in PLAYBACK_KEYS:
-            self._apply_playback_channel(settings, channel_key)
-            self._apply_micro_transport(settings)
+            # V2 playback volume/mute/EQ/target are handled by the native
+            # final-render engine. Do not call the legacy playback path here:
+            # it performs synchronous pactl work and makes sliders lag.
+            if channel_key in self.eq_slots:
+                self.eq_slots[channel_key].status = "v2 native final-render active"
+            self._write_v2_state(settings)
+            self._write_v2_volume_state(settings)
+            self._ensure_v2_engine()
             return
 
         if channel_key == "micro":
@@ -716,10 +856,6 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
                 self._ensure_physical_micro_loopbacks(channel)
             self._run_no_fail(["pactl", "set-default-source", "micro"])
             self._apply_micro_transport(settings)
-            self._apply_return_mic(settings)
-            return
-
-        if channel_key == "return-mic":
             self._apply_return_mic(settings)
             return
 
@@ -740,6 +876,7 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
                 self.eq_slots[key].status = "v2 native final-render active"
         self._apply_return_mic(settings)
         self._write_v2_state(settings)
+        self._write_v2_volume_state(settings)
         self._ensure_v2_engine()
 
         channel = self._find_channel(settings, "micro")

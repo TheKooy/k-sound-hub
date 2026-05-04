@@ -532,7 +532,7 @@ class MainWindow(QMainWindow):
         self._show_overlay_for_change(channel, hint)
 
         if hint == "volume":
-            self._queue_channel_apply(channel.key, 20)
+            self._apply_channel_volume_fast(channel.key)
         else:
             self.audio_engine.apply_channel(self.settings, channel.key)
             self._status_timer.start()
@@ -772,6 +772,13 @@ class MainWindow(QMainWindow):
         self._normalize_app_rules()
         self.settings_store.save(self.settings)
 
+    def _apply_channel_volume_fast(self, channel_key: str) -> None:
+        fast_apply = getattr(self.audio_engine, "apply_channel_volume_fast", None)
+        if callable(fast_apply):
+            fast_apply(self.settings, channel_key)
+            return
+        self.audio_engine.apply_channel(self.settings, channel_key)
+
     def _queue_channel_apply(self, channel_key: str, delay_ms: int) -> None:
         self._pending_apply_keys.add(channel_key)
         remaining = self._apply_timer.remainingTime()
@@ -803,28 +810,42 @@ class MainWindow(QMainWindow):
         source_channel = getattr(sender, "channel", None)
         hint = getattr(sender, "_change_hint", "generic")
 
-        self._link_shared_eq_library(source_channel=source_channel)
-
-        if hint == "app_route":
-            self._prefer_app_rules_for_channel(source_channel)
-            self._normalize_app_rules()
-
         if source_channel is None:
+            self._link_shared_eq_library(source_channel=source_channel)
             self.audio_engine.apply_settings(self.settings)
             self._save_timer.start()
             self._status_timer.start()
             return
 
+        # Hot path: while dragging a volume slider, keep the UI thread as light
+        # as possible. No EQ library sync, no autosave reset, no overlay/status
+        # refresh on every tick. The release event commits/saves afterwards.
         if hint == "volume_drag":
-            self._queue_channel_apply(source_channel.key, 90)
-        elif hint == "volume_commit":
-            self.audio_engine.apply_channel(self.settings, source_channel.key)
+            self._apply_channel_volume_fast(source_channel.key)
+            return
+
+        # Volume, mute and slider commits do not need EQ library relinking.
+        if hint not in {"volume", "volume_commit", "mute"}:
+            self._link_shared_eq_library(source_channel=source_channel)
+
+        if hint == "app_route":
+            self._prefer_app_rules_for_channel(source_channel)
+            self._normalize_app_rules()
+
+        if hint == "volume_commit":
+            self._apply_channel_volume_fast(source_channel.key)
             self._show_overlay_for_change(source_channel, "volume")
+            self._save_timer.start()
             self._status_timer.start()
-        elif hint == "volume":
-            self._queue_channel_apply(source_channel.key, 45)
+            return
+
+        if hint == "volume":
+            self._apply_channel_volume_fast(source_channel.key)
             self._show_overlay_for_change(source_channel, hint)
-        elif hint == "eq_preview":
+            self._save_timer.start()
+            return
+
+        if hint == "eq_preview":
             self._queue_channel_apply(source_channel.key, 95)
         elif hint == "app_route":
             self._queue_runtime_view_refresh(10)
@@ -838,6 +859,7 @@ class MainWindow(QMainWindow):
             self._status_timer.start()
 
         self._save_timer.start()
+
 
     def refresh_status(self) -> None:
         enabled_channels = sum(1 for channel in self.settings.channels if channel.enabled)
