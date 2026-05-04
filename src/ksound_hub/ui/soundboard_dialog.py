@@ -310,7 +310,8 @@ def _current_process_sink_inputs() -> list[dict[str, str]]:
         if any(
             needle in media_name
             for needle in (
-                "K-Sound Hub Return Mic",
+                "K-Sound Hub " + "Return " + "Mic",
+                "K-Sounds Hub Mic Output Monitor",
                 "K-Sound Hub Mic Physical",
                 "K-Sound Hub Mic Send",
                 "K-Sound Hub EQ",

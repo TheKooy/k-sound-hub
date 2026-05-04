@@ -10,7 +10,7 @@ def _env_path(name: str, default: Path) -> Path:
 _profile_suffix = os.environ.get("KSH_PROFILE_SUFFIX", "").strip()
 _default_app_name = "K-Sounds Hub" + (f" {_profile_suffix}" if _profile_suffix else "")
 APP_NAME = os.environ.get("KSH_APP_NAME", _default_app_name)
-APP_VERSION = "0.3.2"
+APP_VERSION = "0.3.3"
 ORG_NAME = os.environ.get("KSH_ORG_NAME", APP_NAME)
 ORG_DOMAIN = os.environ.get("KSH_ORG_DOMAIN", "local.ksoundshub")
 
@@ -49,7 +49,7 @@ DEFAULT_CHANNELS = [
     {"key": "media", "name": "MEDIA", "enabled": True, "kind": "playback"},
     {"key": "more", "name": "MORE", "enabled": True, "kind": "playback"},
     {"key": "micro", "name": "MICRO", "enabled": True, "kind": "micro"},
-    {"key": "return-mic", "name": "RETOUR-MIC", "enabled": True, "kind": "monitor"},
+    {"key": "return-mic", "name": "MIC OUT", "enabled": True, "kind": "monitor"},
 ]
 
 DEFAULT_EQ_BANDS = [

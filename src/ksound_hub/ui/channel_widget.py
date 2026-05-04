@@ -41,25 +41,16 @@ CHANNEL_META = {
     "return-mic": {"icon": "🎧", "apps": []},
 }
 
-DEVICE_CHOICES = {
-    "playback": ["ANPW", "S/PDIF"],
-    "monitor": ["ANPW", "S/PDIF"],
-}
-MIC_INPUT_CHOICES = ["RODE NT-USB", "ANPW Mic", "RODE NT-USB EasyEffects", "ANPW Mic EasyEffects"]
+SYSTEM_DEFAULT_CHOICE = "System default"
 PLAYBACK_CHANNEL_KEYS = {"all", "game", "chat", "media", "more"}
 MIC_LINKABLE_CHANNEL_KEYS = ["all", "game", "chat", "media", "more", "soundboard"]
-
-RETURN_MIC_MONITOR_CHOICES: list[tuple[str, str]] = [
+INTERNAL_SINK_NAMES = {"all", "game", "chat", "media", "more", "retour", "micro_bus", "soundboard"}
+INTERNAL_SOURCE_NAMES = {"micro"}
+RETURN_MIC_MONITOR_SOURCE_PREFIX = "source:"
+RETURN_MIC_MONITOR_STATIC_CHOICES: list[tuple[str, str]] = [
     ("soundboard", "SOUNDBOARD"),
-    ("rode-pure", "RODE NT-USB pur"),
-    ("anpw-pure", "ANPW Mic pur"),
-    ("rode-ee", "RODE NT-USB EasyEffects"),
-    ("anpw-ee", "ANPW Mic EasyEffects"),
-    ("micro-final", "MICRO final"),
+    ("micro-final", "MIC final"),
 ]
-RETURN_MIC_MONITOR_LABEL_BY_KEY = {key: label for key, label in RETURN_MIC_MONITOR_CHOICES}
-RETURN_MIC_MONITOR_KEY_BY_LABEL = {label: key for key, label in RETURN_MIC_MONITOR_CHOICES}
-RETURN_MIC_EE_KEYS = {"rode-ee", "anpw-ee"}
 
 SOUNDBOARD_MIC_MEDIA_NAME = "K-Sound-Hub-Soundboard-To-Micro"
 
@@ -70,6 +61,199 @@ def _native_micro_enabled_channel_widget() -> bool:
 
 def _run_pactl_channel_widget(args: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(["pactl", *args], capture_output=True, text=True, timeout=2.0)
+
+
+def _list_short_audio_names_channel_widget(kind: str) -> list[str]:
+    proc = _run_pactl_channel_widget(["list", "short", kind])
+    if proc.returncode != 0:
+        return []
+
+    names: list[str] = []
+    for line in proc.stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 2:
+            names.append(parts[1])
+    return names
+
+
+def _default_audio_name_channel_widget(kind: str) -> str:
+    query = "get-default-sink" if kind == "sinks" else "get-default-source"
+    proc = _run_pactl_channel_widget([query])
+    return proc.stdout.strip() if proc.returncode == 0 else ""
+
+
+def _pactl_descriptions_by_name_channel_widget(kind: str) -> dict[str, str]:
+    proc = _run_pactl_channel_widget(["list", kind])
+    if proc.returncode != 0:
+        return {}
+
+    descriptions: dict[str, str] = {}
+    current_name = ""
+    current_description = ""
+
+    def flush() -> None:
+        nonlocal current_name, current_description
+        if current_name:
+            descriptions[current_name] = current_description or current_name
+        current_name = ""
+        current_description = ""
+
+    for raw_line in proc.stdout.splitlines():
+        stripped = raw_line.strip()
+
+        if stripped.startswith("Sink #") or stripped.startswith("Source #"):
+            flush()
+            continue
+
+        if stripped.startswith("Name:"):
+            current_name = stripped.split(":", 1)[1].strip()
+            continue
+
+        if stripped.startswith("Description:"):
+            current_description = stripped.split(":", 1)[1].strip()
+            continue
+
+        if not current_description and (
+            stripped.startswith("device.description =")
+            or stripped.startswith("node.description =")
+            or stripped.startswith("device.product.name =")
+            or stripped.startswith("device.nick =")
+        ):
+            value = stripped.split("=", 1)[1].strip().strip('"')
+            if value:
+                current_description = value
+
+    flush()
+    return descriptions
+
+
+def _clean_audio_label_channel_widget(label: str) -> str:
+    text = str(label).strip()
+    if not text:
+        return ""
+
+    text = text.replace("Monitor of ", "")
+    text = text.replace(" Analog Stereo", "")
+    text = text.replace(" Digital Stereo", "")
+    text = text.replace(" Mono", "")
+    text = text.replace(" (IEC958)", "")
+    text = text.replace("Front Headphones", "Headphones")
+    text = text.replace("S/PDIF Output", "S/PDIF")
+    text = text.replace("Speakers Output", "Speakers")
+    return " ".join(text.split())
+
+
+def _short_node_suffix_channel_widget(name: str) -> str:
+    tail = name.rsplit(".", 1)[-1] if "." in name else name
+    tail = tail.replace("_", " ").replace("-", " ").strip()
+    return tail or name[-28:]
+
+
+def _audio_choice_maps_channel_widget(
+    *,
+    kind: str,
+    raw_choices: list[str],
+) -> tuple[list[str], dict[str, str], dict[str, str]]:
+    descriptions = _pactl_descriptions_by_name_channel_widget(kind)
+    default = _default_audio_name_channel_widget(kind)
+
+    if not raw_choices:
+        return [SYSTEM_DEFAULT_CHOICE], {SYSTEM_DEFAULT_CHOICE: ""}, {"": SYSTEM_DEFAULT_CHOICE}
+
+    labels: list[str] = []
+    label_to_name: dict[str, str] = {}
+    name_to_label: dict[str, str] = {}
+
+    for name in raw_choices:
+        base_label = _clean_audio_label_channel_widget(descriptions.get(name, name)) or name
+
+        if name == default:
+            base_label = f"{base_label} · default"
+
+        label = base_label
+        if label in label_to_name and label_to_name[label] != name:
+            label = f"{base_label} ({_short_node_suffix_channel_widget(name)})"
+
+        counter = 2
+        unique_label = label
+        while unique_label in label_to_name and label_to_name[unique_label] != name:
+            unique_label = f"{label} #{counter}"
+            counter += 1
+
+        labels.append(unique_label)
+        label_to_name[unique_label] = name
+        name_to_label[name] = unique_label
+
+    return labels, label_to_name, name_to_label
+
+
+def _playback_target_choices_channel_widget() -> list[str]:
+    names = _list_short_audio_names_channel_widget("sinks")
+    default = _default_audio_name_channel_widget("sinks")
+    choices = [name for name in names if name not in INTERNAL_SINK_NAMES]
+
+    if default and default not in INTERNAL_SINK_NAMES and default in names:
+        choices = [default] + [name for name in choices if name != default]
+
+    return choices or ([default] if default else []) or []
+
+
+def _micro_input_choices_channel_widget() -> list[str]:
+    names = _list_short_audio_names_channel_widget("sources")
+    default = _default_audio_name_channel_widget("sources")
+    choices = [
+        name for name in names
+        if name not in INTERNAL_SOURCE_NAMES
+        and ".monitor" not in name
+        and not name.endswith(".monitor")
+    ]
+
+    if default and default not in INTERNAL_SOURCE_NAMES and ".monitor" not in default and default in names:
+        choices = [default] + [name for name in choices if name != default]
+
+    return choices or ([default] if default else []) or []
+
+
+def _return_monitor_choices_channel_widget() -> list[tuple[str, str]]:
+    choices = list(RETURN_MIC_MONITOR_STATIC_CHOICES)
+    raw_sources = _micro_input_choices_channel_widget()
+    _labels, _label_to_source, source_to_label = _audio_choice_maps_channel_widget(
+        kind="sources",
+        raw_choices=raw_sources,
+    )
+
+    for source_name in raw_sources:
+        label = source_to_label.get(source_name, source_name)
+        choices.append((f"{RETURN_MIC_MONITOR_SOURCE_PREFIX}{source_name}", label))
+
+    return choices
+
+
+def _return_monitor_label_for_key_channel_widget(key: str) -> str:
+    raw_key = str(key)
+    key_lower = raw_key.lower()
+
+    for choice_key, label in _return_monitor_choices_channel_widget():
+        if choice_key.lower() == key_lower:
+            return label
+
+    if key_lower.startswith(RETURN_MIC_MONITOR_SOURCE_PREFIX):
+        source_name = raw_key.split(":", 1)[1]
+        _labels, _label_to_source, source_to_label = _audio_choice_maps_channel_widget(
+            kind="sources",
+            raw_choices=[source_name],
+        )
+        return source_to_label.get(source_name, source_name)
+
+    return ""
+
+
+def _return_monitor_key_for_label_channel_widget(label: str) -> str:
+    for key, choice_label in _return_monitor_choices_channel_widget():
+        if choice_label == label:
+            return key
+    return ""
+
 
 
 def _sink_exists_channel_widget(name: str) -> bool:
@@ -419,12 +603,12 @@ class ChannelWidget(QFrame):
 
     def _default_primary_target(self) -> str:
         if self.channel.key == "micro":
-            return "RODE NT-USB"
-        if self.channel.key == "return-mic":
-            return DEVICE_CHOICES["monitor"][0]
-        if self.channel.kind == "monitor":
-            return DEVICE_CHOICES["monitor"][0]
-        return DEVICE_CHOICES["playback"][0]
+            choices = _micro_input_choices_channel_widget()
+            return choices[0] if choices else ""
+
+        choices = _playback_target_choices_channel_widget()
+        return choices[0] if choices else ""
+
 
 
     def _selector_frame(self, combo: MenuSelectorButton, frame_width: int = 130) -> QFrame:
@@ -448,28 +632,28 @@ class ChannelWidget(QFrame):
         return frame
 
     def _build_primary_controls(self) -> QWidget | None:
-        self.channel.primary_target = self.channel.primary_target or self._default_primary_target()
-        if self.channel.key == "micro" and self.channel.primary_target not in MIC_INPUT_CHOICES:
-            self.channel.primary_target = self._default_primary_target()
-        if self.channel.key == "return-mic":
-            box = QWidget()
-            box.setAttribute(Qt.WA_TranslucentBackground, True)
-            box.setAutoFillBackground(False)
-            box.setStyleSheet("background: transparent;")
-            outer = QHBoxLayout(box)
-            outer.setContentsMargins(0, 0, 0, 0)
-            outer.setSpacing(0)
-            outer.addStretch(1)
+        if self.channel.key == "micro":
+            raw_choices = _micro_input_choices_channel_widget()
+            labels, label_to_target, target_to_label = _audio_choice_maps_channel_widget(
+                kind="sources",
+                raw_choices=raw_choices,
+            )
+            frame_width = 220
+        else:
+            raw_choices = _playback_target_choices_channel_widget()
+            labels, label_to_target, target_to_label = _audio_choice_maps_channel_widget(
+                kind="sinks",
+                raw_choices=raw_choices,
+            )
+            frame_width = 220
 
-            self.device_combo = MenuSelectorButton()
-            self.device_combo.set_items(DEVICE_CHOICES["monitor"])
-            self._prepare_selector(self.device_combo)
-            self._set_selector_text(self.device_combo, self.channel.primary_target)
-            self.device_combo.currentTextChanged.connect(self._on_primary_target_changed)
-            outer.addWidget(self._selector_frame(self.device_combo, frame_width=130), 0, Qt.AlignCenter)
+        self._device_label_to_target = label_to_target
+        self._device_target_to_label = target_to_label
 
-            outer.addStretch(1)
-            return box
+        if raw_choices and (not self.channel.primary_target or self.channel.primary_target not in raw_choices):
+            self.channel.primary_target = raw_choices[0]
+        elif not raw_choices:
+            self.channel.primary_target = ""
 
         box = QWidget()
         box.setAttribute(Qt.WA_TranslucentBackground, True)
@@ -481,26 +665,21 @@ class ChannelWidget(QFrame):
         outer.addStretch(1)
 
         self.device_combo = MenuSelectorButton()
-        if self.channel.key == "micro":
-            self.device_combo.set_items(MIC_INPUT_CHOICES)
-            frame_width = 140
-        elif self.channel.kind == "monitor":
-            self.device_combo.set_items(DEVICE_CHOICES["monitor"])
-            frame_width = 130
-        else:
-            self.device_combo.set_items(DEVICE_CHOICES["playback"])
-            frame_width = 130
-
+        self.device_combo.set_items(labels or [SYSTEM_DEFAULT_CHOICE])
         self._prepare_selector(self.device_combo)
-        self._set_selector_text(self.device_combo, self.channel.primary_target)
+        self._set_selector_text(self.device_combo, self.channel.primary_target or SYSTEM_DEFAULT_CHOICE)
+        self.device_combo.setToolTip(self.channel.primary_target or SYSTEM_DEFAULT_CHOICE)
         self.device_combo.currentTextChanged.connect(self._on_primary_target_changed)
         outer.addWidget(self._selector_frame(self.device_combo, frame_width=frame_width), 0, Qt.AlignCenter)
 
         outer.addStretch(1)
         return box
 
+
     def _set_selector_text(self, combo: MenuSelectorButton, value: str) -> None:
-        combo.setCurrentText(value)
+        target_to_label = getattr(self, "_device_target_to_label", {})
+        display_value = target_to_label.get(value, value)
+        combo.setCurrentText(display_value)
 
     def _prepare_selector(self, combo: MenuSelectorButton) -> None:
         combo.setMinimumWidth(0)
@@ -568,17 +747,17 @@ class ChannelWidget(QFrame):
         if self.channel.key == "return-mic":
             shown = 0
             for key in self.channel.linked_channels:
-                key = str(key).lower()
-                label = RETURN_MIC_MONITOR_LABEL_BY_KEY.get(key)
+                key_text = str(key)
+                label = _return_monitor_label_for_key_channel_widget(key_text)
                 if not label:
                     continue
                 item = QListWidgetItem(label)
-                item.setData(Qt.UserRole, key)
+                item.setData(Qt.UserRole, key_text)
                 self.apps_list.addItem(item)
                 shown += 1
 
             if shown == 0:
-                item = QListWidgetItem("Aucune source monitorée")
+                item = QListWidgetItem("No monitored source")
                 item.setFlags(item.flags() & ~Qt.ItemIsSelectable)
                 self.apps_list.addItem(item)
             return
@@ -627,15 +806,15 @@ class ChannelWidget(QFrame):
     def _add_app_route(self) -> None:
         if self.channel.key == "return-mic":
             current = {str(key).lower() for key in self.channel.linked_channels}
-            available = [label for key, label in RETURN_MIC_MONITOR_CHOICES if key not in current]
+            available = [label for key, label in _return_monitor_choices_channel_widget() if key.lower() not in current]
             if not available:
-                self._show_click_outside_message("Retour-micro", "Toutes les sources monitorables sont déjà ajoutées.")
+                self._show_click_outside_message("Mic Output Monitor", "All monitorable sources are already added.")
                 return
 
             choice, ok = QInputDialog.getItem(
                 self,
-                "Ajouter au RETOUR-MICRO",
-                "Source à écouter",
+                "Add to MIC OUT",
+                "Source to monitor",
                 available,
                 0,
                 False,
@@ -643,16 +822,10 @@ class ChannelWidget(QFrame):
             if not ok or not choice:
                 return
 
-            key = RETURN_MIC_MONITOR_KEY_BY_LABEL.get(choice, "")
+            key = _return_monitor_key_for_label_channel_widget(choice)
             if not key:
                 return
 
-            if key in RETURN_MIC_EE_KEYS:
-                # Une seule source EasyEffects existe côté PipeWire.
-                self.channel.linked_channels = [
-                    existing for existing in self.channel.linked_channels
-                    if str(existing).lower() not in RETURN_MIC_EE_KEYS
-                ]
 
             if key not in [str(existing).lower() for existing in self.channel.linked_channels]:
                 self.channel.linked_channels.append(key)
@@ -906,43 +1079,12 @@ class ChannelWidget(QFrame):
             self._sync_micro_checks_from_target()
 
     def _sync_micro_checks_from_target(self) -> None:
-        if self.channel.key != "micro" or not hasattr(self, "mic_input_checks"):
-            return
-        target = self.channel.primary_target or "Both mics"
-        mapping = {
-            "Arctis Nova Pro Mic": [True, False],
-            "ANPW Mic": [True, False],
-            "RODE NT-USB": [False, True],
-            "Both microphones": [True, True],
-            "Both mics": [True, True],
-        }
-        states = mapping.get(target, [True, True])
-        for check, state in zip(self.mic_input_checks, states, strict=False):
-            check.blockSignals(True)
-            check.setChecked(state)
-            check.blockSignals(False)
+        return
 
     def _sync_micro_inputs_from_checks(self) -> None:
-        if self.channel.key != "micro" or not hasattr(self, "mic_input_checks"):
-            return
-        states = [check.isChecked() for check in self.mic_input_checks]
-        if states == [True, False]:
-            target = "ANPW Mic"
-        elif states == [False, True]:
-            target = "RODE NT-USB"
-        elif states == [True, True]:
-            target = "Both mics"
-        else:
-            sender = self.sender()
-            if sender in self.mic_input_checks:
-                sender.blockSignals(True)
-                sender.setChecked(True)
-                sender.blockSignals(False)
-            return
-        self.channel.primary_target = target
-        if self.device_combo is not None:
-            self._set_selector_text(self.device_combo, target)
-        self._emit_changed("routing")
+        return
+
+
 
     def set_global_visualizer_enabled(self, enabled: bool) -> None:
         self.global_visualizer_enabled = enabled
@@ -1035,7 +1177,11 @@ class ChannelWidget(QFrame):
         self._emit_changed("eq_preview")
 
     def _on_primary_target_changed(self, value: str) -> None:
-        self.channel.primary_target = value
+        label_to_target = getattr(self, "_device_label_to_target", {})
+        target = label_to_target.get(value, value)
+        self.channel.primary_target = "" if target == SYSTEM_DEFAULT_CHOICE else target
+        if self.device_combo is not None:
+            self.device_combo.setToolTip(self.channel.primary_target or SYSTEM_DEFAULT_CHOICE)
         if self.channel.key == "micro":
             self._sync_micro_checks_from_target()
         self._emit_changed("target")

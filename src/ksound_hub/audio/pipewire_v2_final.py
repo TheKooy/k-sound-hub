@@ -16,41 +16,21 @@ from .pipewire import (
     PLAYBACK_EQ_CHANNELS,
     STATUS_LABELS,
     STATUS_ORDER,
-    TARGET_OBJECT_BY_LABEL,
     PipeWireAudioEngine as PipeWireAudioEngineBase,
 )
 
 PLAYBACK_KEYS = tuple(PLAYBACK_EQ_CHANNELS.keys())
-DEFAULT_TARGET_LABEL = "ANPW"
 
-MIC_PHYSICAL_SOURCE_BY_LABEL = {
-    "ANPW Mic": "alsa_input.usb-SteelSeries_Arctis_Nova_Pro_Wireless-00.mono-fallback",
-    "Arctis Nova Pro Mic": "alsa_input.usb-SteelSeries_Arctis_Nova_Pro_Wireless-00.mono-fallback",
-    "RODE NT-USB": "alsa_input.usb-RODE_Microphones_RODE_NT-USB-00.iec958-stereo",
-    "Both mics": "alsa_input.usb-RODE_Microphones_RODE_NT-USB-00.iec958-stereo",
-    "Both microphones": "alsa_input.usb-RODE_Microphones_RODE_NT-USB-00.iec958-stereo",
-}
+MIC_PHYSICAL_SOURCE_BY_LABEL: dict[str, str] = {}
+MIC_EASYEFFECTS_TARGET_BY_LABEL: dict[str, str] = {}
+RETURN_MIC_EASYEFFECTS_TARGET_BY_KEY: dict[str, str] = {}
 
-MIC_EASYEFFECTS_TARGET_BY_LABEL = {
-    "ANPW Mic EasyEffects": "alsa_input.usb-SteelSeries_Arctis_Nova_Pro_Wireless-00.mono-fallback",
-    "RODE NT-USB EasyEffects": "alsa_input.usb-RODE_Microphones_RODE_NT-USB-00.iec958-stereo",
-}
-
-RETURN_MIC_MONITOR_SOURCE_BY_KEY = {
+RETURN_MIC_MONITOR_SOURCE_PREFIX = "source:"
+RETURN_MIC_MONITOR_STATIC_SOURCE_BY_KEY = {
     "soundboard": "soundboard.monitor",
-    "anpw-pure": "alsa_input.usb-SteelSeries_Arctis_Nova_Pro_Wireless-00.mono-fallback",
-    "rode-pure": "alsa_input.usb-RODE_Microphones_RODE_NT-USB-00.iec958-stereo",
-    "anpw-ee": "easyeffects_source",
-    "rode-ee": "easyeffects_source",
     "micro-final": "micro",
 }
-
-RETURN_MIC_EASYEFFECTS_TARGET_BY_KEY = {
-    "anpw-ee": "alsa_input.usb-SteelSeries_Arctis_Nova_Pro_Wireless-00.mono-fallback",
-    "rode-ee": "alsa_input.usb-RODE_Microphones_RODE_NT-USB-00.iec958-stereo",
-}
-
-RETURN_MIC_MONITOR_MEDIA_PREFIX = "K-Sound Hub Return Mic Monitor "
+RETURN_MIC_MONITOR_MEDIA_PREFIX = "K-Sounds Hub Mic Output Monitor Monitor "
 
 
 class PipeWireAudioEngine(PipeWireAudioEngineBase):
@@ -168,8 +148,9 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
 
     def _render_channel_line(self, channel: ChannelConfig) -> str:
         render_key = self._native_render_key_for_channel(channel.key)
-        target_label = (channel.primary_target or DEFAULT_TARGET_LABEL).strip() or DEFAULT_TARGET_LABEL
-        target_sink = TARGET_OBJECT_BY_LABEL.get(target_label) or TARGET_OBJECT_BY_LABEL[DEFAULT_TARGET_LABEL]
+        target = self._resolve_playback_target(channel)
+        target_label = target.label if target is not None else "system default"
+        target_sink = target.sink_name if target is not None else ""
         profile = self._current_profile(channel)
         fields = [
             "channel",
@@ -234,42 +215,22 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
         return ""
 
     def _micro_physical_source_for_label(self, label: str) -> str:
-        label = (label or "").strip()
-        source = MIC_PHYSICAL_SOURCE_BY_LABEL.get(label, "")
-        if source and self._source_exists(source):
-            return source
-
-        names = self._resolved_micro_source_names(self._find_channel(self._last_settings, "micro")) if hasattr(self, "_last_settings") and self._last_settings is not None else []
-        for name in names:
-            if self._source_exists(name):
-                return name
-
-        rode = MIC_PHYSICAL_SOURCE_BY_LABEL["RODE NT-USB"]
-        anpw = MIC_PHYSICAL_SOURCE_BY_LABEL["ANPW Mic"]
-        if self._source_exists(rode):
-            return rode
-        if self._source_exists(anpw):
-            return anpw
-        return source or rode
+        wanted = (label or "").strip()
+        if wanted and self._source_exists(wanted):
+            return wanted
+        return self._default_micro_source_name()
 
     def _native_micro_source_for_channel(self, channel: ChannelConfig) -> str:
-        label = (channel.primary_target or "RODE NT-USB").strip()
-
-        ee_target = MIC_EASYEFFECTS_TARGET_BY_LABEL.get(label, "")
-        if ee_target:
-            ee_source = self._preferred_easyeffects_source()
-            if ee_source:
-                return ee_source
-            return ee_target
-
-        source = MIC_PHYSICAL_SOURCE_BY_LABEL.get(label, "")
-        if source:
-            return source
+        wanted = (channel.primary_target or "").strip()
+        if wanted and self._source_exists(wanted):
+            return wanted
 
         names = self._resolved_micro_source_names(channel)
         if names:
             return names[0]
+
         return self._resolved_micro_source_name(channel)
+
 
 
     def _ensure_micro_endpoint(self) -> None:
@@ -582,28 +543,25 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
                 self._run_no_fail(["pactl", "unload-module", module_id])
 
     def _desired_return_monitor_sources(self, channel: ChannelConfig) -> dict[str, str]:
-        linked = [str(key).lower() for key in getattr(channel, "linked_channels", []) or []]
+        linked = [str(key) for key in getattr(channel, "linked_channels", []) or []]
         desired: dict[str, str] = {}
 
-        # Only one EasyEffects processed source exists. If several EE entries
-        # were saved, keep the first one only to avoid double-monitoring the
-        # same easyeffects_source.
-        ee_taken = False
+        for raw_key in linked:
+            key_lower = raw_key.lower()
+            source = RETURN_MIC_MONITOR_STATIC_SOURCE_BY_KEY.get(key_lower, "")
 
-        for key in linked:
-            source = RETURN_MIC_MONITOR_SOURCE_BY_KEY.get(key, "")
-            if not source:
-                continue
+            if not source and key_lower.startswith(RETURN_MIC_MONITOR_SOURCE_PREFIX):
+                source = raw_key.split(":", 1)[1]
 
-            if key in RETURN_MIC_EASYEFFECTS_TARGET_BY_KEY:
-                if ee_taken:
-                    continue
-                ee_taken = True
+            if not source and self._source_exists(raw_key):
+                source = raw_key
 
-            if self._source_exists(source):
-                desired[key] = source
+            if source and self._source_exists(source):
+                desired[raw_key] = source
 
         return desired
+
+
 
     def _ensure_return_monitor_loopback(self, *, key: str, source_name: str) -> bool:
         media_name = self._return_monitor_media_name(key)
@@ -621,13 +579,13 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
     def _apply_return_mic(self, settings: AppSettings) -> None:
         channel = self._find_channel(settings, "return-mic")
 
-        # RETOUR-MIC standard:
+        # MIC OUT standard:
         # sources micro/soundboard -> sink virtuel retour -> moteur playback normal.
         # Aucun rendu spécial par ksound_native_micro_engine.
         self._disconnect_return_playback_links()
         self._cleanup_legacy_return_playback_modules()
 
-        for module_id in self._find_loopback_module_ids_by_media_name("K-Sound Hub Return Mic Capture"):
+        for module_id in self._find_loopback_module_ids_by_media_name("K-Sounds Hub Mic Output Monitor Capture"):
             self._run_no_fail(["pactl", "unload-module", module_id])
 
         if channel is None or not channel.enabled or int(channel.volume) <= 0:
@@ -642,7 +600,7 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
                 "load-module",
                 "module-null-sink",
                 "sink_name=retour",
-                "sink_properties=device.description=🎤RETOUR-MICRO",
+                "sink_properties=device.description=🎧MIC OUT",
             ])
 
         if not self._sink_exists("retour"):

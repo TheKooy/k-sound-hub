@@ -137,6 +137,15 @@ class AppSettings:
         if not channels:
             channels = cls.default().channels
 
+        default_channel_names = {
+            str(item["key"]): str(item["name"])
+            for item in DEFAULT_CHANNELS
+            if "key" in item and "name" in item
+        }
+        for channel in channels:
+            if channel.key in default_channel_names:
+                channel.name = default_channel_names[channel.key]
+
         close_to_tray = data.get("close_to_tray")
         if close_to_tray is None and isinstance(channels_raw, list):
             for item in channels_raw:

@@ -38,7 +38,7 @@ CHANNEL_OVERLAY_META = {
     "media": ("🎵", "MEDIA"),
     "more": ("🔊", "MORE"),
     "micro": ("🎤", "MICRO"),
-    "return-mic": ("🎧", "RETOUR-MIC"),
+    "return-mic": ("🎧", "MIC OUT"),
 }
 
 CHANNEL_KEY_ALIASES = {

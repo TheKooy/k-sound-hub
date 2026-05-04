@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtCore import QPoint, QRectF, Qt, Signal
+from PySide6.QtCore import QPoint, QRectF, Qt, Signal, QTimer
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QFrame,
@@ -43,11 +43,62 @@ class SelectorPopupItem(QPushButton):
     def __init__(self, text: str, selected: bool, parent=None):
         super().__init__(text, parent)
         self._selected = selected
+        self._hover_scroll_offset = 0
+        self._hover_scroll_timer = QTimer(self)
+        self._hover_scroll_timer.setInterval(45)
+        self._hover_scroll_timer.timeout.connect(self._advance_hover_scroll)
+
+        self.setMouseTracking(True)
         self.setFlat(True)
         self.setCursor(Qt.PointingHandCursor)
         self.setMinimumHeight(32)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.setStyleSheet("background: transparent; border: none; color: #edf4ff;")
+        self.setToolTip(text)
+
+    def _text_rect(self):
+        return self.rect().adjusted(10, 0, -10, 0)
+
+    def _text_overflows(self) -> bool:
+        text_rect = self._text_rect()
+        return self.fontMetrics().horizontalAdvance(self.text()) > max(12, text_rect.width() - 2)
+
+    def _sync_hover_scroll_timer(self) -> None:
+        if self.underMouse() and self._text_overflows():
+            if not self._hover_scroll_timer.isActive():
+                self._hover_scroll_timer.start()
+        else:
+            self._hover_scroll_timer.stop()
+            self._hover_scroll_offset = 0
+
+    def _advance_hover_scroll(self) -> None:
+        if not self.underMouse() or not self._text_overflows():
+            self._sync_hover_scroll_timer()
+            self.update()
+            return
+
+        text_rect = self._text_rect()
+        text_width = self.fontMetrics().horizontalAdvance(self.text())
+        max_offset = max(1, text_width - max(12, text_rect.width() - 2) + 28)
+        self._hover_scroll_offset = (self._hover_scroll_offset + 2) % (max_offset + 28)
+        self.update()
+
+    def enterEvent(self, event) -> None:
+        self._hover_scroll_offset = 0
+        self._sync_hover_scroll_timer()
+        self.update()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:
+        self._hover_scroll_offset = 0
+        self._sync_hover_scroll_timer()
+        self.update()
+        super().leaveEvent(event)
+
+    def resizeEvent(self, event) -> None:
+        self._hover_scroll_offset = 0
+        self._sync_hover_scroll_timer()
+        super().resizeEvent(event)
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
@@ -65,8 +116,30 @@ class SelectorPopupItem(QPushButton):
             painter.setBrush(QColor(255, 92, 199, 70))
             painter.drawRoundedRect(rect.adjusted(2, 1, -2, -1), 8, 8)
 
+        text_rect = self._text_rect()
         painter.setPen(QColor("#edf4ff"))
-        painter.drawText(self.rect().adjusted(10, 0, -10, 0), Qt.AlignCenter | Qt.AlignVCenter, self.text())
+
+        if self.underMouse() and self._text_overflows():
+            painter.save()
+            painter.setClipRect(text_rect)
+            text_width = self.fontMetrics().horizontalAdvance(self.text())
+            x = text_rect.left() - self._hover_scroll_offset
+            painter.drawText(
+                x,
+                text_rect.top(),
+                text_width + 8,
+                text_rect.height(),
+                Qt.AlignLeft | Qt.AlignVCenter,
+                self.text(),
+            )
+            painter.restore()
+        else:
+            text = self.fontMetrics().elidedText(
+                self.text(),
+                Qt.ElideRight,
+                max(12, text_rect.width() - 2),
+            )
+            painter.drawText(text_rect, Qt.AlignLeft | Qt.AlignVCenter, text)
 
 
 class SelectorPopup(QWidget):
@@ -143,6 +216,11 @@ class MenuSelectorButton(QPushButton):
         self._items: list[str] = []
         self._current_text = ""
         self._popup: SelectorPopup | None = None
+        self._hover_scroll_offset = 0
+        self._hover_scroll_timer = QTimer(self)
+        self._hover_scroll_timer.setInterval(45)
+        self._hover_scroll_timer.timeout.connect(self._advance_hover_scroll)
+        self.setMouseTracking(True)
         self.setCursor(Qt.PointingHandCursor)
         self.setFlat(True)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
@@ -166,6 +244,8 @@ class MenuSelectorButton(QPushButton):
 
         changed = new_value != self._current_text
         self._current_text = new_value
+        self._hover_scroll_offset = 0
+        self._sync_hover_scroll_timer()
         self.update()
         if changed:
             self.currentTextChanged.emit(new_value)
@@ -187,21 +267,79 @@ class MenuSelectorButton(QPushButton):
         popup.show_below(anchor)
         self._popup = popup
 
+    def _text_rect(self):
+        return self.rect().adjusted(10, 0, -10, 0)
+
+    def _text_overflows(self) -> bool:
+        text_rect = self._text_rect()
+        return self.fontMetrics().horizontalAdvance(self._current_text) > max(12, text_rect.width() - 2)
+
+    def _sync_hover_scroll_timer(self) -> None:
+        if self.underMouse() and self._text_overflows():
+            if not self._hover_scroll_timer.isActive():
+                self._hover_scroll_timer.start()
+        else:
+            self._hover_scroll_timer.stop()
+            self._hover_scroll_offset = 0
+
+    def _advance_hover_scroll(self) -> None:
+        if not self.underMouse() or not self._text_overflows():
+            self._sync_hover_scroll_timer()
+            self.update()
+            return
+
+        text_rect = self._text_rect()
+        text_width = self.fontMetrics().horizontalAdvance(self._current_text)
+        max_offset = max(1, text_width - max(12, text_rect.width() - 2) + 28)
+        self._hover_scroll_offset = (self._hover_scroll_offset + 2) % (max_offset + 28)
+        self.update()
+
+    def enterEvent(self, event) -> None:
+        self._hover_scroll_offset = 0
+        self._sync_hover_scroll_timer()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:
+        self._hover_scroll_offset = 0
+        self._sync_hover_scroll_timer()
+        self.update()
+        super().leaveEvent(event)
+
+    def resizeEvent(self, event) -> None:
+        self._hover_scroll_offset = 0
+        self._sync_hover_scroll_timer()
+        super().resizeEvent(event)
+
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing, True)
         painter.setRenderHint(QPainter.TextAntialiasing, True)
 
-        text_rect = self.rect().adjusted(10, 0, -10, 0)
+        text_rect = self._text_rect()
 
         painter.save()
         painter.setPen(self.palette().buttonText().color())
-        text = self.fontMetrics().elidedText(
-            self._current_text,
-            Qt.ElideRight,
-            max(12, text_rect.width() - 2),
-        )
-        painter.drawText(text_rect, Qt.AlignCenter | Qt.AlignVCenter, text)
+
+        if self.underMouse() and self._text_overflows():
+            painter.setClipRect(text_rect)
+            text_width = self.fontMetrics().horizontalAdvance(self._current_text)
+            x = text_rect.left() - self._hover_scroll_offset
+            painter.drawText(
+                x,
+                text_rect.top(),
+                text_width + 8,
+                text_rect.height(),
+                Qt.AlignLeft | Qt.AlignVCenter,
+                self._current_text,
+            )
+        else:
+            text = self.fontMetrics().elidedText(
+                self._current_text,
+                Qt.ElideRight,
+                max(12, text_rect.width() - 2),
+            )
+            painter.drawText(text_rect, Qt.AlignLeft | Qt.AlignVCenter, text)
+
         painter.restore()
 
 

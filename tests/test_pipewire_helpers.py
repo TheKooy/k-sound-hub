@@ -21,7 +21,7 @@ def test_parse_short_audio_nodes():
 
 def test_parse_loopback_module_ids_from_short_modules():
     lines = [
-        "536870925 module-loopback source=retour.monitor sink=alsa_output.usb-Generic_USB_Audio-00.HiFi__SPDIF__sink latency_msec=20 sink_input_properties=media.name=K-Sound Hub Return Mic Playback",
+        "536870925 module-loopback source=retour.monitor sink=alsa_output.test latency_msec=20 sink_input_properties=media.name=K-Sound Hub Return Mic Playback",
         "536870926 module-loopback source=micro sink=retour latency_msec=20 sink_input_properties=media.name=K-Sound Hub Return Mic Capture",
         "536870927 module-null-sink sink_name=ignore_me",
     ]

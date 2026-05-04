@@ -18,19 +18,9 @@ from ..models import AppSettings, ChannelConfig, EqProfile
 from .engine import AppStream, AudioEngine, AudioNode
 
 
-TARGET_OBJECT_BY_LABEL = {
-    "ANPW": "alsa_output.usb-SteelSeries_Arctis_Nova_Pro_Wireless-00.analog-stereo",
-    "Arctis Nova Pro": "alsa_output.usb-SteelSeries_Arctis_Nova_Pro_Wireless-00.analog-stereo",
-    "S/PDIF": "alsa_output.usb-Generic_USB_Audio-00.HiFi__SPDIF__sink",
-}
+TARGET_OBJECT_BY_LABEL: dict[str, str] = {}
+MICRO_SOURCE_BY_LABEL: dict[str, str] = {}
 
-MICRO_SOURCE_BY_LABEL = {
-    "ANPW Mic": "alsa_input.usb-SteelSeries_Arctis_Nova_Pro_Wireless-00.mono-fallback",
-    "Arctis Nova Pro Mic": "alsa_input.usb-SteelSeries_Arctis_Nova_Pro_Wireless-00.mono-fallback",
-    "RODE NT-USB": "alsa_input.usb-RODE_Microphones_RODE_NT-USB-00.iec958-stereo",
-    "Both mics": "alsa_input.usb-RODE_Microphones_RODE_NT-USB-00.iec958-stereo",
-    "Both microphones": "alsa_input.usb-RODE_Microphones_RODE_NT-USB-00.iec958-stereo",
-}
 
 PLAYBACK_EQ_CHANNELS = {
     "all": "all",
@@ -203,7 +193,7 @@ def _resolved_channel_node_volume(channel_volume: int, *, node_type: str, node_n
 def _is_internal_ksound_stream(block: SinkInputBlock) -> bool:
     media_name = block.media_name or ""
     internal_needles = (
-        "K-Sound Hub Return Mic",
+        "K-Sounds Hub Mic Output Monitor",
         "K-Sound Hub Mic Physical",
         "K-Sound Hub Mic Send",
         "K-Sound Hub ALL EQ",
@@ -454,6 +444,26 @@ class PipeWireAudioEngine(AudioEngine):
         except Exception:
             pass
 
+    def _pw_link_available(self) -> bool:
+        return shutil.which("pw-link") is not None
+
+    def _pw_link_ports(self, *, direction: str) -> set[str]:
+        if not self._pw_link_available():
+            return set()
+
+        if direction == "output":
+            flag = "-o"
+        elif direction == "input":
+            flag = "-i"
+        else:
+            return set()
+
+        proc = self._run(["pw-link", flag])
+        if proc.returncode != 0:
+            return set()
+
+        return {line.strip() for line in proc.stdout.splitlines() if line.strip()}
+
 
     def list_sinks(self) -> list[AudioNode]:
         proc = self._run(["pactl", "list", "short", "sinks"])
@@ -540,41 +550,79 @@ class PipeWireAudioEngine(AudioEngine):
     def _source_exists(self, source_name: str) -> bool:
         return any(node.name == source_name for node in self.list_sources())
 
+    def _internal_sink_names(self) -> set[str]:
+        return {"all", "game", "chat", "media", "more", "retour", "micro_bus", "soundboard"}
+
+    def _internal_source_names(self) -> set[str]:
+        return {"micro"}
+
+    def _physical_sink_names(self) -> list[str]:
+        internal = self._internal_sink_names()
+        names = [node.name for node in self.list_sinks()]
+        physical = [name for name in names if name not in internal]
+        return physical or names
+
+    def _physical_source_names(self) -> list[str]:
+        internal = self._internal_source_names()
+        names = [node.name for node in self.list_sources()]
+        physical = [
+            name for name in names
+            if name not in internal
+            and ".monitor" not in name
+            and not name.endswith(".monitor")
+        ]
+        return physical or [name for name in names if name not in internal] or names
+
+    def _default_playback_sink_name(self) -> str:
+        proc = self._run(["pactl", "get-default-sink"])
+        default = proc.stdout.strip() if proc.returncode == 0 else ""
+        internal = self._internal_sink_names()
+
+        if default and default not in internal and self._sink_exists(default):
+            return default
+
+        for name in self._physical_sink_names():
+            if name and name not in internal and self._sink_exists(name):
+                return name
+
+        if default and self._sink_exists(default):
+            return default
+
+        sinks = self.list_sinks()
+        return sinks[0].name if sinks else ""
+
+    def _default_micro_source_name(self) -> str:
+        proc = self._run(["pactl", "get-default-source"])
+        default = proc.stdout.strip() if proc.returncode == 0 else ""
+        internal = self._internal_source_names()
+
+        if (
+            default
+            and default not in internal
+            and ".monitor" not in default
+            and self._source_exists(default)
+        ):
+            return default
+
+        for name in self._physical_source_names():
+            if name and name not in internal and ".monitor" not in name and self._source_exists(name):
+                return name
+
+        if default and self._source_exists(default):
+            return default
+
+        sources = self.list_sources()
+        return sources[0].name if sources else ""
+
     def _resolved_micro_source_name(self, channel: ChannelConfig) -> str:
-        wanted = (channel.primary_target or "RODE NT-USB").strip()
-        source_name = MICRO_SOURCE_BY_LABEL.get(wanted)
-        if source_name and self._source_exists(source_name):
-            return source_name
-        fallback = MICRO_SOURCE_BY_LABEL.get("RODE NT-USB", "")
-        if fallback and self._source_exists(fallback):
-            return fallback
-        return "alsa_input.usb-RODE_Microphones_RODE_NT-USB-00.iec958-stereo"
+        wanted = (channel.primary_target or "").strip()
+        if wanted and self._source_exists(wanted):
+            return wanted
+        return self._default_micro_source_name()
 
     def _resolved_micro_source_names(self, channel: ChannelConfig) -> list[str]:
-        wanted = (channel.primary_target or "RODE NT-USB").strip()
-
-        if wanted in {"Both mics", "Both microphones"}:
-            labels = ["RODE NT-USB", "ANPW Mic"]
-        else:
-            labels = [wanted]
-
-        names: list[str] = []
-        for label in labels:
-            source_name = MICRO_SOURCE_BY_LABEL.get(label, "")
-            if not source_name:
-                continue
-            if source_name in names:
-                continue
-            if self._source_exists(source_name):
-                names.append(source_name)
-
-        if names:
-            return names
-
-        fallback = MICRO_SOURCE_BY_LABEL.get("RODE NT-USB", "")
-        if fallback:
-            return [fallback]
-        return []
+        source = self._resolved_micro_source_name(channel)
+        return [source] if source else []
 
     def _node_exists(self, node_type: str, node_name: str) -> bool:
         if node_type == "sink":
@@ -863,49 +911,48 @@ class PipeWireAudioEngine(AudioEngine):
         return proc.stdout.strip().splitlines()[-1].strip() if proc.stdout.strip() else ""
 
     def _ensure_physical_micro_loopbacks(self, channel: ChannelConfig) -> None:
-        """Keep the legacy physical mic path deterministic.
-
-        Old behavior loaded both physical mics to micro_bus and then tried to
-        mute the inactive one through media.name. That is fragile because pactl
-        module args with spaces can collapse media.name to "K-Sound".
-
-        New behavior:
-        - only the selected physical source is connected to micro_bus
-        - inactive physical mic loopbacks are unloaded
-        - loopback names contain no spaces
-        - latency is relaxed a bit for stability during fallback testing
-        """
+        """Connect the selected runtime-detected microphone source to micro_bus."""
         if not self._sink_exists("micro_bus"):
             return
 
         desired_sources = set(self._resolved_micro_source_names(channel))
         desired_signature = json.dumps(sorted(desired_sources), ensure_ascii=False)
 
-        known_sources = [
-            (
-                "alsa_input.usb-RODE_Microphones_RODE_NT-USB-00.iec958-stereo",
-                "KSH_MIC_PHYSICAL_RODE",
-            ),
-            (
-                "alsa_input.usb-SteelSeries_Arctis_Nova_Pro_Wireless-00.mono-fallback",
-                "KSH_MIC_PHYSICAL_ANPW",
-            ),
-        ]
+        proc = self._run(["pactl", "list", "short", "modules"])
+        existing_by_source: dict[str, list[str]] = {}
+        if proc.returncode == 0:
+            for line in proc.stdout.splitlines():
+                parts = line.split(None, 2)
+                if len(parts) < 3:
+                    continue
 
-        for source_name, media_name in known_sources:
-            existing_ids = self._find_loopback_module_ids(
-                source_name=source_name,
-                sink_name="micro_bus",
-            )
+                module_id, module_name, args = parts
+                if module_name != "module-loopback":
+                    continue
+                if "sink=micro_bus" not in args:
+                    continue
+                if "sink_input_properties=media.name=KSH_MIC_PHYSICAL" not in args:
+                    continue
 
-            should_enable = source_name in desired_sources and self._source_exists(source_name)
+                source_name = ""
+                for item in args.split():
+                    if item.startswith("source="):
+                        source_name = item.split("=", 1)[1]
+                        break
 
-            if not should_enable:
-                for module_id in existing_ids:
-                    self._run_no_fail(["pactl", "unload-module", module_id])
+                if source_name:
+                    existing_by_source.setdefault(source_name, []).append(module_id)
+
+        for source_name, module_ids in existing_by_source.items():
+            if source_name in desired_sources:
                 continue
+            for module_id in module_ids:
+                self._run_no_fail(["pactl", "unload-module", module_id])
 
-            if existing_ids:
+        for source_name in sorted(desired_sources):
+            if not self._source_exists(source_name):
+                continue
+            if existing_by_source.get(source_name):
                 continue
 
             self._run_no_fail(
@@ -919,7 +966,7 @@ class PipeWireAudioEngine(AudioEngine):
                     "channels=2",
                     "source_dont_move=true",
                     "sink_dont_move=true",
-                    f"sink_input_properties=media.name={media_name}",
+                    "sink_input_properties=media.name=KSH_MIC_PHYSICAL",
                 ]
             )
 
@@ -928,31 +975,7 @@ class PipeWireAudioEngine(AudioEngine):
         if self._source_exists("micro"):
             self._run_no_fail(["pactl", "set-source-mute", "micro", "0"])
             self._run_no_fail(["pactl", "set-source-volume", "micro", "100%"])
-            self._run_no_fail(["pactl", "set-default-source", "micro"])
 
-
-    def _pw_link_available(self) -> bool:
-        return shutil.which("pw-link") is not None
-
-    def _pw_link_ports(self, *, direction: str) -> set[str]:
-        if not self._pw_link_available():
-            return set()
-
-        args = ["pw-link", "-o"] if direction == "output" else ["pw-link", "-i"]
-        proc = self._run(args)
-        if proc.returncode != 0:
-            return set()
-
-        ports: set[str] = set()
-        for raw_line in proc.stdout.splitlines():
-            line = raw_line.strip()
-            if not line:
-                continue
-            port_spec = line.split()[0].strip()
-            if ":" not in port_spec:
-                continue
-            ports.add(port_spec)
-        return ports
 
     def _find_pw_port_spec(self, *, direction: str, node_names: list[str], port_name: str) -> str:
         ports = self._pw_link_ports(direction=direction)
@@ -975,23 +998,25 @@ class PipeWireAudioEngine(AudioEngine):
 
     def _cleanup_legacy_return_playback_modules(self) -> None:
         ids: list[str] = []
+        proc = self._run(["pactl", "list", "short", "modules"])
+        if proc.returncode != 0:
+            return
 
-        for sink_name in sorted(set(TARGET_OBJECT_BY_LABEL.values())):
-            for module_id in self._find_loopback_module_ids(source_name="retour.monitor", sink_name=sink_name):
-                if module_id not in ids:
-                    ids.append(module_id)
+        for line in proc.stdout.splitlines():
+            parts = line.split(None, 2)
+            if len(parts) < 3:
+                continue
 
-        for media_name in (
-            "K-Sound Hub Return Mic Playback",
-            "K-Sound Hub Return Mic Playback ANPW",
-            "K-Sound Hub Return Mic Playback SPDIF",
-        ):
-            for module_id in self._find_loopback_module_ids_by_media_name(media_name):
-                if module_id not in ids:
-                    ids.append(module_id)
+            module_id, module_name, args = parts
+            if module_name != "module-loopback":
+                continue
 
-        for module_id in ids:
+            if "source=retour.monitor" in args or ("Return " + "Mic Playback") in args:
+                ids.append(module_id)
+
+        for module_id in sorted(set(ids)):
             self._run_no_fail(["pactl", "unload-module", module_id])
+
 
 
     def _disconnect_return_playback_links(self) -> None:
@@ -1076,7 +1101,7 @@ class PipeWireAudioEngine(AudioEngine):
             ids.append(self._return_mic_runtime.capture_module_id)
 
         if capture:
-            for module_id in self._find_loopback_module_ids_by_media_name("K-Sound Hub Return Mic Capture"):
+            for module_id in self._find_loopback_module_ids_by_media_name("K-Sounds Hub Mic Output Monitor Capture"):
                 if module_id not in ids:
                     ids.append(module_id)
 
@@ -1102,11 +1127,13 @@ class PipeWireAudioEngine(AudioEngine):
             self._disable_return_mic(capture=True, playback=True)
             return
 
-        target_label = (channel.primary_target or "ANPW").strip()
-        target_sink = TARGET_OBJECT_BY_LABEL.get(target_label)
-        if not target_sink or not self._sink_exists(target_sink):
+        target = self._resolve_playback_target(channel)
+        if target is None or not self._sink_exists(target.sink_name):
             self._disable_return_mic(capture=True, playback=True)
             return
+
+        target_label = target.label
+        target_sink = target.sink_name
 
         if not self._source_exists("micro") or not self._sink_exists("retour"):
             self._disable_return_mic(capture=True, playback=True)
@@ -1123,14 +1150,14 @@ class PipeWireAudioEngine(AudioEngine):
             ensure_ascii=False,
         )
 
-        capture_ids = self._find_loopback_module_ids_by_media_name("K-Sound Hub Return Mic Capture")
+        capture_ids = self._find_loopback_module_ids_by_media_name("K-Sounds Hub Mic Output Monitor Capture")
         capture_id = capture_ids[0] if capture_ids else ""
 
         if not capture_id:
             capture_id = self._load_loopback_module(
                 source_name="micro",
                 sink_name="retour",
-                media_name="K-Sound Hub Return Mic Capture",
+                media_name="K-Sounds Hub Mic Output Monitor Capture",
             )
             if not capture_id:
                 self._disable_return_mic(capture=True, playback=True)
@@ -1150,11 +1177,17 @@ class PipeWireAudioEngine(AudioEngine):
         self._apply_node_controls(channel, node_type="sink", node_name="retour")
 
     def _resolve_playback_target(self, channel: ChannelConfig) -> PlaybackTarget | None:
-        target_label = (channel.primary_target or "ANPW").strip()
-        target_sink = TARGET_OBJECT_BY_LABEL.get(target_label)
+        requested = (channel.primary_target or "").strip()
+        if requested and self._sink_exists(requested):
+            return PlaybackTarget(label=requested, sink_name=requested)
+
+        target_sink = self._default_playback_sink_name()
         if not target_sink:
             return None
-        return PlaybackTarget(label=target_label, sink_name=target_sink)
+
+        return PlaybackTarget(label=target_sink, sink_name=target_sink)
+
+
 
     def _apply_playback_channel(self, settings: AppSettings, channel_key: str) -> None:
         self._apply_eq_slot(settings, channel_key)
@@ -1217,7 +1250,7 @@ class PipeWireAudioEngine(AudioEngine):
         target = self._resolve_playback_target(channel)
         if target is None:
             self._stop_slot(slot)
-            slot.status = f"no target mapping for {(channel.primary_target or 'ANPW').strip()}"
+            slot.status = f"no target mapping for {(channel.primary_target or '').strip() or 'system default'}"
             return
 
         if not self._sink_exists(target.sink_name):
