@@ -21,9 +21,9 @@ fi
 TAG="v$VERSION"
 DIST_DIR="$REPO_DIR/dist"
 BUILD_ROOT="$REPO_DIR/build/release"
-PACKAGE_DIR="$BUILD_ROOT/ksound-hub-v2-linux-release-$TAG"
-TAR_PATH="$DIST_DIR/ksound-hub-v2-linux-release-$TAG.tar.gz"
-ZIP_PATH="$DIST_DIR/ksound-hub-v2-linux-release-$TAG.zip"
+PACKAGE_DIR="$BUILD_ROOT/k-sounds-hub-linux-release-$TAG"
+TAR_PATH="$DIST_DIR/k-sounds-hub-linux-release-$TAG.tar.gz"
+ZIP_PATH="$DIST_DIR/k-sounds-hub-linux-release-$TAG.zip"
 SUMS_PATH="$DIST_DIR/SHA256SUMS.txt"
 
 rm -rf "$BUILD_ROOT"
@@ -58,7 +58,7 @@ if [[ -n "${KSH_APK_PATH:-}" ]]; then
     exit 1
   fi
   mkdir -p "$PACKAGE_DIR/optional/android"
-  cp -a "$KSH_APK_PATH" "$PACKAGE_DIR/optional/android/KSoundSoundboard.apk"
+  cp -a "$KSH_APK_PATH" "$PACKAGE_DIR/optional/android/KSoundsSoundboardRemote.apk"
 fi
 
 chmod +x "$PACKAGE_DIR/install.sh" "$PACKAGE_DIR/uninstall.sh" "$PACKAGE_DIR/scripts/"*.sh

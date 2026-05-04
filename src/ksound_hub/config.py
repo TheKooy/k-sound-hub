@@ -8,17 +8,17 @@ def _env_path(name: str, default: Path) -> Path:
     return Path(value).expanduser() if value else default
 
 _profile_suffix = os.environ.get("KSH_PROFILE_SUFFIX", "").strip()
-_default_app_name = "K-Sound Hub" + (f" {_profile_suffix}" if _profile_suffix else "")
+_default_app_name = "K-Sounds Hub" + (f" {_profile_suffix}" if _profile_suffix else "")
 APP_NAME = os.environ.get("KSH_APP_NAME", _default_app_name)
-APP_VERSION = "0.3.1"
+APP_VERSION = "0.3.2"
 ORG_NAME = os.environ.get("KSH_ORG_NAME", APP_NAME)
-ORG_DOMAIN = os.environ.get("KSH_ORG_DOMAIN", "local.ksoundhub.v2")
+ORG_DOMAIN = os.environ.get("KSH_ORG_DOMAIN", "local.ksoundshub")
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 ASSETS_DIR = PACKAGE_DIR / "assets"
 APP_ICON_PATH = ASSETS_DIR / "app_icon.png"
 
-CONFIG_DIR = _env_path("KSH_CONFIG_DIR", Path.home() / ".config" / "ksound-hub-v2")
+CONFIG_DIR = _env_path("KSH_CONFIG_DIR", Path.home() / ".config" / "k-sounds-hub")
 SETTINGS_PATH = CONFIG_DIR / "settings.json"
 LOG_DIR = CONFIG_DIR / "logs"
 RUNTIME_DIR = CONFIG_DIR / "runtime"
@@ -32,7 +32,7 @@ HUD_SHARED_CONFIG_PATH = HUD_SHARED_STATE_DIR / "config.ini"
 
 IPC_SOCKET_PATH = os.environ.get(
     "KSH_IPC_SOCKET_PATH",
-    f"/tmp/ksound_hub_audio_v2_{os.getuid()}.sock",
+    f"/tmp/ksounds_hub_audio_{os.getuid()}.sock",
 )
 
 OVERLAY_DURATION_MS = 900

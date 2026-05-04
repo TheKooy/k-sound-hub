@@ -1,8 +1,8 @@
 [Desktop Entry]
 Type=Application
 Version=1.0
-Name=K-Sound Hub V2
-Comment=Start K-Sound Hub V2 on login
+Name=K-Sounds Hub
+Comment=Start K-Sounds Hub on login
 Exec=__REPO_DIR__/scripts/start_ksound_hub_v2.sh
 Icon=__REPO_DIR__/src/ksound_hub/assets/app_icon.png
 Terminal=false

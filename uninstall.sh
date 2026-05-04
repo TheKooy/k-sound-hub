@@ -1,18 +1,19 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-APP_ID="ksound-hub-v2"
+APP_ID="k-sounds-hub"
 DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
 CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
 APP_ROOT="$DATA_HOME/$APP_ID"
-BIN_PATH="$HOME/.local/bin/ksound-hub-v2"
-DESKTOP_ENTRY_PATH="$DATA_HOME/applications/ksound-hub-v2.desktop"
-DESKTOP_SHORTCUT_PATH="$HOME/Desktop/ksound-hub-v2.desktop"
+BIN_PATH="$HOME/.local/bin/k-sounds-hub"
+LEGACY_BIN_PATH="$HOME/.local/bin/ksound-hub-v2"
+DESKTOP_ENTRY_PATH="$DATA_HOME/applications/k-sounds-hub.desktop"
+DESKTOP_SHORTCUT_PATH="$HOME/Desktop/k-sounds-hub.desktop"
 REMOVE_CONFIG=0
 
 usage() {
   cat <<'USAGE'
-K-Sound Hub V2 user uninstall
+K-Sounds Hub user uninstall
 
 Usage:
   ./uninstall.sh [--remove-config]
@@ -30,18 +31,18 @@ for arg in "$@"; do
   esac
 done
 
-rm -f "$BIN_PATH" "$DESKTOP_ENTRY_PATH" "$DESKTOP_SHORTCUT_PATH"
+rm -f "$BIN_PATH" "$LEGACY_BIN_PATH" "$DESKTOP_ENTRY_PATH" "$DESKTOP_SHORTCUT_PATH"
 rm -rf "$APP_ROOT"
 
 if (( REMOVE_CONFIG )); then
-  rm -rf "$CONFIG_HOME/ksound-hub-v2"
+  rm -rf "$CONFIG_HOME/k-sounds-hub"
 fi
 
 command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$DATA_HOME/applications" >/dev/null 2>&1 || true
 command -v kbuildsycoca6 >/dev/null 2>&1 && kbuildsycoca6 >/dev/null 2>&1 || true
 
 cat <<EOF_DONE
-K-Sound Hub V2 user install removed.
+K-Sounds Hub user install removed.
 
 Removed:
   $APP_ROOT

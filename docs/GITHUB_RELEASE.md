@@ -38,14 +38,14 @@ PY
 )"
 TAG="v$VERSION"
 
-git tag -a "$TAG" -m "K-Sound Hub $TAG"
+git tag -a "$TAG" -m "K-Sounds Hub $TAG"
 git push origin main "$TAG"
 
 gh release create "$TAG" \
-  dist/ksound-hub-v2-linux-release-$TAG.tar.gz \
-  dist/ksound-hub-v2-linux-release-$TAG.zip \
+  dist/k-sounds-hub-linux-release-$TAG.tar.gz \
+  dist/k-sounds-hub-linux-release-$TAG.zip \
   dist/SHA256SUMS.txt \
-  --title "K-Sound Hub $TAG" \
+  --title "K-Sounds Hub $TAG" \
   --notes-file "RELEASE_NOTES_$TAG.md"
 ```
 
@@ -55,5 +55,5 @@ Generated APK files should normally be release assets, not Git-tracked source fi
 If you have an APK ready, package it with:
 
 ```bash
-KSH_APK_PATH=/path/to/KSoundSoundboard.apk ./scripts/package_release.sh
+KSH_APK_PATH=/path/to/KSoundsSoundboardRemote.apk ./scripts/package_release.sh
 ```

@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..audio.pipewire_v2_final import PipeWireAudioEngine
-from ..config import APP_ICON_PATH, APP_NAME, APP_VERSION, IPC_SOCKET_PATH
+from ..config import APP_ICON_PATH, APP_NAME, IPC_SOCKET_PATH
 from ..ipc import AudioIpcServer
 from ..settings_store import SettingsStore
 from .channel_widget import ChannelWidget
@@ -102,7 +102,7 @@ class MainWindow(QMainWindow):
         self.ipc_server.message_received.connect(self.handle_ipc_message)
         self.ipc_server.start()
 
-        self.setWindowTitle(f"{APP_NAME} {APP_VERSION}")
+        self.setWindowTitle(APP_NAME)
         if APP_ICON_PATH.is_file():
             self.setWindowIcon(QIcon(str(APP_ICON_PATH)))
         self.resize(1440, 860)
@@ -551,7 +551,7 @@ class MainWindow(QMainWindow):
 
         icon = QIcon(str(APP_ICON_PATH)) if APP_ICON_PATH.is_file() else self.windowIcon()
         tray = QSystemTrayIcon(icon, self)
-        tray.setToolTip(f"{APP_NAME} {APP_VERSION}")
+        tray.setToolTip(APP_NAME)
         tray.activated.connect(self._on_tray_activated)
 
         menu = QMenu(self)
@@ -684,7 +684,7 @@ class MainWindow(QMainWindow):
                 if not self._tray_message_shown:
                     self.tray_icon.showMessage(
                         APP_NAME,
-                        "K-Sound Hub is still running in the system tray.",
+                        "K-Sounds Hub is still running in the system tray.",
                         QSystemTrayIcon.Information,
                         1800,
                     )

@@ -71,7 +71,7 @@ public class MainActivity extends Activity {
             showWeb(baseUrl, token);
             rediscoverInBackgroundAndUpdate(token);
         } else {
-            showPairingUi("Searching for K-Sound Hub on your network...");
+            showPairingUi("Searching for K-Sounds Hub on your network...");
             discoverAndShow();
         }
     }
@@ -153,7 +153,7 @@ public class MainActivity extends Activity {
         card.addView(title);
 
         TextView subtitle = makeText(
-            "Local Android remote for your K-Sound Hub soundboard.",
+            "Local Android remote for your K-Sounds Hub soundboard.",
             narrow ? 12 : 14,
             Color.rgb(147, 164, 184),
             Typeface.NORMAL
@@ -321,7 +321,7 @@ public class MainActivity extends Activity {
     private void discoverAndShow() {
         setPairControlsEnabled(false);
         setSearching(true);
-        setStatus("Searching for K-Sound Hub on your LAN...");
+        setStatus("Searching for K-Sounds Hub on your LAN...");
 
         new Thread(new Runnable() {
             @Override

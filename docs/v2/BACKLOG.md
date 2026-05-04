@@ -1,4 +1,4 @@
-# K-Sound Hub V2 backlog
+# K-Sounds Hub V2 backlog
 
 This file tracks known remaining work after the cleanup.
 

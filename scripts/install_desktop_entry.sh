@@ -5,8 +5,8 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PACKAGING_DIR="$REPO_DIR/packaging/linux"
 TEMPLATE_PATH="$PACKAGING_DIR/ksound-hub.desktop.template"
 USER_APPS_DIR="$HOME/.local/share/applications"
-USER_DESKTOP_PATH="$USER_APPS_DIR/ksound-hub-v2.desktop"
-DESKTOP_SHORTCUT_PATH="$HOME/Desktop/ksound-hub-v2.desktop"
+USER_DESKTOP_PATH="$USER_APPS_DIR/k-sounds-hub.desktop"
+DESKTOP_SHORTCUT_PATH="$HOME/Desktop/k-sounds-hub.desktop"
 EXEC_PATH="$REPO_DIR/scripts/start_ksound_hub_v2.sh"
 ICON_PATH="$REPO_DIR/src/ksound_hub/assets/app_icon.png"
 
@@ -31,7 +31,7 @@ if [[ ! -f "$TEMPLATE_PATH" ]]; then
 [Desktop Entry]
 Type=Application
 Version=1.0
-Name=K-Sound Hub V2
+Name=K-Sounds Hub
 Comment=PipeWire-first modular Linux audio hub V2
 Exec=__EXEC__
 Icon=__ICON__

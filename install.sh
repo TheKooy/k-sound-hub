@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-APP_ID="ksound-hub-v2"
-APP_NAME="K-Sound Hub V2"
+APP_ID="k-sounds-hub"
+APP_NAME="K-Sounds Hub"
 SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
 CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
@@ -10,10 +10,11 @@ APP_ROOT="$DATA_HOME/$APP_ID"
 APP_DIR="$APP_ROOT/app"
 VENV_DIR="$APP_DIR/.venv"
 BIN_DIR="$HOME/.local/bin"
-WRAPPER_PATH="$BIN_DIR/ksound-hub-v2"
+WRAPPER_PATH="$BIN_DIR/k-sounds-hub"
+LEGACY_WRAPPER_PATH="$BIN_DIR/ksound-hub-v2"
 APPS_DIR="$DATA_HOME/applications"
-DESKTOP_ENTRY_PATH="$APPS_DIR/ksound-hub-v2.desktop"
-DESKTOP_SHORTCUT_PATH="$HOME/Desktop/ksound-hub-v2.desktop"
+DESKTOP_ENTRY_PATH="$APPS_DIR/k-sounds-hub.desktop"
+DESKTOP_SHORTCUT_PATH="$HOME/Desktop/k-sounds-hub.desktop"
 
 ASSUME_YES=0
 INSTALL_SYSTEM_DEPS=0
@@ -24,17 +25,17 @@ RUN_CHECK=1
 
 usage() {
   cat <<'USAGE'
-K-Sound Hub V2 non-invasive user installer
+K-Sounds Hub non-invasive user installer
 
 Usage:
   ./install.sh [options]
 
 Default behavior:
   - installs only into the current user's home directory
-  - copies the app to ~/.local/share/ksound-hub-v2/app
-  - creates ~/.local/share/ksound-hub-v2/app/.venv
-  - creates ~/.local/bin/ksound-hub-v2
-  - creates ~/.local/share/applications/ksound-hub-v2.desktop
+  - copies the app to ~/.local/share/k-sounds-hub/app
+  - creates ~/.local/share/k-sounds-hub/app/.venv
+  - creates ~/.local/bin/k-sounds-hub
+  - creates ~/.local/share/applications/k-sounds-hub.desktop
   - does not enable autostart
   - does not write /etc, /usr, /opt, or global PipeWire config
 
@@ -265,6 +266,13 @@ exec "$APP_DIR/scripts/start_ksound_hub_v2.sh" "\$@"
 EOF_WRAPPER
   chmod +x "$WRAPPER_PATH"
 
+  cat > "$LEGACY_WRAPPER_PATH" <<EOF_LEGACY_WRAPPER
+#!/usr/bin/env bash
+set -Eeuo pipefail
+exec "$WRAPPER_PATH" "$@"
+EOF_LEGACY_WRAPPER
+  chmod +x "$LEGACY_WRAPPER_PATH"
+
   case ":$PATH:" in
     *":$BIN_DIR:"*) ;;
     *) warn "$BIN_DIR is not in PATH. Add it to PATH or launch with: $WRAPPER_PATH" ;;
@@ -328,7 +336,7 @@ main() {
   if (( INSTALL_SYSTEM_DEPS )); then
     install_system_deps
   else
-    local missing_file="/tmp/ksound-hub-missing.$$"
+    local missing_file="/tmp/k-sounds-hub-missing.$$"
     missing_runtime_commands >"$missing_file"
     if [[ -s "$missing_file" ]]; then
       rm -f "$missing_file"
@@ -357,10 +365,10 @@ App menu launcher:
   $DESKTOP_ENTRY_PATH
 
 User config will live in:
-  $CONFIG_HOME/ksound-hub-v2
+  $CONFIG_HOME/k-sounds-hub
 
 Start with:
-  ksound-hub-v2
+  k-sounds-hub
 
 No autostart was enabled. No global PipeWire config was written.
 EOF_DONE

@@ -1,4 +1,4 @@
-# K-Sound Hub V2
+# K-Sounds Hub V2
 
 This document describes the current V2 state of the project.
 
@@ -6,12 +6,12 @@ Older tranche/fix notes were removed from the working tree because they describe
 
 ## Current runtime shape
 
-K-Sound Hub V2 is the active project. The old `~/k-sound-hub` V1 tree is obsolete and should not be used.
+K-Sounds Hub V2 is the active project. The old `~/k-sounds-hub` V1 tree is obsolete and should not be used.
 
 Current paths:
 
-- Repo: `~/k-sound-hub-v2`
-- Config: `~/.config/ksound-hub-v2`
+- Repo: `~/k-sounds-hub-v2`
+- Config: `~/.config/k-sounds-hub`
 - IPC socket: `/tmp/ksound_hub_audio_v2_<uid>.sock`
 - Launcher: `scripts/start_ksound_hub_v2.sh`
 - Clean start wrapper: `~/.local/bin/start_ksound_v2_clean.sh`
@@ -47,7 +47,7 @@ The current playback render path uses the native C++ engine:
 
 The engine reads runtime state from:
 
-- `~/.config/ksound-hub-v2/runtime/native-engine/`
+- `~/.config/k-sounds-hub/runtime/native-engine/`
 
 It owns the current final playback render path.
 
@@ -75,8 +75,8 @@ APK signing is local and automatic. The repo must not contain signing secrets.
 
 Default local signing files:
 
-- `~/.local/share/ksound-hub-v2/android/ksound-soundboard.keystore`
-- `~/.local/share/ksound-hub-v2/android/signing.env`
+- `~/.local/share/k-sounds-hub/android/ksound-soundboard.keystore`
+- `~/.local/share/k-sounds-hub/android/signing.env`
 
 The APK build script can generate a local keystore automatically if none exists:
 
@@ -108,7 +108,7 @@ Completed:
 
 - V1 launch fallbacks removed from source.
 - Installed V1 launchers removed.
-- Old `~/k-sound-hub` tree archived and removed.
+- Old `~/k-sounds-hub` tree archived and removed.
 - Old `~/.config/ksound-hub` config archived and removed.
 - Tracked `.venv` symlink removed from Git.
 - V2 now uses a real local `.venv/`.

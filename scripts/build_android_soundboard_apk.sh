@@ -18,7 +18,7 @@ SIGN_DIR="${KSOUND_SOUNDBOARD_SIGN_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/kso
 SIGN_ENV="$SIGN_DIR/signing.env"
 KEYSTORE="${KSOUND_SOUNDBOARD_KEYSTORE:-$SIGN_DIR/ksound-soundboard.keystore}"
 
-SIGNED_APK="$DIST_DIR/KSoundSoundboard.apk"
+SIGNED_APK="$DIST_DIR/KSoundsSoundboardRemote.apk"
 UNSIGNED_APK="$APP_DIR/unsigned.unaligned.apk"
 ALIGNED_APK="$APP_DIR/aligned.apk"
 
@@ -70,7 +70,7 @@ create_local_keystore() {
     -keyalg RSA \
     -keysize 2048 \
     -validity 36500 \
-    -dname "CN=K-Sound Soundboard, OU=K-Sound Hub, O=Local, L=Local, ST=Local, C=BE" \
+    -dname "CN=K-Sounds Soundboard Remote, OU=K-Sounds Hub, O=Local, L=Local, ST=Local, C=BE" \
     >/dev/null
 
   chmod 600 "$KEYSTORE"

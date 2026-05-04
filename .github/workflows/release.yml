@@ -27,9 +27,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" \
-            dist/ksound-hub-v2-linux-release-$GITHUB_REF_NAME.tar.gz \
-            dist/ksound-hub-v2-linux-release-$GITHUB_REF_NAME.zip \
+            dist/k-sounds-hub-linux-release-$GITHUB_REF_NAME.tar.gz \
+            dist/k-sounds-hub-linux-release-$GITHUB_REF_NAME.zip \
             dist/SHA256SUMS.txt \
-            --title "K-Sound Hub $GITHUB_REF_NAME" \
+            --title "K-Sounds Hub $GITHUB_REF_NAME" \
             --generate-notes \
             --latest

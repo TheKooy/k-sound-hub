@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from ..config import APP_NAME, APP_VERSION
 from ..models import AppSettings
 from .window_geometry import install_window_geometry
 
@@ -32,7 +33,7 @@ class SettingsDialog(QDialog):
         wallpaper_reset_callback=None,
     ):
         super().__init__(parent)
-        self.setWindowTitle("K-Sound Hub Settings")
+        self.setWindowTitle(f"{APP_NAME} Settings")
         self.settings = copy.deepcopy(settings)
         self._wallpaper_preview_callback = wallpaper_preview_callback
         self._wallpaper_reset_callback = wallpaper_reset_callback
@@ -46,6 +47,10 @@ class SettingsDialog(QDialog):
         title = QLabel("Global settings")
         title.setObjectName("pageTitle")
         root.addWidget(title)
+
+        version_label = QLabel(f"{APP_NAME} {APP_VERSION}")
+        version_label.setObjectName("mutedLabel")
+        root.addWidget(version_label)
 
         self.overlay_check = QCheckBox("Enable overlay")
         self.overlay_check.setChecked(self.settings.overlay_enabled)

@@ -1,7 +1,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.kooy.ksoundsoundboard"
-    android:versionCode="26050317"
-    android:versionName="0.2605031748">
+    android:versionCode="26050418"
+    android:versionName="0.3.2">
 
     <uses-sdk
         android:minSdkVersion="23"
@@ -10,7 +10,7 @@
     <uses-permission android:name="android.permission.INTERNET" />
 
     <application
-        android:label="K-Sound Soundboard"
+        android:label="K-Sounds Soundboard Remote"
         android:icon="@drawable/ic_launcher"
         android:theme="@style/AppTheme"
         android:usesCleartextTraffic="true"

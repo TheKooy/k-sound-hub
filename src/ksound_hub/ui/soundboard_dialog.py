@@ -1894,7 +1894,7 @@ class SoundboardDialog(QDialog):
                 "Code Android :\n\n"
                 f"{pin}\n\n"
                 "Expire dans 5 minutes.\n\n"
-                "Ouvre l'app Android K-Sound Soundboard, laisse-la trouver le PC, "
+                "Ouvre l'app Android K-Sounds Soundboard Remote, laisse-la trouver le PC, "
                 "puis entre ce code."
             ),
         )

@@ -1,6 +1,6 @@
-# K-Sound Hub
+# K-Sounds Hub
 
-K-Sound Hub is a PipeWire-first modular Linux audio hub.
+K-Sounds Hub is a PipeWire-first modular Linux audio hub.
 
 It provides a focused desktop GUI for Linux audio routing, per-channel control, persistent settings, optional overlay feedback, IPC control shortcuts, live level meters, and PipeWire-based app routing helpers.
 
@@ -8,7 +8,7 @@ This project is being developed with AI assistance.
 
 ## Status
 
-Current version: 0.3.1
+Current version: 0.3.2
 
 Main tested environment:
 
@@ -42,17 +42,17 @@ Download the latest Linux release archive, extract it, then run:
 
 Start the app with:
 
-    ksound-hub-v2
+    k-sounds-hub
 
 The default install is intentionally non-invasive.
 
 It installs into:
 
-    ~/.local/share/ksound-hub-v2/app
-    ~/.local/share/ksound-hub-v2/app/.venv
-    ~/.local/bin/ksound-hub-v2
-    ~/.local/share/applications/ksound-hub-v2.desktop
-    ~/.config/ksound-hub-v2
+    ~/.local/share/k-sounds-hub/app
+    ~/.local/share/k-sounds-hub/app/.venv
+    ~/.local/bin/k-sounds-hub
+    ~/.local/share/applications/k-sounds-hub.desktop
+    ~/.config/k-sounds-hub
 
 It does not:
 
@@ -77,11 +77,11 @@ See docs/INSTALL.md for details.
 
 ## Uninstall
 
-    ~/.local/share/ksound-hub-v2/app/uninstall.sh
+    ~/.local/share/k-sounds-hub/app/uninstall.sh
 
 Remove saved config too:
 
-    ~/.local/share/ksound-hub-v2/app/uninstall.sh --remove-config
+    ~/.local/share/k-sounds-hub/app/uninstall.sh --remove-config
 
 ## Runtime dependencies
 
@@ -108,8 +108,8 @@ Python dependencies are installed into the app-local virtual environment:
 
 For development, clone the repository and use an editable Python install:
 
-    git clone https://github.com/TheKooy/k-sound-hub.git
-    cd k-sound-hub
+    git clone https://github.com/TheKooy/k-sounds-hub.git
+    cd k-sounds-hub
     python -m venv .venv
     source .venv/bin/activate
     python -m pip install --upgrade pip setuptools wheel
@@ -132,8 +132,8 @@ Maintainers can create local release archives with:
 
 This creates:
 
-    dist/ksound-hub-v2-linux-release-vX.Y.Z.tar.gz
-    dist/ksound-hub-v2-linux-release-vX.Y.Z.zip
+    dist/k-sounds-hub-linux-release-vX.Y.Z.tar.gz
+    dist/k-sounds-hub-linux-release-vX.Y.Z.zip
     dist/SHA256SUMS.txt
 
 Release archives and APK files should be uploaded as GitHub Release assets, not committed to Git.
@@ -148,7 +148,7 @@ Generated APK files are optional release assets and should not be committed to G
 
 ## Repository
 
-Repository: https://github.com/TheKooy/k-sound-hub
+Repository: https://github.com/TheKooy/k-sounds-hub
 
 Default public branch: main
 
@@ -156,4 +156,4 @@ Current active development branch: feature/native-micro-engine
 
 ## Disclaimer
 
-K-Sound Hub interacts with the user's Linux audio session through PipeWire/PulseAudio-compatible tools. It is intended to be non-destructive, but it is still audio-routing software. Review scripts before running them on important systems.
+K-Sounds Hub interacts with the user's Linux audio session through PipeWire/PulseAudio-compatible tools. It is intended to be non-destructive, but it is still audio-routing software. Review scripts before running them on important systems.

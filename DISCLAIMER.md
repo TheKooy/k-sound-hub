@@ -1,6 +1,6 @@
 # Disclaimer
 
-K-Sound Hub is provided for experimentation, personal use, testing and development.
+K-Sounds Hub is provided for experimentation, personal use, testing and development.
 
 The author declines all responsibility for:
 

@@ -5,11 +5,11 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VENV_DIR="$REPO_DIR/.venv"
 
 export KSH_PROFILE_SUFFIX="V2"
-export KSH_APP_NAME="K-Sound Hub V2"
-export KSH_ORG_NAME="K-Sound Hub V2"
-export KSH_ORG_DOMAIN="local.ksoundhub.v2"
-export KSH_CONFIG_DIR="${KSH_CONFIG_DIR:-$HOME/.config/ksound-hub-v2}"
-export KSH_IPC_SOCKET_PATH="${KSH_IPC_SOCKET_PATH:-/tmp/ksound_hub_audio_v2_$(id -u).sock}"
+export KSH_APP_NAME="K-Sounds Hub"
+export KSH_ORG_NAME="K-Sounds Hub"
+export KSH_ORG_DOMAIN="local.ksoundshub"
+export KSH_CONFIG_DIR="${KSH_CONFIG_DIR:-$HOME/.config/k-sounds-hub}"
+export KSH_IPC_SOCKET_PATH="${KSH_IPC_SOCKET_PATH:-/tmp/ksounds_hub_audio_$(id -u).sock}"
 export KSH_HUD_STATE_DIR="${KSH_HUD_STATE_DIR:-$HOME/.config/audio-stack/hud_overlay}"
 
 # Stable micro path defaults.

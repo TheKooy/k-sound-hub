@@ -1,17 +1,17 @@
 # Installation
 
-K-Sound Hub uses a non-invasive user install by default.
+K-Sounds Hub uses a non-invasive user install by default.
 
 ## What gets installed
 
 Default install paths:
 
 ```text
-~/.local/share/ksound-hub-v2/app        application files
-~/.local/share/ksound-hub-v2/app/.venv  Python virtual environment
-~/.local/bin/ksound-hub-v2              user command
-~/.local/share/applications/ksound-hub-v2.desktop
-~/.config/ksound-hub-v2                 user config, created at runtime
+~/.local/share/k-sounds-hub/app        application files
+~/.local/share/k-sounds-hub/app/.venv  Python virtual environment
+~/.local/bin/k-sounds-hub              user command
+~/.local/share/applications/k-sounds-hub.desktop
+~/.config/k-sounds-hub                 user config, created at runtime
 ```
 
 The installer does **not**:
@@ -45,19 +45,19 @@ For non-interactive distro package installs where supported:
 ## Start
 
 ```bash
-ksound-hub-v2
+k-sounds-hub
 ```
 
 ## Uninstall
 
 ```bash
-~/.local/share/ksound-hub-v2/app/uninstall.sh
+~/.local/share/k-sounds-hub/app/uninstall.sh
 ```
 
 Remove saved config too:
 
 ```bash
-~/.local/share/ksound-hub-v2/app/uninstall.sh --remove-config
+~/.local/share/k-sounds-hub/app/uninstall.sh --remove-config
 ```
 
 ## Runtime dependencies
