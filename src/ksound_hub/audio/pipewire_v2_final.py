@@ -111,7 +111,7 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
                 pass
 
     def _kill_legacy_python_render(self) -> None:
-        for pattern in ("v2_final_mixer.py", "pacat --playback", "pw-cat --playback"):
+        for pattern in ("pacat --playback", "pw-cat --playback"):
             try:
                 proc = self._run(["pgrep", "-af", pattern])
             except Exception:
