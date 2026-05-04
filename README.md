@@ -2,293 +2,158 @@
 
 K-Sound Hub is a PipeWire-first modular Linux audio hub.
 
-It is built for Linux desktop audio routing with a focused GUI, per-channel control, persistent settings, optional wallpaper/background styling, overlay feedback, IPC control shortcuts, live level meters, and PipeWire-based app routing helpers.
+It provides a focused desktop GUI for Linux audio routing, per-channel control, persistent settings, optional overlay feedback, IPC control shortcuts, live level meters, and PipeWire-based app routing helpers.
 
-> This project is being developed with AI assistance.
+This project is being developed with AI assistance.
 
-## Repository
+## Status
 
-- Repository: `https://github.com/TheKooy/k-sound-hub`
-- Default branch: `main`
+Current version: 0.3.1
 
-## Current target
+Main tested environment:
 
-K-Sound Hub currently targets:
-
-- Linux
+- EndeavourOS / Arch Linux
+- KDE Plasma / Wayland
 - PipeWire
 - WirePlumber
 - Python 3.11+
-- PySide6
-- KDE Plasma / Wayland as the main tested environment
 
-The project is installable and runnable as a normal Python application.
+Other major Linux distributions are supported on a best-effort basis through the non-invasive installer.
 
-## Features currently present
+## Features
 
-- modular channel UI
-- persistent settings
+- fixed channel set: ALL, GAME, CHAT, MEDIA, MORE, MICRO, RETOUR-MIC
 - per-channel volume and mute
 - per-channel EQ profile selection and editing
 - live signal meter widgets
 - optional on-screen overlay feedback
 - IPC control for external shortcuts
-- optional wallpaper background with blur and dark overlay
-- custom app icon support
+- optional wallpaper/background styling
 - tray-capable close behavior
-- desktop launcher generation script
-- manual autostart support
+- optional Android soundboard remote source
+
+## Recommended user installation
+
+For normal users, use a GitHub Release archive instead of cloning the repository.
+
+Download the latest Linux release archive, extract it, then run:
+
+    ./install.sh
+
+Start the app with:
+
+    ksound-hub-v2
+
+The default install is intentionally non-invasive.
+
+It installs into:
+
+    ~/.local/share/ksound-hub-v2/app
+    ~/.local/share/ksound-hub-v2/app/.venv
+    ~/.local/bin/ksound-hub-v2
+    ~/.local/share/applications/ksound-hub-v2.desktop
+    ~/.config/ksound-hub-v2
+
+It does not:
+
+- write to /etc
+- write to /usr
+- write to /opt
+- enable autostart
+- write global PipeWire configuration
+- remove distro packages during uninstall
+
+If required system dependencies are missing, the installer stops and tells you what is missing.
+
+To let the installer install distro packages with sudo:
+
+    ./install.sh --install-system-deps
+
+For non-interactive package installation where supported:
+
+    ./install.sh --install-system-deps --yes
+
+See docs/INSTALL.md for details.
+
+## Uninstall
+
+    ~/.local/share/ksound-hub-v2/app/uninstall.sh
+
+Remove saved config too:
+
+    ~/.local/share/ksound-hub-v2/app/uninstall.sh --remove-config
 
 ## Runtime dependencies
 
-Python runtime dependencies:
+Required commands:
 
-- `PySide6`
-- `numpy`
+- python3 3.11 or newer
+- pactl
+- parec
+- pw-cat
+- ffmpeg
 
-System commands expected on Linux:
+Expected audio stack:
 
-- `pactl`
-- `parec`
-- `pw-cat`
-- `ffmpeg`
-
-PipeWire services expected:
-
-- `pipewire`
-- `pipewire-pulse`
-- `wireplumber`
-
-## Linux package notes
-
-### Generic Linux
-
-Install these before setting up the Python environment:
-
-- Python 3.11+
-- `python-venv` support or equivalent
-- `pip`
 - PipeWire
+- PipeWire PulseAudio compatibility
 - WirePlumber
-- PulseAudio compatibility for PipeWire
-- `ffmpeg`
 
-Package names vary by distribution.
+Python dependencies are installed into the app-local virtual environment:
 
-### Arch / EndeavourOS
-
-Typical packages:
-
-```bash
-sudo pacman -S --needed python python-pip python-virtualenv pipewire pipewire-pulse wireplumber ffmpeg
-```
-
-If `parec` is missing on the system, also install:
-
-```bash
-sudo pacman -S --needed libpulse
-```
-
-## Installation
-
-### 1. Clone the repository
-
-```bash
-git clone https://github.com/TheKooy/k-sound-hub.git
-cd k-sound-hub
-```
-
-### 2. Create a virtual environment
-
-```bash
-python -m venv .venv
-source .venv/bin/activate
-```
-
-### 3. Install the Python package and dependencies
-
-```bash
-python -m pip install --upgrade pip setuptools wheel
-python -m pip install -e .
-```
-
-### 4. Check the local environment
-
-```bash
-./scripts/check_k_sound_hub_env.sh
-```
-
-This checks:
-
-- required Linux commands
-- PipeWire / WirePlumber services
-- Python modules used by the app
-
-### 5. Start the application
-
-Recommended launcher:
-
-```bash
-./scripts/start_ksound_hub_v2.sh
-```
-
-Alternative commands:
-
-```bash
-ksound-hub
-```
-
-or:
-
-```bash
-python -m ksound_hub.app
-```
-
-## Desktop launcher
-
-K-Sound Hub does **not** add itself to autostart automatically.
-
-A launcher file can be generated manually from the project with:
-
-```bash
-./scripts/install_desktop_entry.sh
-```
-
-That installs the launcher into your user applications directory:
-
-```text
-~/.local/share/applications/ksound-hub.desktop
-```
-
-### Add K-Sound Hub to the application launcher menu
-
-On KDE Plasma or similar desktop environments:
-
-```bash
-./scripts/install_desktop_entry.sh
-```
-
-Then search for **K-Sound Hub** in the application launcher.
-
-### Create a desktop shortcut
-
-To also copy the launcher to the desktop:
-
-```bash
-./scripts/install_desktop_entry.sh --desktop-shortcut
-```
-
-## Autostart
-
-K-Sound Hub does **not** enable autostart during installation.
-
-Autostart remains a manual choice.
-
-If autostart is wanted later, use the provided start script:
-
-```bash
-$HOME/k-sound-hub-v2/scripts/start_ksound_hub_v2.sh
-```
-
-If a desktop-file autostart template is present in the project, adjust its paths manually and place it in the appropriate autostart location for the desktop environment.
-
-## Channel roadmap
-
-The current build ships with the fixed built-in channel set:
-
-- ALL
-- GAME
-- CHAT
-- MEDIA
-- MORE
-- MICRO
-- RETOUR-MIC
-
-Custom channels and extra routing presets are planned, but are not enabled yet in the settings UI.
-
-## Tray behavior
-
-K-Sound Hub supports closing to the system tray instead of fully exiting.
-
-This behavior is controlled from the application settings.
-
-When the setting is enabled:
-
-- clicking the window close button sends the app to the tray
-- restoring can be done from the tray icon
-- quitting can be done from the tray menu
-
-When the setting is disabled:
-
-- clicking the window close button fully exits the app
-
-## Updating dependencies later
-
-Inside the repository:
-
-```bash
-source .venv/bin/activate
-python -m pip install --upgrade pip setuptools wheel
-python -m pip install -e .
-```
+- PySide6
+- NumPy
 
 ## Development installation
 
-For development tools:
+For development, clone the repository and use an editable Python install:
 
-```bash
-source .venv/bin/activate
-python -m pip install -e .[dev]
-```
+    git clone https://github.com/TheKooy/k-sound-hub.git
+    cd k-sound-hub
+    python -m venv .venv
+    source .venv/bin/activate
+    python -m pip install --upgrade pip setuptools wheel
+    python -m pip install -e .[dev]
 
-## Tests
+Run checks:
 
-```bash
-source .venv/bin/activate
-pytest
-```
+    python -m pytest
+    ./scripts/check_k_sound_hub_env.sh
 
-## Repository layout
+Start from the source tree:
 
-```text
-src/ksound_hub/
-  app.py
-  config.py
-  control.py
-  ipc.py
-  models.py
-  settings_store.py
-  assets/
-  audio/
-  ui/
+    ./scripts/start_ksound_hub_v2.sh
 
-scripts/
-  start_ksound_hub_v2.sh
-  check_k_sound_hub_env.sh
-  install_desktop_entry.sh
+## Packaging a release
 
-packaging/linux/
-  ksound-hub.desktop
-  ksound-hub.desktop.template
-  ksound-hub-autostart.desktop.template
-```
+Maintainers can create local release archives with:
 
-## Recommended install flow on another Linux PC
+    ./scripts/package_release.sh
 
-1. clone the repository
-2. create and activate `.venv`
-3. install with `python -m pip install -e .`
-4. run `./scripts/check_k_sound_hub_env.sh`
-5. start with `./scripts/start_ksound_hub_v2.sh`
-6. optionally create the launcher with `./scripts/install_desktop_entry.sh`
-7. optionally copy the launcher into `~/.local/share/applications/`
+This creates:
 
-## License
+    dist/ksound-hub-v2-linux-release-vX.Y.Z.tar.gz
+    dist/ksound-hub-v2-linux-release-vX.Y.Z.zip
+    dist/SHA256SUMS.txt
 
-MIT License. See `LICENSE`.
+Release archives and APK files should be uploaded as GitHub Release assets, not committed to Git.
+
+See docs/GITHUB_RELEASE.md for details.
+
+## Android soundboard remote
+
+The Android soundboard source is included in the repository.
+
+Generated APK files are optional release assets and should not be committed to Git.
+
+## Repository
+
+Repository: https://github.com/TheKooy/k-sound-hub
+
+Default public branch: main
+
+Current active development branch: feature/native-micro-engine
 
 ## Disclaimer
 
-This software is provided as-is.
-
-It should be tested carefully before being relied on for streaming, voice chat, recording, live routing, or production audio use.
+K-Sound Hub interacts with the user's Linux audio session through PipeWire/PulseAudio-compatible tools. It is intended to be non-destructive, but it is still audio-routing software. Review scripts before running them on important systems.
