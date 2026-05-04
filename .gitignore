@@ -112,3 +112,16 @@ packaging/linux/ksound-hub.desktop
 /.android_*/
 /.ksh_*/
 /.soundboard_*/
+
+# Public release artifacts
+/dist/
+/build/
+/release/
+*.sha256
+SHA256SUMS.txt
+
+# Generated APKs and signing material must stay out of Git
+*.apk
+*.aab
+*.jks
+*.keystore
