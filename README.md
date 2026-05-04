@@ -34,15 +34,47 @@ Other major Linux distributions are supported on a best-effort basis through the
 
 ## Recommended user installation
 
-For normal users, use a GitHub Release archive instead of cloning the repository.
+For normal users, install K-Sounds Hub from the GitHub Releases page.
 
-Download the latest Linux release archive, extract it, then run:
+Important:
 
+- Do not use the green Code button for normal installation.
+- Do not download the automatic Source code zip or Source code tar.gz files.
+- Download one of the release assets instead:
+  - k-sounds-hub-linux-release-v0.3.2.tar.gz
+  - k-sounds-hub-linux-release-v0.3.2.zip
+
+### Install from the tar.gz release
+
+Open a terminal in the folder where you downloaded the file, then run:
+
+    tar -xzf k-sounds-hub-linux-release-v0.3.2.tar.gz
+    cd k-sounds-hub-linux-release-v0.3.2
     ./install.sh
 
-Start the app with:
+Then start the app with:
 
     k-sounds-hub
+
+### Install from the zip release
+
+Open a terminal in the folder where you downloaded the file, then run:
+
+    unzip k-sounds-hub-linux-release-v0.3.2.zip
+    cd k-sounds-hub-linux-release-v0.3.2
+    ./install.sh
+
+Then start the app with:
+
+    k-sounds-hub
+
+### Notes
+
+- Run install.sh from a terminal, not by double-clicking it in the file manager.
+- install.sh installs the app but does not automatically launch it.
+- If k-sounds-hub is not found after installation, close and reopen the terminal, or run:
+
+    ~/.local/bin/k-sounds-hub
 
 The default install is intentionally non-invasive.
 
