@@ -8,7 +8,7 @@ This project is being developed with AI assistance.
 
 ## Status
 
-Current version: 0.3.3
+Current version: 0.3.4
 
 Main tested environment:
 
@@ -41,15 +41,15 @@ Important:
 - Do not use the green Code button for normal installation.
 - Do not download the automatic Source code zip or Source code tar.gz files.
 - Download one of the release assets instead:
-  - k-sounds-hub-linux-release-v0.3.3.tar.gz
-  - k-sounds-hub-linux-release-v0.3.3.zip
+  - k-sounds-hub-linux-release-v0.3.4.tar.gz
+  - k-sounds-hub-linux-release-v0.3.4.zip
 
 ### Install from the tar.gz release
 
 Open a terminal in the folder where you downloaded the file, then run:
 
-    tar -xzf k-sounds-hub-linux-release-v0.3.3.tar.gz
-    cd k-sounds-hub-linux-release-v0.3.3
+    tar -xzf k-sounds-hub-linux-release-v0.3.4.tar.gz
+    cd k-sounds-hub-linux-release-v0.3.4
     ./install.sh
 
 Then start the app with:
@@ -60,8 +60,8 @@ Then start the app with:
 
 Open a terminal in the folder where you downloaded the file, then run:
 
-    unzip k-sounds-hub-linux-release-v0.3.3.zip
-    cd k-sounds-hub-linux-release-v0.3.3
+    unzip k-sounds-hub-linux-release-v0.3.4.zip
+    cd k-sounds-hub-linux-release-v0.3.4
     ./install.sh
 
 Then start the app with:
