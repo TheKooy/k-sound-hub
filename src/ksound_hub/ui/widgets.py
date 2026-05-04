@@ -338,7 +338,7 @@ class MenuSelectorButton(QPushButton):
                 Qt.ElideRight,
                 max(12, text_rect.width() - 2),
             )
-            painter.drawText(text_rect, Qt.AlignLeft | Qt.AlignVCenter, text)
+            painter.drawText(text_rect, Qt.AlignCenter | Qt.AlignVCenter, text)
 
         painter.restore()
 
