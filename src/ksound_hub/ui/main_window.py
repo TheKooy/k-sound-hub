@@ -77,7 +77,7 @@ class MainWindow(QMainWindow):
 
         self._status_timer = QTimer(self)
         self._status_timer.setSingleShot(True)
-        self._status_timer.setInterval(90)
+        self._status_timer.setInterval(250)
         self._status_timer.timeout.connect(self.refresh_status)
 
         self._apply_timer = QTimer(self)
@@ -86,11 +86,11 @@ class MainWindow(QMainWindow):
 
         self._runtime_view_timer = QTimer(self)
         self._runtime_view_timer.setSingleShot(True)
-        self._runtime_view_timer.setInterval(30)
+        self._runtime_view_timer.setInterval(90)
         self._runtime_view_timer.timeout.connect(self._refresh_runtime_views_only)
 
         self._meter_timer = QTimer(self)
-        self._meter_timer.setInterval(33)
+        self._meter_timer.setInterval(100)
         self._meter_timer.timeout.connect(self._refresh_meters)
 
         self._link_shared_eq_library()
@@ -874,7 +874,9 @@ class MainWindow(QMainWindow):
         for widget in self.channel_widgets.values():
             widget.set_global_visualizer_enabled(self.settings.visualizer_enabled)
             widget.refresh_runtime_views()
-        self._refresh_meters()
+
+        # Meters are refreshed by the dedicated throttled meter timer.
+        # Calling them again from refresh_status made the UI do duplicate work.
         self._apply_column_widths()
 
     def _refresh_meters(self) -> None:

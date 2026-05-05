@@ -427,6 +427,38 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
             self._move_easyeffects_input_to(target)
             time.sleep(0.04)
 
+    def _channel_send_gain_for_micro(self, settings: AppSettings, channel_key: str) -> float:
+        channel = self._find_channel(settings, channel_key)
+        if channel is None or not channel.enabled or channel.muted:
+            return 0.0
+
+        try:
+            volume = int(channel.volume)
+        except Exception:
+            volume = 100
+
+        volume = max(0, min(150, volume))
+        return max(0.0, min(1.5, float(volume) / 100.0))
+
+    def _apply_micro_link_send_volumes(self, settings: AppSettings) -> None:
+        micro_channel = self._find_channel(settings, "micro")
+        if micro_channel is None:
+            linked: set[str] = set()
+            micro_muted = True
+        else:
+            linked = {str(key).lower() for key in getattr(micro_channel, "linked_channels", []) or []}
+            micro_muted = bool(micro_channel.muted) or not bool(micro_channel.enabled)
+
+        for key in ("all", "game", "chat", "media", "more"):
+            media_name = self._micro_send_media_name(key)
+            gain = self._channel_send_gain_for_micro(settings, key) if key in linked else 0.0
+            volume = max(0, min(150, int(round(gain * 100.0))))
+            muted = "1" if micro_muted or key not in linked or gain <= 0.0 else "0"
+
+            for sink_input_id in self._find_sink_input_ids_by_media_name(media_name):
+                self._run_no_fail(["pactl", "set-sink-input-volume", sink_input_id, f"{volume}%"])
+                self._run_no_fail(["pactl", "set-sink-input-mute", sink_input_id, muted])
+
     def _render_native_micro_state_text(self, settings: AppSettings) -> str:
         channel = self._find_channel(settings, "micro")
         if channel is None:
@@ -445,7 +477,9 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
 
         for key in ("all", "game", "chat", "media", "more"):
             if key in linked:
-                lines.append(f"send\t{key}\t1\t{key}.monitor\t1.0")
+                gain = self._channel_send_gain_for_micro(settings, key)
+                enabled = "1" if gain > 0.0 else "0"
+                lines.append(f"send\t{key}\t{enabled}\t{key}.monitor\t{gain:.4f}")
 
         if "soundboard" in linked:
             lines.append("send\tsoundboard\t1\tsoundboard.monitor\t1.0")
@@ -543,6 +577,7 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
             self._run_no_fail(["pactl", "set-default-source", "micro"])
 
         self._apply_micro_links(settings)
+        self._apply_micro_link_send_volumes(settings)
 
 
     def _return_monitor_media_name(self, key: str) -> str:
@@ -608,21 +643,26 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
         if existing:
             return True
 
+        is_monitor_source = source_name.endswith(".monitor") or source_name == "micro"
+        source_is_mono = False if is_monitor_source else self._source_is_mono_1ch(source_name)
+
         args = [
             "pactl",
             "load-module",
             "module-loopback",
             f"source={source_name}",
             "sink=retour",
-            "latency_msec=60" if not source_name.endswith(".monitor") and source_name != "micro" else "latency_msec=20",
+            "latency_msec=60" if source_is_mono else "latency_msec=20",
             "source_dont_move=true",
             "sink_dont_move=true",
         ]
 
         # Monitor sources are stereo. Physical microphone sources may be mono;
         # forcing channels=2 on those can cause robotic/doubled monitoring.
-        if source_name.endswith(".monitor") or source_name == "micro":
+        if is_monitor_source:
             args.append("channels=2")
+        elif source_is_mono:
+            args.extend(["channels=1", "channel_map=mono"])
 
         args.append(f"sink_input_properties=media.name={media_name}")
 
@@ -740,7 +780,7 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
                     "--log",
                     str(self._v2_engine_log),
                     "--period-ms",
-                    "20",
+                    "10",
                 ],
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
@@ -816,6 +856,12 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
             self.eq_slots[channel_key].status = "v2 native final-render active"
 
         self._write_v2_volume_state(settings)
+
+        if channel_key in {"all", "game", "chat", "media", "more"}:
+            # If this playback channel is shared into MICRO, update that send too.
+            self._write_native_micro_state(settings)
+            self._apply_micro_link_send_volumes(settings)
+
         self._ensure_v2_engine()
 
     def apply_channel(self, settings: AppSettings, channel_key: str) -> None:

@@ -14,7 +14,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-CONFIG_DIR = Path.home() / ".config" / "ksound-hub-v2"
+CONFIG_DIR = Path(os.environ.get("KSH_CONFIG_DIR", str(Path.home() / ".config" / "k-sounds-hub"))).expanduser()
 CONFIG_PATH = CONFIG_DIR / "soundboard.json"
 TOKEN_PATH = CONFIG_DIR / "soundboard_web_token"
 PAIRING_PATH = CONFIG_DIR / "soundboard_pairing.json"
@@ -23,8 +23,9 @@ HOST = "0.0.0.0"
 HTTP_PORT = int(os.environ.get("KSOUND_SOUNDBOARD_WEB_PORT", "8765"))
 DISCOVERY_PORT = int(os.environ.get("KSOUND_SOUNDBOARD_DISCOVERY_PORT", "8766"))
 
-SERVICE_NAME = "K-Sound Hub Soundboard"
+SERVICE_NAME = "K-Sounds Soundboard Remote"
 DISCOVERY_REQUEST = b"KSH_DISCOVER_V2"
+DISCOVERY_REQUESTS = {b"KSH_DISCOVER_V1", b"KSH_DISCOVER_V2"}
 DISCOVERY_SERVICE = "KSH_SOUNDBOARD"
 
 
@@ -151,13 +152,23 @@ def update_soundboard_setting(key: str, value) -> None:
     tmp.replace(CONFIG_PATH)
 
 def send_ipc(payload: dict) -> tuple[bool, str]:
+    # Keep the APK bridge compatible with both historical socket names.
+    # Current K-Sounds Hub app uses /tmp/ksounds_hub_audio_<uid>.sock.
+    # Older V2 builds used /tmp/ksound_hub_audio_v2_<uid>.sock.
     candidates = [
         os.environ.get("KSH_IPC_SOCKET_PATH", ""),
+        f"/tmp/ksounds_hub_audio_{os.getuid()}.sock",
         f"/tmp/ksound_hub_audio_v2_{os.getuid()}.sock",
+        f"/tmp/ksound_hub_audio_{os.getuid()}.sock",
     ]
 
+    seen: set[str] = set()
     last_error = ""
     for socket_path in [x for x in candidates if x]:
+        if socket_path in seen:
+            continue
+        seen.add(socket_path)
+
         try:
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
                 sock.settimeout(0.45)
@@ -165,7 +176,7 @@ def send_ipc(payload: dict) -> tuple[bool, str]:
                 sock.sendall((json.dumps(payload) + "\n").encode())
             return True, "OK"
         except Exception as exc:
-            last_error = str(exc)
+            last_error = f"{socket_path}: {exc}"
 
     return False, last_error or "IPC unavailable"
 
@@ -279,7 +290,7 @@ def page(status: str = "") -> bytes:
         )
 
     if not buttons:
-        buttons.append("<p class='empty'>No pads found. Configure the soundboard in K-Sound Hub first.</p>")
+        buttons.append("<p class='empty'>No pads found. Configure the soundboard in K-Sounds Hub first.</p>")
 
     initial_status = html.escape(status or "Ready")
 
@@ -289,7 +300,7 @@ def page(status: str = "") -> bytes:
     <head>
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width, initial-scale=1">
-      <title>K-Sound Soundboard</title>
+      <title>K-Sounds Soundboard Remote</title>
       <meta name="theme-color" content="#070a12">
       <meta name="mobile-web-app-capable" content="yes">
       <style>
@@ -517,7 +528,7 @@ def page(status: str = "") -> bytes:
     </head>
     <body>
       <header>
-        <h1>K-SOUND SOUNDBOARD</h1>
+        <h1>K-SOUNDS SOUNDBOARD REMOTE</h1>
         <div class="hint">Local Android remote. Secure LAN pairing.</div>
         <div id="remoteStatus" class="status">{initial_status}</div>
       </header>
@@ -1586,7 +1597,7 @@ def discovery_loop(stop_event: threading.Event) -> None:
             except OSError:
                 break
 
-            if data.strip() != DISCOVERY_REQUEST:
+            if data.strip() not in DISCOVERY_REQUESTS:
                 continue
 
             payload = {
@@ -1609,7 +1620,7 @@ def main() -> int:
     thread.start()
 
     print()
-    print("K-Sound Soundboard Web")
+    print("K-Sounds Soundboard Remote Web")
     print("======================")
     print(f"HTTP     : http://127.0.0.1:{HTTP_PORT}/")
     print(f"LAN      : http://{ip}:{HTTP_PORT}/")

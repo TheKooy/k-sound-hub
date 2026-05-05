@@ -245,7 +245,7 @@ def _ensure_soundboard_monitor_route(target_channel: str) -> bool:
     # Emergency override:
     #   KSH_SOUNDBOARD_MONITOR_ROUTE=1
     # restores the previous behavior.
-    enabled = str(os.environ.get("KSH_SOUNDBOARD_MONITOR_ROUTE", "0")).strip().lower() in {
+    enabled = str(os.environ.get("KSH_SOUNDBOARD_MONITOR_ROUTE", "1")).strip().lower() in {
         "1",
         "true",
         "yes",
@@ -554,20 +554,14 @@ class SoundboardPadWidget(QFrame):
         route_row = QHBoxLayout()
         route_row.setContentsMargins(0, 0, 0, 0)
         route_row.setSpacing(8)
+        route_row.addStretch(1)
 
-        route_label = QLabel("Hear")
-        route_label.setObjectName("mutedLabel")
-        route_row.addWidget(route_label)
-
-        self.output_selector = MenuSelectorButton()
-        self.output_selector.setObjectName("selectorButton")
-        self.output_selector.set_items([item.upper() for item in PLAYBACK_TARGETS])
-        self.output_selector.setCurrentText(str(slot.get("output_channel", "media")).upper())
-        self.output_selector.currentTextChanged.connect(self._commit_output_channel)
-        route_row.addWidget(self.output_selector, 1)
-
-        self.micro_check = QCheckBox("MIC via channel")
+        self.micro_check = QPushButton("MIC OFF")
+        self.micro_check.setObjectName("soundboardMicSendButton")
+        self.micro_check.setCheckable(True)
+        self.micro_check.setToolTip("When enabled, this pad also plays directly into the K-Sounds microphone bus.")
         self.micro_check.setChecked(bool(slot.get("send_to_micro", False)))
+        self._sync_send_to_micro_button()
         self.micro_check.toggled.connect(self._commit_send_to_micro)
         route_row.addWidget(self.micro_check)
 
@@ -891,8 +885,19 @@ class SoundboardPadWidget(QFrame):
         self.slot["output_channel"] = target if target in PLAYBACK_TARGETS else "media"
         self.changed.emit()
 
+    def _sync_send_to_micro_button(self) -> None:
+        enabled = bool(self.micro_check.isChecked())
+        self.micro_check.setText("MIC ON" if enabled else "MIC OFF")
+        self.micro_check.setProperty("micEnabled", enabled)
+        self.micro_check.style().unpolish(self.micro_check)
+        self.micro_check.style().polish(self.micro_check)
+        self.micro_check.update()
+
+
     def _commit_send_to_micro(self, checked: bool) -> None:
-        self.slot["send_to_micro"] = bool(checked)
+        enabled = bool(checked)
+        self.slot["send_to_micro"] = enabled
+        self._sync_send_to_micro_button()
         self.changed.emit()
 
     def _commit_shortcut(self) -> None:
@@ -1049,8 +1054,8 @@ class SoundboardDialog(QDialog):
         header_layout.addWidget(title)
 
         subtitle = QLabel(
-            "Audio pads with independent volume. Sound always plays through the SOUNDBOARD bus. "
-            "'Hear' selects where you monitor it. For mic send: MICRO → Apps → + → SOUNDBOARD."
+            "Audio pads with independent volume. Pads play through the SOUNDBOARD bus. "
+            "Use Send to MIC per pad when you want that sound in the K-Sounds microphone."
         )
         subtitle.setObjectName("mutedLabel")
         subtitle.setWordWrap(True)
@@ -1333,6 +1338,29 @@ class SoundboardDialog(QDialog):
                 color: #fff4f6;
                 background: rgba(180, 28, 48, 0.92);
             }
+            QPushButton#soundboardMicSendButton {
+                border: 1px solid rgba(147, 164, 184, 0.55);
+                border-radius: 10px;
+                padding: 4px 10px;
+                font-size: 10px;
+                font-weight: 900;
+                color: rgba(236, 247, 255, 210);
+                background: rgba(50, 60, 78, 0.65);
+            }
+            QPushButton#soundboardMicSendButton:hover {
+                border: 1px solid rgba(62, 216, 255, 0.85);
+                background: rgba(62, 216, 255, 0.14);
+            }
+            QPushButton#soundboardMicSendButton:checked {
+                border: 2px solid rgba(62, 216, 255, 0.95);
+                color: #071018;
+                background: qlineargradient(
+                    x1:0, y1:0, x2:1, y2:0,
+                    stop:0 rgba(62, 216, 255, 0.95),
+                    stop:1 rgba(255, 92, 199, 0.95)
+                );
+            }
+
             QCheckBox#soundboardSwitch {
                 spacing: 8px;
                 font-weight: 800;
@@ -2306,26 +2334,16 @@ class SoundboardDialog(QDialog):
                 volume=effective_volume,
             )
 
-    def _ensure_soundboard_output_ready(self, target_channel: str) -> tuple[bool, bool]:
-        target_channel = str(target_channel or "media").strip().lower()
-        if target_channel not in PLAYBACK_TARGETS:
-            target_channel = "media"
-
+    def _ensure_soundboard_output_ready(self, target_channel: str = "") -> tuple[bool, bool]:
+        # Stable mode: pads play into the SOUNDBOARD bus and are monitored globally on MEDIA.
+        # Per-pad Hear/MIC routes are intentionally not used here.
         if not bool(getattr(self, "_soundboard_bus_ready", False)):
             self._soundboard_bus_ready = bool(_ensure_soundboard_bus())
 
         if not self._soundboard_bus_ready:
             return False, False
 
-        routes_ready = getattr(self, "_soundboard_monitor_routes_ready", set())
-        if target_channel in routes_ready:
-            return True, True
-
-        monitor_found = bool(_ensure_soundboard_monitor_route(target_channel))
-        if monitor_found:
-            routes_ready.add(target_channel)
-            self._soundboard_monitor_routes_ready = routes_ready
-
+        monitor_found = bool(_ensure_soundboard_monitor_route("media"))
         return True, monitor_found
 
     def _effective_volume(self, slot: dict[str, Any], path: Path, pad_volume: int) -> float:
@@ -2433,6 +2451,7 @@ class SoundboardDialog(QDialog):
         for delay in (90, 220, 480):
             QTimer.singleShot(delay, lambda channel=target_channel: _move_latest_soundboard_stream(channel))
 
+
     def play_slot(self, slot_id: str) -> None:
         slot = next((item for item in self.slots if str(item.get("id")) == str(slot_id)), None)
         if slot is None:
@@ -2449,14 +2468,12 @@ class SoundboardDialog(QDialog):
         except Exception:
             volume = 80
 
-        target_channel = str(slot.get("output_channel") or "media").strip().lower()
-        if target_channel not in PLAYBACK_TARGETS:
-            target_channel = "media"
+        send_to_micro = bool(slot.get("send_to_micro", False))
 
         playback_path = self._fast_playback_path(slot, path)
         effective_volume = self._effective_volume(slot, path, volume)
 
-        bus_found, monitor_found = self._ensure_soundboard_output_ready(target_channel)
+        bus_found, monitor_found = self._ensure_soundboard_output_ready("media")
 
         output_found = False
         if bus_found:
@@ -2468,6 +2485,22 @@ class SoundboardDialog(QDialog):
             )
             self._schedule_output_move_fallback(SOUNDBOARD_BUS)
 
+        mic_found = False
+        if send_to_micro:
+            if _sink_exists("micro_bus"):
+                mic_found = self._start_player(
+                    key=f"{slot_id}:micro",
+                    path=playback_path,
+                    sink_name="micro_bus",
+                    volume=effective_volume,
+                )
+            else:
+                mic_found = False
+
         route_text = "SOUNDBOARD" if output_found else "SOUNDBOARD fallback"
-        monitor_text = f" + Moi via {target_channel.upper()}" if monitor_found else f" + Moi route absente ({target_channel.upper()})"
-        self.status_label.setText(f"Play: {slot.get('label', slot_id)} → {route_text}{monitor_text}")
+        monitor_text = " + MEDIA monitor" if monitor_found else " + monitor missing"
+        mic_text = " + MIC" if send_to_micro and mic_found else ""
+        if send_to_micro and not mic_found:
+            mic_text = " + MIC missing"
+
+        self.status_label.setText(f"Play: {slot.get('label', slot_id)} → {route_text}{monitor_text}{mic_text}")

@@ -791,6 +791,9 @@ class PipeWireAudioEngine(AudioEngine):
             self._set_node_volume_smooth(node_type="source", node_name=node_name, target_volume=volume)
             self._run_no_fail(["pactl", "set-source-mute", node_name, "1" if channel.muted else "0"])
 
+    def _micro_send_media_name(self, channel_key: str) -> str:
+        return f"KSH_MIC_SEND_{str(channel_key).strip().upper()}"
+
     def _find_loopback_module_ids(self, *, source_name: str, sink_name: str) -> list[str]:
         proc = self._run(["pactl", "list", "short", "modules"])
         if proc.returncode != 0:
@@ -877,14 +880,31 @@ class PipeWireAudioEngine(AudioEngine):
         if not self._sink_exists(sink_name):
             return False
 
+        media_name = self._micro_send_media_name(channel_key)
         existing_ids = self._find_loopback_module_ids(source_name=source_name, sink_name=sink_name)
-        if existing_ids:
+        expected_ids = [
+            module_id
+            for module_id in self._find_loopback_module_ids_by_media_name(media_name)
+            if module_id in existing_ids
+        ]
+
+        if expected_ids:
+            keep_id = expected_ids[0]
+            for stale_id in existing_ids:
+                if stale_id != keep_id:
+                    self._run_no_fail(["pactl", "unload-module", stale_id])
+
             self._micro_links[channel_key] = LoopbackLink(
                 source_name=source_name,
                 sink_name=sink_name,
-                module_id=existing_ids[0],
+                module_id=keep_id,
             )
             return True
+
+        # Older versions used media.name values with spaces. Pulse only kept
+        # "K-Sound", so volume updates could not reliably find the sink-input.
+        for stale_id in existing_ids:
+            self._run_no_fail(["pactl", "unload-module", stale_id])
 
         proc = self._run(
             [
@@ -897,7 +917,7 @@ class PipeWireAudioEngine(AudioEngine):
                 "channels=2",
                 "source_dont_move=true",
                 "sink_dont_move=true",
-                f"sink_input_properties=media.name=K-Sound Hub Mic Send {channel_key.upper()}",
+                f"sink_input_properties=media.name={media_name}",
             ]
         )
         if proc.returncode != 0:
@@ -948,6 +968,22 @@ class PipeWireAudioEngine(AudioEngine):
         if proc.returncode != 0:
             return ""
         return proc.stdout.strip().splitlines()[-1].strip() if proc.stdout.strip() else ""
+
+
+    def _source_is_mono_1ch(self, source_name: str) -> bool:
+        proc = self._run(["pactl", "list", "short", "sources"])
+        if proc.returncode != 0:
+            return False
+
+        for line in proc.stdout.splitlines():
+            parts = line.split()
+            if len(parts) < 4:
+                continue
+            if parts[1] != source_name:
+                continue
+            return "1ch" in parts
+
+        return False
 
     def _ensure_physical_micro_loopbacks(self, channel: ChannelConfig) -> None:
         """Connect exactly one selected runtime-detected microphone source to micro_bus.
@@ -1005,6 +1041,11 @@ class PipeWireAudioEngine(AudioEngine):
                         break
 
                 if source_name:
+                    if self._source_is_mono_1ch(source_name) and (
+                        "channels=1" not in args or "channel_map=mono" not in args
+                    ):
+                        legacy_ids.append(module_id)
+                        continue
                     existing_by_source.setdefault(source_name, []).append(module_id)
 
         existing_sources = set(existing_by_source)
@@ -1040,24 +1081,36 @@ class PipeWireAudioEngine(AudioEngine):
             if source_name in kept_sources:
                 continue
 
-            self._run_no_fail(
-                [
-                    "pactl",
-                    "load-module",
-                    "module-loopback",
-                    f"source={source_name}",
-                    "sink=micro_bus",
-                    "latency_msec=60",
-                    "source_dont_move=true",
-                    "sink_dont_move=true",
-                    "sink_input_properties=media.name=KSH_MIC_PHYSICAL",
-                ]
-            )
+            source_is_mono = self._source_is_mono_1ch(source_name)
+            args = [
+                "pactl",
+                "load-module",
+                "module-loopback",
+                f"source={source_name}",
+                "sink=micro_bus",
+                "latency_msec=60" if source_is_mono else "latency_msec=20",
+                "source_dont_move=true",
+                "sink_dont_move=true",
+            ]
+
+            if source_is_mono:
+                args.extend(["channels=1", "channel_map=mono"])
+
+            args.append("sink_input_properties=media.name=KSH_MIC_PHYSICAL")
+            self._run_no_fail(args)
 
         self._physical_micro_selection_signature = desired_signature
 
         if will_change:
             time.sleep(0.12)
+
+        # Keep the physical-mic loopback itself neutral. The user-facing MICRO
+        # volume is applied on the selected source / native state, so this
+        # sink-input must not keep an old stale 80% volume and silently attenuate
+        # micro_bus.
+        for sink_input_id in self._find_sink_input_ids_by_media_name("KSH_MIC_PHYSICAL"):
+            self._run_no_fail(["pactl", "set-sink-input-volume", sink_input_id, "100%"])
+            self._run_no_fail(["pactl", "set-sink-input-mute", sink_input_id, "0"])
 
         if self._sink_exists("micro_bus"):
             self._run_no_fail(["pactl", "set-sink-mute", "micro_bus", "0"])
