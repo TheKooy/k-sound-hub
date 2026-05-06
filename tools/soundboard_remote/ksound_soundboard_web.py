@@ -119,15 +119,63 @@ def soundboard_revision() -> str:
 
 
 def read_soundboard_state() -> dict:
-    settings = read_soundboard_settings()
-    slots = read_slots()
+    data = {}
+    revision = int(time.time() * 1000)
+
+    if CONFIG_PATH.is_file():
+        try:
+            data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                data = {}
+        except Exception:
+            data = {}
+
+        try:
+            revision = CONFIG_PATH.stat().st_mtime_ns
+        except Exception:
+            pass
+
+    raw_slots = data.get("slots", [])
+    if not isinstance(raw_slots, list):
+        raw_slots = []
+
+    slots = []
+    for index, raw_slot in enumerate(raw_slots):
+        if not isinstance(raw_slot, dict):
+            continue
+
+        slot_id = str(raw_slot.get("id") or f"sb{index + 1}").strip() or f"sb{index + 1}"
+        label = str(raw_slot.get("label") or f"SOUND {index + 1:02d}").strip() or f"SOUND {index + 1:02d}"
+        path = str(raw_slot.get("path") or "").strip()
+
+        try:
+            volume = max(0, min(100, int(raw_slot.get("volume", 80))))
+        except Exception:
+            volume = 80
+
+        output_channel = str(raw_slot.get("output_channel") or "media").strip().lower() or "media"
+
+        slots.append(
+            {
+                "id": slot_id,
+                "index": index,
+                "number": index + 1,
+                "label": label,
+                "path": path,
+                "has_sound": bool(path),
+                "volume": volume,
+                "shortcut": str(raw_slot.get("shortcut") or "").strip(),
+                "output_channel": output_channel,
+            }
+        )
 
     return {
-        "revision": soundboard_revision(),
+        "revision": revision,
+        "global_volume": int(data.get("global_volume", 100)),
+        "auto_level_enabled": bool(data.get("auto_level_enabled", False)),
+        "pad_scale": int(data.get("pad_scale", 100)),
         "slot_count": len(slots),
-        "global_volume": int(settings.get("global_volume", 100)),
-        "auto_level_enabled": bool(settings.get("auto_level_enabled", False)),
-        "pad_scale": int(settings.get("pad_scale", 100)),
+        "slots": slots,
     }
 
 def update_soundboard_setting(key: str, value) -> None:
