@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 import json
+import os
 import secrets
 import time
 from pathlib import Path
 
-CONFIG_DIR = Path.home() / ".config" / "ksound-hub-v2"
+CONFIG_DIR = Path(os.environ.get("KSH_CONFIG_DIR", str(Path.home() / ".config" / "k-sounds-hub"))).expanduser()
 PAIRING_PATH = CONFIG_DIR / "soundboard_pairing.json"
 TOKEN_PATH = CONFIG_DIR / "soundboard_web_token"
 PORT = 8765

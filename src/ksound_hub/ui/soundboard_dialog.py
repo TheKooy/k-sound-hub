@@ -1060,6 +1060,10 @@ class SoundboardDialog(QDialog):
         self._cache_warmup_timer.setSingleShot(True)
         self._cache_warmup_timer.timeout.connect(self._start_background_soundboard_cache)
 
+        self._save_debounce_timer = QTimer(self)
+        self._save_debounce_timer.setSingleShot(True)
+        self._save_debounce_timer.timeout.connect(self.save)
+
         root = QVBoxLayout(self)
         root.setContentsMargins(14, 14, 14, 14)
         root.setSpacing(10)
@@ -1136,6 +1140,7 @@ class SoundboardDialog(QDialog):
         self.global_volume_slider.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.global_volume_slider.setValue(int(self.global_volume))
         self.global_volume_slider.valueChanged.connect(self._on_global_volume_changed)
+        self.global_volume_slider.sliderReleased.connect(self._flush_debounced_save)
         volume_layout.addWidget(self.global_volume_slider, 1)
 
         self.global_volume_value = QLabel(f"{int(self.global_volume)}%")
@@ -1542,6 +1547,10 @@ class SoundboardDialog(QDialog):
         return _ensure_unique_slot_ids(raw_slots)
 
     def save(self) -> None:
+        timer = getattr(self, "_save_debounce_timer", None)
+        if timer is not None and timer.isActive():
+            timer.stop()
+
         self.slots = _ensure_unique_slot_ids(self.slots)
         SOUNDBOARD_PATH.parent.mkdir(parents=True, exist_ok=True)
         SOUNDBOARD_PATH.write_text(
@@ -1567,6 +1576,25 @@ class SoundboardDialog(QDialog):
         timer = getattr(self, "_cache_warmup_timer", None)
         if timer is not None and bool(getattr(self, "auto_level_enabled", False)):
             timer.start(700)
+
+    def _request_debounced_save(self, delay_ms: int = 250) -> None:
+        timer = getattr(self, "_save_debounce_timer", None)
+        if timer is None:
+            self.save()
+            return
+
+        try:
+            delay = max(50, int(delay_ms))
+        except Exception:
+            delay = 250
+
+        timer.start(delay)
+
+    def _flush_debounced_save(self) -> None:
+        timer = getattr(self, "_save_debounce_timer", None)
+        if timer is not None and timer.isActive():
+            timer.stop()
+            self.save()
 
     def add_one_slot(self) -> None:
         self.slots = _ensure_unique_slot_ids(self.slots)
@@ -2235,7 +2263,7 @@ class SoundboardDialog(QDialog):
     def _on_global_volume_changed(self, value: int) -> None:
         self.global_volume = max(0, min(100, int(value)))
         self.global_volume_value.setText(f"{int(self.global_volume)}%")
-        self.save()
+        self._request_debounced_save(250)
 
     def _on_shortcuts_visible_changed(self, checked: bool) -> None:
         self.show_shortcuts = bool(checked)
@@ -2821,7 +2849,8 @@ class SoundboardDialog(QDialog):
                 sink_name=SOUNDBOARD_BUS,
                 volume=effective_volume,
             )
-            self._schedule_output_move_fallback(SOUNDBOARD_BUS)
+            # The PipeWire/Pulse playback path targets SOUNDBOARD_BUS directly.
+            # Avoid the old pactl move fallback on every soundboard pad hit.
 
         route_parts = []
         if bool(getattr(self, "monitor_to_mic_out", False)):

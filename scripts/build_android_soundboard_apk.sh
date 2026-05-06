@@ -14,7 +14,7 @@ D8="$BUILD_TOOLS/d8"
 ZIPALIGN="$BUILD_TOOLS/zipalign"
 APKSIGNER="$BUILD_TOOLS/apksigner"
 
-SIGN_DIR="${KSOUND_SOUNDBOARD_SIGN_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/ksound-hub-v2/android}"
+SIGN_DIR="${KSOUND_SOUNDBOARD_SIGN_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/k-sounds-hub/android}"
 SIGN_ENV="$SIGN_DIR/signing.env"
 KEYSTORE="${KSOUND_SOUNDBOARD_KEYSTORE:-$SIGN_DIR/ksound-soundboard.keystore}"
 

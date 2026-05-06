@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-RUNTIME_DIR="${KSH_CONFIG_DIR:-$HOME/.config/ksound-hub-v2}/runtime"
+RUNTIME_DIR="${KSH_CONFIG_DIR:-$HOME/.config/k-sounds-hub}/runtime"
 HUD_LOG="$RUNTIME_DIR/overlay-hud.log"
 
 HUD_BIN="${KSH_HUD_BIN:-}"

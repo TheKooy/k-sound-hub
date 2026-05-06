@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 REPO="${1:-$HOME/k-sound-hub-v2}"
 STARTER="$REPO/scripts/start_ksound_native_engine.sh"
-RUNTIME_DIR="$HOME/.config/ksound-hub-v2/runtime/native-engine"
+RUNTIME_DIR="${KSH_CONFIG_DIR:-$HOME/.config/k-sounds-hub}/runtime/native-engine"
 LEVELS="$RUNTIME_DIR/levels.json"
 LOG="$RUNTIME_DIR/engine.log"
 
