@@ -29,7 +29,13 @@ SUMS_PATH="$DIST_DIR/SHA256SUMS.txt"
 rm -rf "$BUILD_ROOT"
 mkdir -p "$PACKAGE_DIR" "$DIST_DIR"
 
-if command -v rsync >/dev/null 2>&1; then
+if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  # Build release contents from committed Git state only.
+  # This prevents local files such as .continueignore, temporary context docs,
+  # ignored build directories, backups, APKs, keystores, and dirty worktree files
+  # from leaking into public release archives.
+  git archive --format=tar HEAD | tar -xf - -C "$PACKAGE_DIR"
+elif command -v rsync >/dev/null 2>&1; then
   rsync -a \
     --exclude='.git/' \
     --exclude='.venv/' \
@@ -40,6 +46,10 @@ if command -v rsync >/dev/null 2>&1; then
     --exclude='.pytest_cache/' \
     --exclude='.ruff_cache/' \
     --exclude='.mypy_cache/' \
+    --exclude='.continueignore' \
+    --exclude='CONTINUE_KSOUNDS_CONTEXT.md' \
+    --exclude='.ksh_*/' \
+    --exclude='.soundboard_*/' \
     --exclude='*.pyc' \
     --exclude='*.pyo' \
     --exclude='*.jks' \
@@ -49,7 +59,17 @@ if command -v rsync >/dev/null 2>&1; then
     --exclude='*.zip' \
     "$REPO_DIR/" "$PACKAGE_DIR/"
 else
-  git archive --format=tar HEAD | tar -xf - -C "$PACKAGE_DIR"
+  (cd "$REPO_DIR" && tar \
+    --exclude='./.git' \
+    --exclude='./.venv' \
+    --exclude='./venv' \
+    --exclude='./build' \
+    --exclude='./dist' \
+    --exclude='./.continueignore' \
+    --exclude='./CONTINUE_KSOUNDS_CONTEXT.md' \
+    --exclude='./.ksh_*' \
+    --exclude='./.soundboard_*' \
+    -cf - .) | tar -xf - -C "$PACKAGE_DIR"
 fi
 
 if [[ -n "${KSH_APK_PATH:-}" ]]; then

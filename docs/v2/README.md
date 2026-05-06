@@ -10,7 +10,7 @@ K-Sounds Hub V2 is the active project. The old `~/k-sounds-hub` V1 tree is obsol
 
 Current paths:
 
-- Repo: `~/k-sounds-hub-v2`
+- Repo: `~/k-sound-hub-v2`
 - Config: `~/.config/k-sounds-hub`
 - IPC socket: `/tmp/ksound_hub_audio_v2_<uid>.sock`
 - Launcher: `scripts/start_ksound_hub_v2.sh`
