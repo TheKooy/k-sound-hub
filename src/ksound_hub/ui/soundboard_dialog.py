@@ -56,9 +56,15 @@ SOUNDBOARD_TRIM_DB_MAX = 24
 SOUNDBOARD_PAD_SCALE_DEFAULT = 100
 SOUNDBOARD_PAD_SCALE_MIN = 50
 SOUNDBOARD_PAD_SCALE_MAX = 200
+SOUNDBOARD_SHOW_SHORTCUTS_DEFAULT = False
 PLAYBACK_TARGETS = ["media", "game", "chat", "more", "all"]
 SOUNDBOARD_BUS = "soundboard"
 SOUNDBOARD_MONITOR_MEDIA_NAME = "K-Sound-Hub-Soundboard-Monitor"
+SOUNDBOARD_MONITOR_TO_MIC_OUT_DEFAULT = False
+SOUNDBOARD_SEND_TO_MICRO_DEFAULT = False
+SOUNDBOARD_ROUTE_MONITOR_TO_MIC_OUT = "monitor_to_mic_out"
+SOUNDBOARD_ROUTE_SEND_TO_MICRO = "send_to_micro"
+
 
 
 def _slot_id(index: int) -> str:
@@ -138,7 +144,7 @@ def _clean_slot(raw: dict[str, Any], fallback_index: int) -> dict[str, Any]:
         "volume": max(0, min(100, volume)),
         "shortcut": shortcut,
         "output_channel": output_channel,
-        "send_to_micro": bool(raw.get("send_to_micro", False)),
+        "send_to_micro": False,
         "auto_gain": auto_gain,
         "analyzed_path": analyzed_path,
         "trim_db": trim_db,
@@ -245,7 +251,7 @@ def _ensure_soundboard_monitor_route(target_channel: str) -> bool:
     # Emergency override:
     #   KSH_SOUNDBOARD_MONITOR_ROUTE=1
     # restores the previous behavior.
-    enabled = str(os.environ.get("KSH_SOUNDBOARD_MONITOR_ROUTE", "1")).strip().lower() in {
+    enabled = str(os.environ.get("KSH_SOUNDBOARD_MONITOR_ROUTE", "0")).strip().lower() in {
         "1",
         "true",
         "yes",
@@ -551,21 +557,15 @@ class SoundboardPadWidget(QFrame):
 
         root.addLayout(volume_row)
 
-        route_row = QHBoxLayout()
-        route_row.setContentsMargins(0, 0, 0, 0)
-        route_row.setSpacing(8)
-        route_row.addStretch(1)
-
-        self.micro_check = QPushButton("MIC OFF")
+        # Per-pad MIC toggle removed.
+        # Soundboard MIC/return routing is now handled globally by the MICRO / MIC OUT channels.
+        self.micro_check = QPushButton("MIC OFF", self)
         self.micro_check.setObjectName("soundboardMicSendButton")
         self.micro_check.setCheckable(True)
-        self.micro_check.setToolTip("When enabled, this pad also plays directly into the K-Sounds microphone bus.")
-        self.micro_check.setChecked(bool(slot.get("send_to_micro", False)))
-        self._sync_send_to_micro_button()
-        self.micro_check.toggled.connect(self._commit_send_to_micro)
-        route_row.addWidget(self.micro_check)
-
-        root.addLayout(route_row)
+        self.micro_check.setChecked(False)
+        self.micro_check.setEnabled(False)
+        self.micro_check.setVisible(False)
+        self.slot["send_to_micro"] = False
 
         self.shortcut_edit = QLineEdit(str(slot.get("shortcut", "")))
         self.shortcut_edit.setAlignment(Qt.AlignLeft)
@@ -641,6 +641,13 @@ class SoundboardPadWidget(QFrame):
         self.shortcut_edit.setAlignment(Qt.AlignLeft)
         self.shortcut_edit.setCursorPosition(0)
         self.shortcut_edit.deselect()
+
+    def set_shortcuts_visible(self, visible: bool) -> None:
+        visible = bool(visible)
+        if hasattr(self, "shortcut_edit"):
+            self.shortcut_edit.setVisible(visible)
+            self.shortcut_edit.setEnabled(visible)
+
 
 
 
@@ -885,18 +892,26 @@ class SoundboardPadWidget(QFrame):
         self.slot["output_channel"] = target if target in PLAYBACK_TARGETS else "media"
         self.changed.emit()
 
+
     def _sync_send_to_micro_button(self) -> None:
-        enabled = bool(self.micro_check.isChecked())
-        self.micro_check.setText("MIC ON" if enabled else "MIC OFF")
-        self.micro_check.setProperty("micEnabled", enabled)
+        if not hasattr(self, "micro_check"):
+            return
+
+        self.micro_check.blockSignals(True)
+        self.micro_check.setChecked(False)
+        self.micro_check.blockSignals(False)
+        self.micro_check.setText("MIC OFF")
+        self.micro_check.setEnabled(False)
+        self.micro_check.setVisible(False)
+        self.micro_check.setProperty("micEnabled", False)
         self.micro_check.style().unpolish(self.micro_check)
         self.micro_check.style().polish(self.micro_check)
         self.micro_check.update()
 
 
+
     def _commit_send_to_micro(self, checked: bool) -> None:
-        enabled = bool(checked)
-        self.slot["send_to_micro"] = enabled
+        self.slot["send_to_micro"] = False
         self._sync_send_to_micro_button()
         self.changed.emit()
 
@@ -1003,16 +1018,23 @@ class SoundboardPadWidget(QFrame):
 
 
 class SoundboardDialog(QDialog):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, *, route_state_provider=None, route_state_changed=None):
         super().__init__(parent)
         self.setWindowTitle("K-Sound Hub — Soundboard")
         self.resize(1120, 720)
         install_window_geometry(self, "soundboard", default_size=(1120, 720))
 
+        self._route_state_provider = route_state_provider
+        self._route_state_changed = route_state_changed
+
         self.slots = self._load_slots()
         self.global_volume = self._load_global_volume()
         self.auto_level_enabled = self._load_auto_level_enabled()
         self.pad_scale = self._load_pad_scale()
+        self.show_shortcuts = self._load_show_shortcuts()
+        self.monitor_to_mic_out = self._load_monitor_to_mic_out()
+        self.send_to_micro = self._load_send_to_micro()
+        self._sync_route_state_from_provider()
         self.pad_widgets: list[SoundboardPadWidget] = []
         self._players: dict[str, tuple[QMediaPlayer, QAudioOutput]] = {}
         self._player_source_paths: dict[str, str] = {}
@@ -1055,7 +1077,7 @@ class SoundboardDialog(QDialog):
 
         subtitle = QLabel(
             "Audio pads with independent volume. Pads play through the SOUNDBOARD bus. "
-            "Use Send to MIC per pad when you want that sound in the K-Sounds microphone."
+            "MIC/return routing is handled globally by the K-Sounds Hub MICRO channels."
         )
         subtitle.setObjectName("mutedLabel")
         subtitle.setWordWrap(True)
@@ -1102,6 +1124,19 @@ class SoundboardDialog(QDialog):
         self.auto_level_check.setChecked(bool(self.auto_level_enabled))
         self.auto_level_check.toggled.connect(self._on_auto_level_changed)
         footer_layout.addWidget(self.auto_level_check)
+
+        self.shortcuts_check = QCheckBox("Shortcuts *")
+        self.shortcuts_check.setObjectName("soundboardSwitch")
+        self.shortcuts_check.setToolTip("Show shortcut fields on pads. Under tests, coming soon.")
+        self.shortcuts_check.setChecked(bool(self.show_shortcuts))
+        self.shortcuts_check.toggled.connect(self._on_shortcuts_visible_changed)
+        footer_layout.addWidget(self.shortcuts_check)
+
+        self.shortcuts_note = QLabel("* under tests, coming soon")
+        self.shortcuts_note.setObjectName("mutedLabel")
+        self.shortcuts_note.setVisible(bool(self.show_shortcuts))
+        footer_layout.addWidget(self.shortcuts_note)
+
 
         global_label = QLabel("🔊")
         global_label.setObjectName("mutedLabel")
@@ -1206,6 +1241,21 @@ class SoundboardDialog(QDialog):
         footer_layout.addWidget(pair_btn)
 
         stop_all_btn = QPushButton("Stop all")
+
+        self.monitor_to_mic_out_check = QCheckBox("Monitor to MIC OUT")
+        self.monitor_to_mic_out_check.setObjectName("soundboardSwitch")
+        self.monitor_to_mic_out_check.setToolTip("Route the SOUNDBOARD bus to MIC OUT for local monitoring.")
+        self.monitor_to_mic_out_check.setChecked(bool(self.monitor_to_mic_out))
+        self.monitor_to_mic_out_check.toggled.connect(self._on_monitor_to_mic_out_changed)
+        footer_layout.addWidget(self.monitor_to_mic_out_check)
+
+        self.send_to_micro_check = QCheckBox("Send to MICRO")
+        self.send_to_micro_check.setObjectName("soundboardSwitch")
+        self.send_to_micro_check.setToolTip("Route the SOUNDBOARD bus to the virtual MICRO source.")
+        self.send_to_micro_check.setChecked(bool(self.send_to_micro))
+        self.send_to_micro_check.toggled.connect(self._on_send_to_micro_changed)
+        footer_layout.addWidget(self.send_to_micro_check)
+
         stop_all_btn.setObjectName("ghostButton")
         stop_all_btn.clicked.connect(self.stop_all)
         footer_layout.addWidget(stop_all_btn)
@@ -1473,6 +1523,9 @@ class SoundboardDialog(QDialog):
                     "global_volume": int(getattr(self, "global_volume", SOUNDBOARD_GLOBAL_VOLUME_DEFAULT)),
                     "auto_level_enabled": bool(getattr(self, "auto_level_enabled", SOUNDBOARD_AUTO_LEVEL_DEFAULT)),
                     "pad_scale": int(getattr(self, "pad_scale", SOUNDBOARD_PAD_SCALE_DEFAULT)),
+                    "show_shortcuts": bool(getattr(self, "show_shortcuts", SOUNDBOARD_SHOW_SHORTCUTS_DEFAULT)),
+                    "monitor_to_mic_out": bool(getattr(self, "monitor_to_mic_out", SOUNDBOARD_MONITOR_TO_MIC_OUT_DEFAULT)),
+                    "send_to_micro": bool(getattr(self, "send_to_micro", SOUNDBOARD_SEND_TO_MICRO_DEFAULT)),
                     "slots": self.slots,
                 },
                 indent=2,
@@ -1564,6 +1617,7 @@ class SoundboardDialog(QDialog):
                 pad.edit_clicked.connect(self._on_pad_edit_clicked)
                 pad.set_edit_mode(self.edit_mode)
                 pad.set_pad_scale(self.pad_scale)
+                pad.set_shortcuts_visible(self.show_shortcuts)
                 self.pad_widgets.append(pad)
                 self.grid.addWidget(pad, index // columns, index % columns)
 
@@ -1928,6 +1982,114 @@ class SoundboardDialog(QDialog):
             ),
         )
 
+
+    def _load_route_bool(self, key: str, default: bool) -> bool:
+        if not SOUNDBOARD_PATH.is_file():
+            return bool(default)
+
+        try:
+            data = json.loads(SOUNDBOARD_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            return bool(default)
+
+        if not isinstance(data, dict):
+            return bool(default)
+
+        return bool(data.get(key, default))
+
+    def _load_monitor_to_mic_out(self) -> bool:
+        return self._load_route_bool(
+            SOUNDBOARD_ROUTE_MONITOR_TO_MIC_OUT,
+            SOUNDBOARD_MONITOR_TO_MIC_OUT_DEFAULT,
+        )
+
+    def _load_send_to_micro(self) -> bool:
+        return self._load_route_bool(
+            SOUNDBOARD_ROUTE_SEND_TO_MICRO,
+            SOUNDBOARD_SEND_TO_MICRO_DEFAULT,
+        )
+
+    def _sync_route_state_from_provider(self) -> None:
+        provider = getattr(self, "_route_state_provider", None)
+        if not callable(provider):
+            return
+
+        try:
+            state = provider()
+        except Exception:
+            return
+
+        if not isinstance(state, dict):
+            return
+
+        if SOUNDBOARD_ROUTE_MONITOR_TO_MIC_OUT in state:
+            self.monitor_to_mic_out = bool(state.get(SOUNDBOARD_ROUTE_MONITOR_TO_MIC_OUT))
+
+        if SOUNDBOARD_ROUTE_SEND_TO_MICRO in state:
+            self.send_to_micro = bool(state.get(SOUNDBOARD_ROUTE_SEND_TO_MICRO))
+
+    def _sync_route_checkbox_widgets(self) -> None:
+        widgets = (
+            ("monitor_to_mic_out_check", bool(getattr(self, "monitor_to_mic_out", False))),
+            ("send_to_micro_check", bool(getattr(self, "send_to_micro", False))),
+        )
+
+        for attr, checked in widgets:
+            widget = getattr(self, attr, None)
+            if widget is None:
+                continue
+            widget.blockSignals(True)
+            widget.setChecked(checked)
+            widget.blockSignals(False)
+
+    def refresh_route_controls(self) -> None:
+        self._sync_route_state_from_provider()
+        self._sync_route_checkbox_widgets()
+
+    def _set_global_route_from_ui(self, route_key: str, enabled: bool) -> None:
+        route_key = str(route_key or "").strip()
+        enabled = bool(enabled)
+
+        attr_by_key = {
+            SOUNDBOARD_ROUTE_MONITOR_TO_MIC_OUT: "monitor_to_mic_out",
+            SOUNDBOARD_ROUTE_SEND_TO_MICRO: "send_to_micro",
+        }
+
+        attr = attr_by_key.get(route_key, "")
+        if not attr:
+            return
+
+        previous = bool(getattr(self, attr, False))
+        setattr(self, attr, enabled)
+
+        callback = getattr(self, "_route_state_changed", None)
+        ok = True
+        if callable(callback):
+            try:
+                ok = bool(callback(route_key, enabled))
+            except Exception:
+                ok = False
+
+        if not ok:
+            setattr(self, attr, previous)
+            self._sync_route_checkbox_widgets()
+            if hasattr(self, "status_label"):
+                self.status_label.setText("Soundboard routing change failed")
+            return
+
+        self.save()
+
+        if hasattr(self, "status_label"):
+            label = "Monitor to MIC OUT" if route_key == SOUNDBOARD_ROUTE_MONITOR_TO_MIC_OUT else "Send to MICRO"
+            self.status_label.setText(f"{label}: {'ON' if enabled else 'OFF'}")
+
+    def _on_monitor_to_mic_out_changed(self, checked: bool) -> None:
+        self._set_global_route_from_ui(SOUNDBOARD_ROUTE_MONITOR_TO_MIC_OUT, bool(checked))
+
+    def _on_send_to_micro_changed(self, checked: bool) -> None:
+        self._set_global_route_from_ui(SOUNDBOARD_ROUTE_SEND_TO_MICRO, bool(checked))
+
+
     def _load_global_volume(self) -> int:
         if not SOUNDBOARD_PATH.is_file():
             return SOUNDBOARD_GLOBAL_VOLUME_DEFAULT
@@ -1961,6 +2123,18 @@ class SoundboardDialog(QDialog):
             return SOUNDBOARD_PAD_SCALE_DEFAULT
 
         return max(SOUNDBOARD_PAD_SCALE_MIN, min(SOUNDBOARD_PAD_SCALE_MAX, value))
+
+    def _load_show_shortcuts(self) -> bool:
+        if not SOUNDBOARD_PATH.is_file():
+            return SOUNDBOARD_SHOW_SHORTCUTS_DEFAULT
+
+        try:
+            data = json.loads(SOUNDBOARD_PATH.read_text(encoding="utf-8"))
+            return bool(data.get("show_shortcuts", SOUNDBOARD_SHOW_SHORTCUTS_DEFAULT))
+        except Exception:
+            return SOUNDBOARD_SHOW_SHORTCUTS_DEFAULT
+
+
 
     def set_global_volume(self, value) -> None:
         try:
@@ -2035,6 +2209,22 @@ class SoundboardDialog(QDialog):
         self.global_volume = max(0, min(100, int(value)))
         self.global_volume_value.setText(f"{int(self.global_volume)}%")
         self.save()
+
+    def _on_shortcuts_visible_changed(self, checked: bool) -> None:
+        self.show_shortcuts = bool(checked)
+
+        for pad in getattr(self, "pad_widgets", []):
+            pad.set_shortcuts_visible(self.show_shortcuts)
+
+        if hasattr(self, "shortcuts_note"):
+            self.shortcuts_note.setVisible(self.show_shortcuts)
+
+        self.save()
+        self.status_label.setText(
+            "Shortcuts: visible · under tests, coming soon"
+            if self.show_shortcuts
+            else "Shortcuts: hidden"
+        )
 
     def _on_auto_level_changed(self, checked: bool) -> None:
         self.auto_level_enabled = bool(checked)
@@ -2334,17 +2524,14 @@ class SoundboardDialog(QDialog):
                 volume=effective_volume,
             )
 
+
     def _ensure_soundboard_output_ready(self, target_channel: str = "") -> tuple[bool, bool]:
-        # Stable mode: pads play into the SOUNDBOARD bus and are monitored globally on MEDIA.
-        # Per-pad Hear/MIC routes are intentionally not used here.
+        # Stable mode: keep only the SOUNDBOARD bus here.
+        # Do not recreate the old Hear-style soundboard.monitor -> MEDIA loopback.
         if not bool(getattr(self, "_soundboard_bus_ready", False)):
             self._soundboard_bus_ready = bool(_ensure_soundboard_bus())
 
-        if not self._soundboard_bus_ready:
-            return False, False
-
-        monitor_found = bool(_ensure_soundboard_monitor_route("media"))
-        return True, monitor_found
+        return bool(self._soundboard_bus_ready), False
 
     def _effective_volume(self, slot: dict[str, Any], path: Path, pad_volume: int) -> float:
         global_factor = max(0.0, min(1.0, float(self.global_volume) / 100.0))
@@ -2357,14 +2544,17 @@ class SoundboardDialog(QDialog):
         base = max(0.0, min(100.0, float(pad_volume)))
         return max(0.0, min(100.0, base * global_factor))
 
+
     def stop_all(self) -> None:
-        stopped = 0
+        stopped = self._stop_external_soundboard_players()
+
         for player, _audio in list(self._players.values()):
             try:
                 player.stop()
                 stopped += 1
             except Exception:
                 pass
+
         self.status_label.setText(f"Stop all: {stopped} player(s) stopped")
 
     def _rebuild_shortcuts(self) -> None:
@@ -2447,9 +2637,130 @@ class SoundboardDialog(QDialog):
         player.play()
         return device_found
 
+
+    def _prune_external_soundboard_players(self) -> None:
+        alive = []
+        for ffmpeg_proc, paplay_proc in list(getattr(self, "_external_soundboard_players", [])):
+            try:
+                ffmpeg_done = ffmpeg_proc.poll() is not None
+            except Exception:
+                ffmpeg_done = True
+
+            try:
+                paplay_done = paplay_proc.poll() is not None
+            except Exception:
+                paplay_done = True
+
+            if ffmpeg_done and paplay_done:
+                continue
+
+            alive.append((ffmpeg_proc, paplay_proc))
+
+        self._external_soundboard_players = alive
+
+    def _stop_external_soundboard_players(self) -> int:
+        stopped = 0
+
+        for ffmpeg_proc, paplay_proc in list(getattr(self, "_external_soundboard_players", [])):
+            for proc in (paplay_proc, ffmpeg_proc):
+                try:
+                    if proc.poll() is None:
+                        proc.terminate()
+                        stopped += 1
+                except Exception:
+                    pass
+
+        self._external_soundboard_players = []
+        return stopped
+
+    def _start_pipewire_file_player(self, *, key: str, path: Path, sink_name: str, volume: float) -> bool:
+        """Decode any supported audio file with ffmpeg and send PCM to an exact PipeWire/Pulse sink.
+
+        This avoids the Qt/QMediaPlayer device-selection path, which can create a sink-input
+        without audible samples after startup or when launched through the Android remote.
+        """
+        if not _sink_exists(sink_name):
+            return False
+
+        ffmpeg_bin = "/usr/bin/ffmpeg" if Path("/usr/bin/ffmpeg").is_file() else "ffmpeg"
+        paplay_bin = "/usr/bin/paplay" if Path("/usr/bin/paplay").is_file() else "paplay"
+
+        try:
+            volume_factor = max(0.0, min(1.0, float(volume) / 100.0))
+        except Exception:
+            volume_factor = 0.8
+
+        media_name = f"K-Sounds Soundboard {key}"
+
+        ffmpeg_cmd = [
+            ffmpeg_bin,
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            str(path),
+            "-filter:a",
+            f"volume={volume_factor:.6f}",
+            "-f",
+            "s16le",
+            "-acodec",
+            "pcm_s16le",
+            "-ac",
+            "2",
+            "-ar",
+            "48000",
+            "pipe:1",
+        ]
+
+        paplay_cmd = [
+            paplay_bin,
+            f"--device={sink_name}",
+            "--raw",
+            "--format=s16le",
+            "--rate=48000",
+            "--channels=2",
+            f"--property=media.name={media_name}",
+        ]
+
+        try:
+            self._prune_external_soundboard_players()
+
+            ffmpeg_proc = subprocess.Popen(
+                ffmpeg_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+            )
+
+            if ffmpeg_proc.stdout is None:
+                try:
+                    ffmpeg_proc.terminate()
+                except Exception:
+                    pass
+                return False
+
+            paplay_proc = subprocess.Popen(
+                paplay_cmd,
+                stdin=ffmpeg_proc.stdout,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+
+            ffmpeg_proc.stdout.close()
+
+            players = list(getattr(self, "_external_soundboard_players", []))
+            players.append((ffmpeg_proc, paplay_proc))
+            self._external_soundboard_players = players
+
+            return True
+        except Exception:
+            return False
+
     def _schedule_output_move_fallback(self, target_channel: str) -> None:
         for delay in (90, 220, 480):
             QTimer.singleShot(delay, lambda channel=target_channel: _move_latest_soundboard_stream(channel))
+
+
 
 
     def play_slot(self, slot_id: str) -> None:
@@ -2468,12 +2779,12 @@ class SoundboardDialog(QDialog):
         except Exception:
             volume = 80
 
-        send_to_micro = bool(slot.get("send_to_micro", False))
+        self._sync_route_state_from_provider()
 
         playback_path = self._fast_playback_path(slot, path)
         effective_volume = self._effective_volume(slot, path, volume)
 
-        bus_found, monitor_found = self._ensure_soundboard_output_ready("media")
+        bus_found, _monitor_found = self._ensure_soundboard_output_ready()
 
         output_found = False
         if bus_found:
@@ -2485,22 +2796,12 @@ class SoundboardDialog(QDialog):
             )
             self._schedule_output_move_fallback(SOUNDBOARD_BUS)
 
-        mic_found = False
-        if send_to_micro:
-            if _sink_exists("micro_bus"):
-                mic_found = self._start_player(
-                    key=f"{slot_id}:micro",
-                    path=playback_path,
-                    sink_name="micro_bus",
-                    volume=effective_volume,
-                )
-            else:
-                mic_found = False
+        route_parts = []
+        if bool(getattr(self, "monitor_to_mic_out", False)):
+            route_parts.append("MIC OUT")
+        if bool(getattr(self, "send_to_micro", False)):
+            route_parts.append("MICRO")
 
-        route_text = "SOUNDBOARD" if output_found else "SOUNDBOARD fallback"
-        monitor_text = " + MEDIA monitor" if monitor_found else " + monitor missing"
-        mic_text = " + MIC" if send_to_micro and mic_found else ""
-        if send_to_micro and not mic_found:
-            mic_text = " + MIC missing"
-
-        self.status_label.setText(f"Play: {slot.get('label', slot_id)} → {route_text}{monitor_text}{mic_text}")
+        bus_text = "SOUNDBOARD" if output_found else "SOUNDBOARD missing"
+        route_text = " + ".join(route_parts) if route_parts else "no global route"
+        self.status_label.setText(f"Play: {slot.get('label', slot_id)} → {bus_text} ({route_text})")

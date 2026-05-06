@@ -877,6 +877,9 @@ class MainWindow(QMainWindow):
 
         # Meters are refreshed by the dedicated throttled meter timer.
         # Calling them again from refresh_status made the UI do duplicate work.
+
+        if self.soundboard_dialog is not None and hasattr(self.soundboard_dialog, "refresh_route_controls"):
+            self.soundboard_dialog.refresh_route_controls()
         self._apply_column_widths()
 
     def _refresh_meters(self) -> None:
@@ -887,13 +890,70 @@ class MainWindow(QMainWindow):
             left, right = self.audio_engine.meter_levels(widget.channel.key)
             widget.set_meter_levels(left, right)
 
+    def _soundboard_route_state(self) -> dict[str, bool]:
+        def linked(channel_key: str) -> bool:
+            channel = self._find_channel(channel_key)
+            if channel is None:
+                return False
+            return "soundboard" in {
+                str(key).strip().lower()
+                for key in getattr(channel, "linked_channels", []) or []
+            }
+
+        return {
+            "monitor_to_mic_out": linked("return-mic"),
+            "send_to_micro": linked("micro"),
+        }
+
+    def _set_soundboard_route_state(self, route_key: str, enabled: bool) -> bool:
+        route_to_channel = {
+            "monitor_to_mic_out": "return-mic",
+            "send_to_micro": "micro",
+        }
+
+        channel_key = route_to_channel.get(str(route_key or "").strip())
+        if not channel_key:
+            return False
+
+        channel = self._find_channel(channel_key)
+        if channel is None:
+            return False
+
+        linked = [
+            str(key).strip().lower()
+            for key in getattr(channel, "linked_channels", []) or []
+            if str(key).strip()
+        ]
+
+        before = list(linked)
+        if enabled:
+            if "soundboard" not in linked:
+                linked.append("soundboard")
+        else:
+            linked = [key for key in linked if key != "soundboard"]
+
+        channel.linked_channels = linked
+
+        if linked != before:
+            self.audio_engine.apply_channel(self.settings, channel_key)
+            self.settings_store.save(self.settings)
+            self._queue_runtime_view_refresh(10)
+            self._status_timer.start()
+
+        return True
+
     def _ensure_soundboard_dialog(self) -> SoundboardDialog:
         if self.soundboard_dialog is None:
-            self.soundboard_dialog = SoundboardDialog()
+            self.soundboard_dialog = SoundboardDialog(
+                route_state_provider=self._soundboard_route_state,
+                route_state_changed=self._set_soundboard_route_state,
+            )
         return self.soundboard_dialog
 
     def open_soundboard(self) -> None:
         dialog = self._ensure_soundboard_dialog()
+        if hasattr(dialog, "refresh_route_controls"):
+            dialog.refresh_route_controls()
         dialog.show()
         dialog.raise_()
         dialog.activateWindow()

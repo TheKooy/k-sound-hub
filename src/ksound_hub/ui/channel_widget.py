@@ -857,7 +857,7 @@ class ChannelWidget(QFrame):
                     if not _set_soundboard_to_micro_channel_widget(True):
                         self._show_click_outside_message(
                             "Micro sends",
-                            "SOUNDBOARD a été ajouté, mais le lien soundboard.monitor → micro_bus n'a pas pu être créé.",
+                            "SOUNDBOARD was added, but the soundboard.monitor → micro_bus link could not be created.",
                             icon=QMessageBox.Warning,
                         )
                 self._emit_changed("micro_links")
