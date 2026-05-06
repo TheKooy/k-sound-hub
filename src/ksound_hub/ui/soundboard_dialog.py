@@ -557,15 +557,8 @@ class SoundboardPadWidget(QFrame):
 
         root.addLayout(volume_row)
 
-        # Per-pad MIC toggle removed.
-        # Soundboard MIC/return routing is now handled globally by the MICRO / MIC OUT channels.
-        self.micro_check = QPushButton("MIC OFF", self)
-        self.micro_check.setObjectName("soundboardMicSendButton")
-        self.micro_check.setCheckable(True)
-        self.micro_check.setChecked(False)
-        self.micro_check.setEnabled(False)
-        self.micro_check.setVisible(False)
-        self.slot["send_to_micro"] = False
+        # Per-pad MIC routing is intentionally not exposed here.
+        # Soundboard routing is global via Monitor to MIC OUT / Send to MICRO.
 
         self.shortcut_edit = QLineEdit(str(slot.get("shortcut", "")))
         self.shortcut_edit.setAlignment(Qt.AlignLeft)
@@ -586,7 +579,6 @@ class SoundboardPadWidget(QFrame):
             "file_label": _pt(self.file_label, 9.0),
             "volume_mode_label": _pt(self.volume_mode_label, 9.0),
             "volume_value": _pt(self.volume_value, 9.0),
-            "micro_check": _pt(self.micro_check, 9.0),
             "shortcut_edit": _pt(self.shortcut_edit, 9.0),
         }
 
@@ -631,7 +623,6 @@ class SoundboardPadWidget(QFrame):
         self._apply_font_size(self.file_label, self._font_bases["file_label"] * font_factor, 8.2, 13.5)
         self._apply_font_size(self.volume_mode_label, self._font_bases["volume_mode_label"] * font_factor, 8.0, 12.5)
         self._apply_font_size(self.volume_value, self._font_bases["volume_value"] * font_factor, 8.0, 12.5)
-        self._apply_font_size(self.micro_check, self._font_bases["micro_check"] * font_factor, 8.0, 12.5)
         self._apply_font_size(self.shortcut_edit, self._font_bases["shortcut_edit"] * font_factor, 8.0, 12.0)
 
         self.label_edit.setAlignment(Qt.AlignLeft)
@@ -890,29 +881,6 @@ class SoundboardPadWidget(QFrame):
     def _commit_output_channel(self, value: str) -> None:
         target = str(value or "MEDIA").strip().lower()
         self.slot["output_channel"] = target if target in PLAYBACK_TARGETS else "media"
-        self.changed.emit()
-
-
-    def _sync_send_to_micro_button(self) -> None:
-        if not hasattr(self, "micro_check"):
-            return
-
-        self.micro_check.blockSignals(True)
-        self.micro_check.setChecked(False)
-        self.micro_check.blockSignals(False)
-        self.micro_check.setText("MIC OFF")
-        self.micro_check.setEnabled(False)
-        self.micro_check.setVisible(False)
-        self.micro_check.setProperty("micEnabled", False)
-        self.micro_check.style().unpolish(self.micro_check)
-        self.micro_check.style().polish(self.micro_check)
-        self.micro_check.update()
-
-
-
-    def _commit_send_to_micro(self, checked: bool) -> None:
-        self.slot["send_to_micro"] = False
-        self._sync_send_to_micro_button()
         self.changed.emit()
 
     def _commit_shortcut(self) -> None:
@@ -1383,15 +1351,6 @@ class SoundboardDialog(QDialog):
                 background: rgba(190, 26, 42, 0.92);
                 font-weight: 900;
             }
-            QPushButton#soundboardDeleteButton {
-                border: 1px solid rgba(255, 78, 78, 0.70);
-                border-radius: 10px;
-                padding: 4px 8px;
-                font-size: 11px;
-                font-weight: 900;
-                color: rgba(255, 235, 235, 245);
-                background: rgba(70, 12, 18, 0.88);
-            }
             QPushButton#soundboardDeleteButton:hover {
                 border: 2px solid rgba(255, 78, 78, 1.00);
                 background: rgba(145, 24, 36, 0.92);
@@ -1420,29 +1379,6 @@ class SoundboardDialog(QDialog):
                 color: #fff4f6;
                 background: rgba(180, 28, 48, 0.92);
             }
-            QPushButton#soundboardMicSendButton {
-                border: 1px solid rgba(147, 164, 184, 0.55);
-                border-radius: 10px;
-                padding: 4px 10px;
-                font-size: 10px;
-                font-weight: 900;
-                color: rgba(236, 247, 255, 210);
-                background: rgba(50, 60, 78, 0.65);
-            }
-            QPushButton#soundboardMicSendButton:hover {
-                border: 1px solid rgba(62, 216, 255, 0.85);
-                background: rgba(62, 216, 255, 0.14);
-            }
-            QPushButton#soundboardMicSendButton:checked {
-                border: 2px solid rgba(62, 216, 255, 0.95);
-                color: #071018;
-                background: qlineargradient(
-                    x1:0, y1:0, x2:1, y2:0,
-                    stop:0 rgba(62, 216, 255, 0.95),
-                    stop:1 rgba(255, 92, 199, 0.95)
-                );
-            }
-
             QCheckBox#soundboardSwitch {
                 spacing: 8px;
                 font-weight: 800;
