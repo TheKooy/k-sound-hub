@@ -75,6 +75,21 @@ def read_slots() -> list[dict]:
     return [slot for slot in slots if isinstance(slot, dict)]
 
 
+def background_file_version(path_text: str) -> str:
+    path_text = str(path_text or "").strip()
+    if not path_text:
+        return ""
+
+    try:
+        image_path = Path(path_text).expanduser()
+        stat = image_path.stat()
+        if not image_path.is_file():
+            return ""
+        return f"{stat.st_mtime_ns}:{stat.st_size}"
+    except Exception:
+        return ""
+
+
 def read_soundboard_settings() -> dict:
     defaults = {
         "global_volume": 100,
@@ -150,6 +165,7 @@ def read_soundboard_state() -> dict:
         label = str(raw_slot.get("label") or f"SOUND {index + 1:02d}").strip() or f"SOUND {index + 1:02d}"
         path = str(raw_slot.get("path") or "").strip()
         background_path = str(raw_slot.get("background_path") or "").strip()
+        background_version = background_file_version(background_path)
 
         try:
             volume = max(0, min(100, int(raw_slot.get("volume", 80))))
@@ -166,8 +182,9 @@ def read_soundboard_state() -> dict:
                 "label": label,
                 "path": path,
                 "background_path": background_path,
+                "background_version": background_version,
                 "has_sound": bool(path),
-                "has_background": bool(background_path),
+                "has_background": bool(background_version),
                 "volume": volume,
                 "shortcut": str(raw_slot.get("shortcut") or "").strip(),
                 "output_channel": output_channel,
@@ -332,7 +349,8 @@ def page(status: str = "") -> bytes:
         label = str(slot.get("label") or slot_id)
         path_text = str(slot.get("path") or "")
         background_path = str(slot.get("background_path") or "").strip()
-        background_exists = bool(background_path and Path(background_path).expanduser().is_file())
+        background_version = background_file_version(background_path)
+        background_exists = bool(background_version)
         disabled = "" if path_text else "disabled"
         subtitle = Path(path_text).name if path_text else "No sound"
         pad_class = "pad has-bg" if background_exists else "pad"
@@ -343,6 +361,8 @@ def page(status: str = "") -> bytes:
                 + quote(TOKEN, safe="")
                 + "&slot="
                 + quote(slot_id, safe="")
+                + "&rev="
+                + quote(background_version, safe="")
             )
             style_attr = f' style="--pad-bg: url({html.escape(background_url, quote=True)})"'
 
@@ -364,7 +384,6 @@ def page(status: str = "") -> bytes:
                 {disabled}
               >
                 <strong>{html.escape(label)}</strong>
-                <span>{html.escape(slot_id)} · {html.escape(subtitle)}</span>
               </button>
             </div>
             """
@@ -1645,7 +1664,9 @@ class Handler(BaseHTTPRequestHandler):
 
             self.send_response(200)
             self.send_header("Content-Type", mime_type)
-            self.send_header("Cache-Control", "no-store")
+            self.send_header("Cache-Control", "no-store, max-age=0")
+            self.send_header("Pragma", "no-cache")
+            self.send_header("Expires", "0")
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             self.wfile.write(data)

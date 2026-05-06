@@ -42,6 +42,8 @@ SOUNDBOARD_PATH = CONFIG_DIR / "soundboard.json"
 SOUNDBOARD_PAIRING_PATH = CONFIG_DIR / "soundboard_pairing.json"
 SOUNDBOARD_PAIRING_TTL_SECONDS = 300
 SOUNDBOARD_CACHE_DIR = CONFIG_DIR / "soundboard-cache"
+SOUNDBOARD_LAST_AUDIO_DIR_PATH = CONFIG_DIR / "soundboard_last_audio_dir.txt"
+SOUNDBOARD_LAST_BACKGROUND_DIR_PATH = CONFIG_DIR / "soundboard_last_background_dir.txt"
 SOUNDBOARD_LAST_DIR_PATH = CONFIG_DIR / "soundboard_last_dir.txt"
 SOUNDBOARD_LOUDNORM_I = -18.0
 SOUNDBOARD_LOUDNORM_TP = -1.5
@@ -514,6 +516,26 @@ class SoundboardPadWidget(QFrame):
         layer.setVisible(True)
         layer.lower()
 
+    def _save_parent_dialog_now(self) -> None:
+        dialog = self.parent()
+        while dialog is not None and not hasattr(dialog, "save"):
+            dialog = dialog.parent()
+
+        if dialog is not None and hasattr(dialog, "save"):
+            try:
+                dialog.save(rebuild_shortcuts=False)
+                return
+            except TypeError:
+                try:
+                    dialog.save()
+                    return
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+        self.changed.emit()
+
     def set_pad_scale(self, scale_percent: int) -> None:
         try:
             value = int(scale_percent)
@@ -825,15 +847,16 @@ class SoundboardPadWidget(QFrame):
         current = str(self.slot.get("path", "") or "")
 
         start_candidates: list[Path] = []
-        if current:
-            start_candidates.append(Path(current).expanduser().parent)
 
         try:
-            last_dir = SOUNDBOARD_LAST_DIR_PATH.read_text(encoding="utf-8").strip()
-            if last_dir:
-                start_candidates.append(Path(last_dir).expanduser())
+            last_audio_dir = SOUNDBOARD_LAST_AUDIO_DIR_PATH.read_text(encoding="utf-8").strip()
+            if last_audio_dir:
+                start_candidates.append(Path(last_audio_dir).expanduser())
         except Exception:
             pass
+
+        if current:
+            start_candidates.append(Path(current).expanduser().parent)
 
         start_candidates.append(Path.home())
 
@@ -858,9 +881,9 @@ class SoundboardPadWidget(QFrame):
         selected_path = Path(filename).expanduser()
 
         try:
-            SOUNDBOARD_LAST_DIR_PATH.parent.mkdir(parents=True, exist_ok=True)
-            SOUNDBOARD_LAST_DIR_PATH.write_text(str(selected_path.parent) + "\n", encoding="utf-8")
-            SOUNDBOARD_LAST_DIR_PATH.chmod(0o600)
+            SOUNDBOARD_LAST_AUDIO_DIR_PATH.parent.mkdir(parents=True, exist_ok=True)
+            SOUNDBOARD_LAST_AUDIO_DIR_PATH.write_text(str(selected_path.parent) + "\n", encoding="utf-8")
+            SOUNDBOARD_LAST_AUDIO_DIR_PATH.chmod(0o600)
         except Exception:
             pass
 
@@ -880,20 +903,18 @@ class SoundboardPadWidget(QFrame):
 
     def _choose_background(self) -> None:
         current = str(self.slot.get("background_path", "") or "").strip()
-        audio_path = str(self.slot.get("path", "") or "").strip()
 
         start_candidates: list[Path] = []
-        if current:
-            start_candidates.append(Path(current).expanduser().parent)
-        if audio_path:
-            start_candidates.append(Path(audio_path).expanduser().parent)
 
         try:
-            last_dir = SOUNDBOARD_LAST_DIR_PATH.read_text(encoding="utf-8").strip()
-            if last_dir:
-                start_candidates.append(Path(last_dir).expanduser())
+            last_background_dir = SOUNDBOARD_LAST_BACKGROUND_DIR_PATH.read_text(encoding="utf-8").strip()
+            if last_background_dir:
+                start_candidates.append(Path(last_background_dir).expanduser())
         except Exception:
             pass
+
+        if current:
+            start_candidates.append(Path(current).expanduser().parent)
 
         start_candidates.append(Path.home())
 
@@ -918,9 +939,9 @@ class SoundboardPadWidget(QFrame):
         selected_path = Path(filename).expanduser()
 
         try:
-            SOUNDBOARD_LAST_DIR_PATH.parent.mkdir(parents=True, exist_ok=True)
-            SOUNDBOARD_LAST_DIR_PATH.write_text(str(selected_path.parent) + "\n", encoding="utf-8")
-            SOUNDBOARD_LAST_DIR_PATH.chmod(0o600)
+            SOUNDBOARD_LAST_BACKGROUND_DIR_PATH.parent.mkdir(parents=True, exist_ok=True)
+            SOUNDBOARD_LAST_BACKGROUND_DIR_PATH.write_text(str(selected_path.parent) + "\n", encoding="utf-8")
+            SOUNDBOARD_LAST_BACKGROUND_DIR_PATH.chmod(0o600)
         except Exception:
             pass
 
@@ -928,7 +949,7 @@ class SoundboardPadWidget(QFrame):
         self._background_pixmap_path = ""
         self._background_pixmap = QPixmap()
         self._update_background_layer()
-        self.changed.emit()
+        self._save_parent_dialog_now()
 
     def _clear_background(self) -> None:
         if not str(self.slot.get("background_path", "") or "").strip():
@@ -938,7 +959,7 @@ class SoundboardPadWidget(QFrame):
         self._background_pixmap_path = ""
         self._background_pixmap = QPixmap()
         self._update_background_layer()
-        self.changed.emit()
+        self._save_parent_dialog_now()
 
 
     def _reset_clear_confirm(self) -> None:
@@ -1479,12 +1500,83 @@ class SoundboardDialog(QDialog):
 
         return _ensure_unique_slot_ids(raw_slots)
 
+    def _sync_slots_from_pad_widgets(self) -> None:
+        """Copy live pad widget state back into self.slots before saving.
+
+        save() normalizes self.slots into fresh dictionaries. Existing pad widgets
+        can therefore point at older dict objects after the first save. This keeps
+        later per-pad edits, including background_path changes, persistent.
+        """
+        widgets = list(getattr(self, "pad_widgets", []) or [])
+        if not widgets:
+            return
+
+        live_by_id: dict[str, dict[str, Any]] = {}
+        for pad in widgets:
+            slot = getattr(pad, "slot", None)
+            if not isinstance(slot, dict):
+                continue
+
+            slot_id = str(slot.get("id", "") or "").strip()
+            if slot_id:
+                live_by_id[slot_id] = dict(slot)
+
+        if not live_by_id:
+            return
+
+        synced: list[dict[str, Any]] = []
+        for slot in self.slots:
+            if not isinstance(slot, dict):
+                synced.append(slot)
+                continue
+
+            slot_id = str(slot.get("id", "") or "").strip()
+            if slot_id in live_by_id:
+                merged = dict(slot)
+                merged.update(live_by_id[slot_id])
+                synced.append(merged)
+            else:
+                synced.append(slot)
+
+        self.slots = synced
+
+    def _rebind_pad_widgets_to_slots(self) -> None:
+        """Point visible pad widgets back to the current self.slots dictionaries."""
+        widgets = list(getattr(self, "pad_widgets", []) or [])
+        if not widgets:
+            return
+
+        slots_by_id = {
+            str(slot.get("id", "") or "").strip(): slot
+            for slot in self.slots
+            if isinstance(slot, dict) and str(slot.get("id", "") or "").strip()
+        }
+
+        for pad in widgets:
+            old_slot = getattr(pad, "slot", None)
+            if not isinstance(old_slot, dict):
+                continue
+
+            slot_id = str(old_slot.get("id", "") or "").strip()
+            new_slot = slots_by_id.get(slot_id)
+            if new_slot is None:
+                continue
+
+            pad.slot = new_slot
+            try:
+                pad._update_background_layer()
+            except Exception:
+                pass
+
+
     def save(self, *, rebuild_shortcuts: bool = True) -> None:
         timer = getattr(self, "_save_debounce_timer", None)
         if timer is not None and timer.isActive():
             timer.stop()
 
+        self._sync_slots_from_pad_widgets()
         self.slots = _ensure_unique_slot_ids(self.slots)
+        self._rebind_pad_widgets_to_slots()
         SOUNDBOARD_PATH.parent.mkdir(parents=True, exist_ok=True)
         SOUNDBOARD_PATH.write_text(
             json.dumps(
