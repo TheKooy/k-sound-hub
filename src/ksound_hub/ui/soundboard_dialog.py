@@ -901,6 +901,71 @@ class SoundboardPadWidget(QFrame):
         self._update_background_layer()
         self.changed.emit()
 
+    def _choose_background_file_with_preview(self, start_dir: Path) -> str:
+        dialog = QFileDialog(
+            self,
+            "Choose a pad background",
+            str(start_dir),
+            SUPPORTED_IMAGE_FILTER,
+        )
+        dialog.setOption(QFileDialog.DontUseNativeDialog, True)
+        dialog.setFileMode(QFileDialog.ExistingFile)
+        dialog.setAcceptMode(QFileDialog.AcceptOpen)
+
+        preview = QLabel("Select an image")
+        preview.setObjectName("mutedLabel")
+        preview.setAlignment(Qt.AlignCenter)
+        preview.setMinimumSize(260, 190)
+        preview.setWordWrap(True)
+        preview.setStyleSheet("""
+            QLabel {
+                border: 1px solid rgba(62, 216, 255, 0.30);
+                border-radius: 14px;
+                background: rgba(8, 12, 22, 0.84);
+                padding: 10px;
+            }
+        """)
+
+        def update_preview(path_text: str) -> None:
+            candidate = Path(str(path_text or "")).expanduser()
+            if not candidate.is_file():
+                preview.clear()
+                preview.setText("Select an image")
+                return
+
+            pixmap = QPixmap(str(candidate))
+            if pixmap.isNull():
+                preview.clear()
+                preview.setText("No preview")
+                return
+
+            scaled = pixmap.scaled(
+                preview.size(),
+                Qt.KeepAspectRatio,
+                Qt.SmoothTransformation,
+            )
+            preview.setText("")
+            preview.setPixmap(scaled)
+
+        try:
+            layout = dialog.layout()
+            if layout is not None and hasattr(layout, "rowCount") and hasattr(layout, "columnCount"):
+                layout.addWidget(preview, 0, int(layout.columnCount()), max(1, int(layout.rowCount())), 1)
+            elif layout is not None:
+                layout.addWidget(preview)
+        except Exception:
+            pass
+
+        dialog.currentChanged.connect(update_preview)
+        dialog.filesSelected.connect(lambda files: update_preview(files[0] if files else ""))
+
+        if not dialog.exec():
+            return ""
+
+        selected = dialog.selectedFiles()
+        return selected[0] if selected else ""
+
+
     def _choose_background(self) -> None:
         current = str(self.slot.get("background_path", "") or "").strip()
 
@@ -927,12 +992,7 @@ class SoundboardPadWidget(QFrame):
             except Exception:
                 continue
 
-        filename, _ = QFileDialog.getOpenFileName(
-            self,
-            "Choose a pad background",
-            str(start_dir),
-            SUPPORTED_IMAGE_FILTER,
-        )
+        filename = self._choose_background_file_with_preview(start_dir)
         if not filename:
             return
 
