@@ -120,7 +120,6 @@ def soundboard_revision() -> str:
 
 def read_soundboard_state() -> dict:
     data = {}
-    revision = int(time.time() * 1000)
 
     if CONFIG_PATH.is_file():
         try:
@@ -129,11 +128,6 @@ def read_soundboard_state() -> dict:
                 data = {}
         except Exception:
             data = {}
-
-        try:
-            revision = CONFIG_PATH.stat().st_mtime_ns
-        except Exception:
-            pass
 
     raw_slots = data.get("slots", [])
     if not isinstance(raw_slots, list):
@@ -168,6 +162,19 @@ def read_soundboard_state() -> dict:
                 "output_channel": output_channel,
             }
         )
+
+    revision_payload = {
+        "slots": slots,
+        "slot_count": len(slots),
+    }
+    revision = hashlib.sha1(
+        json.dumps(
+            revision_payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
 
     return {
         "revision": revision,
@@ -288,7 +295,7 @@ def json_response(handler: BaseHTTPRequestHandler, status: int, payload: dict) -
 def page(status: str = "") -> bytes:
     slots = read_slots()
     settings = read_soundboard_settings()
-    config_revision = html.escape(soundboard_revision(), quote=True)
+    config_revision = html.escape(str(read_soundboard_state().get("revision", "")), quote=True)
     global_volume = int(settings.get("global_volume", 100))
     auto_level_text = "ON" if settings.get("auto_level_enabled") else "OFF"
 

@@ -81,6 +81,33 @@ start_easyeffects_service() {
     >"$KSH_CONFIG_DIR/runtime/easyeffects.log" 2>&1 &
 }
 
+start_soundboard_remote_service() {
+  local start_remote="${KSH_START_SOUNDBOARD_REMOTE:-1}"
+  case "${start_remote,,}" in
+    0|false|no|off)
+      return 0
+      ;;
+  esac
+
+  local remote_script="$REPO_DIR/tools/soundboard_remote/ksound_soundboard_web.py"
+  [[ -f "$remote_script" ]] || return 0
+
+  if pgrep -u "$(id -u)" -f 'ksound_soundboard_web\.py' >/dev/null 2>&1; then
+    return 0
+  fi
+
+  mkdir -p "$KSH_CONFIG_DIR/runtime"
+
+  nohup env \
+    KSH_RUNTIME_ROLE="soundboard_remote_web" \
+    KSH_CONFIG_DIR="$KSH_CONFIG_DIR" \
+    KSH_IPC_SOCKET_PATH="$KSH_IPC_SOCKET_PATH" \
+    KSOUND_SOUNDBOARD_WEB_PORT="${KSOUND_SOUNDBOARD_WEB_PORT:-8765}" \
+    KSOUND_SOUNDBOARD_DISCOVERY_PORT="${KSOUND_SOUNDBOARD_DISCOVERY_PORT:-8766}" \
+    "$PYTHON_BIN" "$remote_script" \
+    >"$KSH_CONFIG_DIR/runtime/soundboard-web.log" 2>&1 &
+}
+
 cleanup_managed_processes() {
   "$PYTHON_BIN" - <<'PY'
 import os
@@ -88,7 +115,7 @@ import signal
 import time
 from pathlib import Path
 
-TARGET_ROLES = {"eq_slot", "meter_probe", "native_engine_shadow", "native_engine_bridge", "native_engine_real", "native_micro_engine", "v2_final_capture", "v2_final_render"}
+TARGET_ROLES = {"eq_slot", "meter_probe", "native_engine_shadow", "native_engine_bridge", "native_engine_real", "native_micro_engine", "v2_final_capture", "v2_final_render", "soundboard_remote_web"}
 uid = os.getuid()
 proc_root = Path("/proc")
 pids = []
@@ -146,6 +173,7 @@ PY
 }
 
 if is_real_instance_running; then
+  start_soundboard_remote_service
   if try_restore; then
     exit 0
   fi
@@ -175,5 +203,6 @@ fi
 # Run only the PySide app through XWayland/XCB so per-window position restore works.
 export QT_QPA_PLATFORM="${KSH_QT_PLATFORM:-xcb}"
 start_easyeffects_service
+start_soundboard_remote_service
 
 exec "$PYTHON_BIN" -m ksound_hub.app
