@@ -47,6 +47,7 @@ SOUNDBOARD_LOUDNORM_I = -18.0
 SOUNDBOARD_LOUDNORM_TP = -1.5
 SOUNDBOARD_LIMITER_LIMIT = 0.95
 SUPPORTED_AUDIO_FILTER = "Audio files (*.wav *.wave *.ogg *.oga *.flac *.mp3 *.m4a);;All files (*)"
+SUPPORTED_IMAGE_FILTER = "Image files (*.png *.jpg *.jpeg *.webp *.bmp);;All files (*)"
 SOUNDBOARD_GLOBAL_VOLUME_DEFAULT = 100
 SOUNDBOARD_AUTO_LEVEL_DEFAULT = False
 SOUNDBOARD_TARGET_PEAK_DB = -12.0
@@ -77,6 +78,7 @@ def _default_slot_number(number: int) -> dict[str, Any]:
         "id": _slot_id(number - 1),
         "label": f"SOUND {number}",
         "path": "",
+        "background_path": "",
         "volume": 80,
         "shortcut": "",
         "output_channel": "media",
@@ -113,6 +115,7 @@ def _clean_slot(raw: dict[str, Any], fallback_index: int) -> dict[str, Any]:
     slot_id = str(raw.get("id") or _slot_id(fallback_index)).strip() or _slot_id(fallback_index)
     label = str(raw.get("label") or f"SOUND {fallback_index + 1}").strip() or f"SOUND {fallback_index + 1}"
     path = str(raw.get("path") or "").strip()
+    background_path = str(raw.get("background_path") or "").strip()
     shortcut = str(raw.get("shortcut") or "").strip()
     output_channel = str(raw.get("output_channel") or "media").strip().lower()
     if output_channel not in PLAYBACK_TARGETS:
@@ -141,6 +144,7 @@ def _clean_slot(raw: dict[str, Any], fallback_index: int) -> dict[str, Any]:
         "id": slot_id,
         "label": label,
         "path": path,
+        "background_path": background_path,
         "volume": max(0, min(100, volume)),
         "shortcut": shortcut,
         "output_channel": output_channel,
@@ -318,6 +322,12 @@ class SoundboardPadWidget(QFrame):
         self.setMinimumWidth(230)
         self._edit_mode = False
         self._manual_drag_active = False
+        self._background_pixmap_path = ""
+        self._background_pixmap = QPixmap()
+        self.background_layer = QLabel(self)
+        self.background_layer.setObjectName("soundPadBackgroundLayer")
+        self.background_layer.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.background_layer.lower()
 
         root = QVBoxLayout(self)
         self._root_layout = root
@@ -372,10 +382,11 @@ class SoundboardPadWidget(QFrame):
         file_row.setContentsMargins(0, 0, 0, 0)
         file_row.setSpacing(6)
 
-        choose_btn = QPushButton("Choose")
-        choose_btn.setObjectName("ghostButton")
-        choose_btn.clicked.connect(self._choose_file)
-        file_row.addWidget(choose_btn)
+        self.choose_btn = QPushButton("Choose")
+        self.choose_btn.setObjectName("ghostButton")
+        self.choose_btn.setProperty("soundPadEditControl", True)
+        self.choose_btn.clicked.connect(self._choose_file)
+        file_row.addWidget(self.choose_btn)
 
         self._clear_confirm_pending = False
         self._clear_confirm_timer = QTimer(self)
@@ -384,10 +395,26 @@ class SoundboardPadWidget(QFrame):
 
         self.clear_btn = QPushButton("Clear")
         self.clear_btn.setObjectName("soundPadClearButton")
+        self.clear_btn.setProperty("soundPadEditControl", True)
         self.clear_btn.clicked.connect(self._clear_file)
         file_row.addWidget(self.clear_btn)
 
+        self.background_btn = QPushButton("Background")
+        self.background_btn.setObjectName("ghostButton")
+        self.background_btn.setProperty("soundPadEditControl", True)
+        self.background_btn.clicked.connect(self._choose_background)
+        file_row.addWidget(self.background_btn)
+
+        self.clear_background_btn = QPushButton("Clear BG")
+        self.clear_background_btn.setObjectName("soundPadClearButton")
+        self.clear_background_btn.setProperty("soundPadEditControl", True)
+        self.clear_background_btn.clicked.connect(self._clear_background)
+        file_row.addWidget(self.clear_background_btn)
+
         root.addLayout(file_row)
+
+        for edit_only_button in (self.clear_btn, self.background_btn, self.clear_background_btn):
+            edit_only_button.setVisible(False)
 
         volume_row = QHBoxLayout()
         volume_row.setContentsMargins(0, 0, 0, 0)
@@ -442,6 +469,50 @@ class SoundboardPadWidget(QFrame):
             if point_size <= 0:
                 point_size = float(font.pointSize() if font.pointSize() > 0 else 10.0)
             self._base_font_sizes[widget] = point_size
+
+        self._update_background_layer()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._update_background_layer()
+
+    def _load_background_pixmap(self) -> QPixmap:
+        background_path = str(self.slot.get("background_path", "") or "").strip()
+        if not background_path:
+            self._background_pixmap_path = ""
+            self._background_pixmap = QPixmap()
+            return self._background_pixmap
+
+        if self._background_pixmap_path == background_path and not self._background_pixmap.isNull():
+            return self._background_pixmap
+
+        pixmap = QPixmap(str(Path(background_path).expanduser()))
+        self._background_pixmap_path = background_path
+        self._background_pixmap = pixmap
+        return pixmap
+
+    def _update_background_layer(self) -> None:
+        layer = getattr(self, "background_layer", None)
+        if layer is None:
+            return
+
+        layer.setGeometry(self.rect())
+        layer.lower()
+
+        pixmap = self._load_background_pixmap()
+        if pixmap.isNull() or self.width() <= 0 or self.height() <= 0:
+            layer.clear()
+            layer.setVisible(False)
+            return
+
+        scaled = pixmap.scaled(self.size(), Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+        x = max(0, (scaled.width() - self.width()) // 2)
+        y = max(0, (scaled.height() - self.height()) // 2)
+        cropped = scaled.copy(x, y, self.width(), self.height())
+
+        layer.setPixmap(cropped)
+        layer.setVisible(True)
+        layer.lower()
 
     def set_pad_scale(self, scale_percent: int) -> None:
         try:
@@ -518,12 +589,9 @@ class SoundboardPadWidget(QFrame):
         widget.update()
 
     def _set_child_mouse_transparency(self, enabled: bool) -> None:
-        # In edit mode, the whole card should behave as one drag handle.
-        # Otherwise child widgets like QLineEdit/QPushButton can steal press/release
-        # events and leave the manual drag stuck.
         for child in self.findChildren(QWidget):
-            if child is not self:
-                child.setAttribute(Qt.WA_TransparentForMouseEvents, bool(enabled))
+            keep_interactive = bool(child.property("soundPadEditControl"))
+            child.setAttribute(Qt.WA_TransparentForMouseEvents, bool(enabled and not keep_interactive))
 
     def _safe_release_manual_drag(self) -> None:
         try:
@@ -539,6 +607,16 @@ class SoundboardPadWidget(QFrame):
         self._edit_mode = bool(enabled)
         self.setAcceptDrops(False)
         self.move_controls.setVisible(False)
+
+        for edit_only_button in (
+            getattr(self, "clear_btn", None),
+            getattr(self, "background_btn", None),
+            getattr(self, "clear_background_btn", None),
+        ):
+            if edit_only_button is not None:
+                edit_only_button.setVisible(self._edit_mode)
+                edit_only_button.setEnabled(self._edit_mode)
+
         self._set_child_mouse_transparency(self._edit_mode)
 
         if hasattr(self, "play_btn"):
@@ -546,6 +624,7 @@ class SoundboardPadWidget(QFrame):
 
         self.setCursor(Qt.OpenHandCursor if self._edit_mode else Qt.ArrowCursor)
         self._safe_release_manual_drag()
+        self._update_background_layer()
 
 
 
@@ -796,6 +875,69 @@ class SoundboardPadWidget(QFrame):
                 self.label_edit.setCursorPosition(0)
 
         self.file_label.setText(self._path_label())
+        self._update_background_layer()
+        self.changed.emit()
+
+    def _choose_background(self) -> None:
+        current = str(self.slot.get("background_path", "") or "").strip()
+        audio_path = str(self.slot.get("path", "") or "").strip()
+
+        start_candidates: list[Path] = []
+        if current:
+            start_candidates.append(Path(current).expanduser().parent)
+        if audio_path:
+            start_candidates.append(Path(audio_path).expanduser().parent)
+
+        try:
+            last_dir = SOUNDBOARD_LAST_DIR_PATH.read_text(encoding="utf-8").strip()
+            if last_dir:
+                start_candidates.append(Path(last_dir).expanduser())
+        except Exception:
+            pass
+
+        start_candidates.append(Path.home())
+
+        start_dir = Path.home()
+        for candidate in start_candidates:
+            try:
+                if candidate.is_dir():
+                    start_dir = candidate
+                    break
+            except Exception:
+                continue
+
+        filename, _ = QFileDialog.getOpenFileName(
+            self,
+            "Choose a pad background",
+            str(start_dir),
+            SUPPORTED_IMAGE_FILTER,
+        )
+        if not filename:
+            return
+
+        selected_path = Path(filename).expanduser()
+
+        try:
+            SOUNDBOARD_LAST_DIR_PATH.parent.mkdir(parents=True, exist_ok=True)
+            SOUNDBOARD_LAST_DIR_PATH.write_text(str(selected_path.parent) + "\n", encoding="utf-8")
+            SOUNDBOARD_LAST_DIR_PATH.chmod(0o600)
+        except Exception:
+            pass
+
+        self.slot["background_path"] = filename
+        self._background_pixmap_path = ""
+        self._background_pixmap = QPixmap()
+        self._update_background_layer()
+        self.changed.emit()
+
+    def _clear_background(self) -> None:
+        if not str(self.slot.get("background_path", "") or "").strip():
+            return
+
+        self.slot["background_path"] = ""
+        self._background_pixmap_path = ""
+        self._background_pixmap = QPixmap()
+        self._update_background_layer()
         self.changed.emit()
 
 
@@ -834,6 +976,7 @@ class SoundboardPadWidget(QFrame):
             self.slot.pop(cache_key, None)
 
         self.file_label.setText(self._path_label())
+        self._update_background_layer()
         self.changed.emit()
 
 
@@ -866,6 +1009,7 @@ class SoundboardDialog(QDialog):
         self._drag_source_id = ""
         self._drag_target_id = ""
         self._selected_slot_id = ""
+        self._selected_slot_ids: set[str] = set()
         self._rebuilding_grid = False
         self._last_grid_columns = 0
         self._click_drop_source_id = ""
@@ -1083,7 +1227,7 @@ class SoundboardDialog(QDialog):
         pair_btn.clicked.connect(self.create_android_pairing)
         footer_layout.addWidget(pair_btn)
 
-        stop_all_btn = QPushButton("Stop all")
+        stop_all_btn = QPushButton("■ Stop")
 
         self.monitor_to_mic_out_check = QCheckBox("Monitor to MIC OUT")
         self.monitor_to_mic_out_check.setObjectName("soundboardSwitch")
@@ -1509,12 +1653,12 @@ class SoundboardDialog(QDialog):
         return None
 
     def _apply_edit_selection_visuals(self) -> None:
-        selected_id = str(getattr(self, "_selected_slot_id", "") or "").strip()
+        selected_ids = set(getattr(self, "_selected_slot_ids", set()) or set())
 
         for pad in getattr(self, "pad_widgets", []):
             try:
                 slot_id = str(pad.slot.get("id", "") or "").strip()
-                pad._set_drag_source_visual(bool(getattr(self, "edit_mode", False) and selected_id and slot_id == selected_id))
+                pad._set_drag_source_visual(bool(getattr(self, "edit_mode", False) and slot_id in selected_ids))
             except Exception:
                 pass
 
@@ -1523,7 +1667,9 @@ class SoundboardDialog(QDialog):
 
 
     def _set_edit_selection(self, slot_id: str) -> None:
-        self._selected_slot_id = str(slot_id or "").strip()
+        slot_id = str(slot_id or "").strip()
+        self._selected_slot_ids = {slot_id} if slot_id else set()
+        self._selected_slot_id = slot_id
         self._reset_delete_button_confirm()
         self._apply_edit_selection_visuals()
 
@@ -1534,12 +1680,12 @@ class SoundboardDialog(QDialog):
         if button is None:
             return
 
-        selected_id = str(getattr(self, "_selected_slot_id", "") or "").strip()
-        visible = bool(getattr(self, "edit_mode", False) and selected_id)
+        selected_count = len(set(getattr(self, "_selected_slot_ids", set()) or set()))
+        visible = bool(getattr(self, "edit_mode", False) and selected_count)
 
         button.setVisible(visible)
         button.setEnabled(visible)
-        button.setText("Delete")
+        button.setText(f"Delete {selected_count}" if selected_count > 1 else "Delete")
         button.setProperty("deleteConfirm", False)
         button.style().unpolish(button)
         button.style().polish(button)
@@ -1554,21 +1700,23 @@ class SoundboardDialog(QDialog):
         if not slot_id:
             return
 
-        current = str(getattr(self, "_selected_slot_id", "") or "").strip()
+        selected_ids = set(getattr(self, "_selected_slot_ids", set()) or set())
 
-        if not current:
-            self._set_edit_selection(slot_id)
-            self.status_label.setText(f"Selected {slot_id}. Click another pad to swap, or Delete to remove it.")
-            return
+        if slot_id in selected_ids:
+            selected_ids.remove(slot_id)
+        else:
+            selected_ids.add(slot_id)
 
-        if current == slot_id:
-            self._set_edit_selection("")
+        self._selected_slot_ids = selected_ids
+        self._selected_slot_id = next(iter(selected_ids), "") if selected_ids else ""
+        self._reset_delete_button_confirm()
+        self._apply_edit_selection_visuals()
+
+        count = len(selected_ids)
+        if count:
+            self.status_label.setText(f"Selected {count} pad(s). Drag to reorder, or Delete to remove selected pads.")
+        else:
             self.status_label.setText("Selection cleared")
-            return
-
-        source_id = current
-        self._set_edit_selection("")
-        self.swap_slots_by_keys(source_id, slot_id)
 
 
 
@@ -1579,13 +1727,7 @@ class SoundboardDialog(QDialog):
         if timer is not None and timer.isActive():
             timer.stop()
 
-        button = getattr(self, "delete_selected_btn", None)
-        if button is not None:
-            button.setText("Delete")
-            button.setProperty("deleteConfirm", False)
-            button.setEnabled(bool(getattr(self, "edit_mode", False) and getattr(self, "_selected_slot_id", "")))
-            button.style().unpolish(button)
-            button.style().polish(button)
+        self._update_delete_button_state()
 
 
 
@@ -1593,24 +1735,46 @@ class SoundboardDialog(QDialog):
         if not self.edit_mode:
             return False
 
-        selected_id = str(getattr(self, "_selected_slot_id", "") or "").strip()
-        if not selected_id:
-            self.status_label.setText("Select a pad first")
+        selected_ids = set(getattr(self, "_selected_slot_ids", set()) or set())
+        if not selected_ids:
+            self.status_label.setText("Select one or more pads first")
             return False
 
-        index = next((i for i, item in enumerate(self.slots) if str(item.get("id", "")) == selected_id), -1)
-        if index < 0:
-            self._set_edit_selection("")
-            self.status_label.setText("Selected pad not found")
+        selected_slots = [slot for slot in self.slots if str(slot.get("id", "")) in selected_ids]
+        if not selected_slots:
+            self._selected_slot_ids = set()
+            self._selected_slot_id = ""
+            self._apply_edit_selection_visuals()
+            self.status_label.setText("Selected pads not found")
             return False
 
-        removed = self.slots.pop(index)
-        label = str(removed.get("label", selected_id) or selected_id)
+        labels = [str(slot.get("label", slot.get("id", "pad")) or "pad") for slot in selected_slots]
+        preview = "\n".join(f"• {label}" for label in labels[:8])
+        if len(labels) > 8:
+            preview += f"\n• … and {len(labels) - 8} more"
 
-        self._set_edit_selection("")
+        answer = QMessageBox.question(
+            self,
+            "Delete selected pads",
+            (
+                f"Delete {len(selected_slots)} selected pad(s)?\n\n"
+                f"{preview}\n\n"
+                "This removes the pads from the soundboard layout."
+            ),
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+
+        if answer != QMessageBox.Yes:
+            self.status_label.setText("Delete cancelled")
+            return False
+
+        self.slots = [slot for slot in self.slots if str(slot.get("id", "")) not in selected_ids]
+        self._selected_slot_ids = set()
+        self._selected_slot_id = ""
         self._rebuild_grid()
         self.save()
-        self.status_label.setText(f"Deleted {label}")
+        self.status_label.setText(f"Deleted {len(selected_slots)} pad(s)")
         return True
 
 
@@ -1685,8 +1849,9 @@ class SoundboardDialog(QDialog):
         self._drag_target_id = ""
         self._click_drop_source_id = ""
         self._selected_delete_id = ""
+        self._selected_slot_ids = set()
+        self._selected_slot_id = ""
         self._delete_confirm_timer.stop()
-        self._reset_delete_button_confirm()
         self._clear_pad_drag_visuals()
 
         for pad in self.pad_widgets:
@@ -1696,10 +1861,10 @@ class SoundboardDialog(QDialog):
                 pass
             pad.set_edit_mode(self.edit_mode)
 
-        self._update_delete_button_state()
+        self._apply_edit_selection_visuals()
 
         self.status_label.setText(
-            "Edit mode: drag, click-to-drop, or select a pad to delete"
+            "Edit mode: select pads, drag to reorder, Delete removes selected pads"
             if self.edit_mode
             else "Edit mode: OFF"
         )

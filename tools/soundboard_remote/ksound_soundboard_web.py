@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import html
 import json
+import mimetypes
 import hashlib
 import os
 import secrets
@@ -12,7 +13,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 CONFIG_DIR = Path(os.environ.get("KSH_CONFIG_DIR", str(Path.home() / ".config" / "k-sounds-hub"))).expanduser()
 CONFIG_PATH = CONFIG_DIR / "soundboard.json"
@@ -148,6 +149,7 @@ def read_soundboard_state() -> dict:
         slot_id = str(raw_slot.get("id") or f"sb{index + 1}").strip() or f"sb{index + 1}"
         label = str(raw_slot.get("label") or f"SOUND {index + 1:02d}").strip() or f"SOUND {index + 1:02d}"
         path = str(raw_slot.get("path") or "").strip()
+        background_path = str(raw_slot.get("background_path") or "").strip()
 
         try:
             volume = max(0, min(100, int(raw_slot.get("volume", 80))))
@@ -163,7 +165,9 @@ def read_soundboard_state() -> dict:
                 "number": index + 1,
                 "label": label,
                 "path": path,
+                "background_path": background_path,
                 "has_sound": bool(path),
+                "has_background": bool(background_path),
                 "volume": volume,
                 "shortcut": str(raw_slot.get("shortcut") or "").strip(),
                 "output_channel": output_channel,
@@ -327,8 +331,20 @@ def page(status: str = "") -> bytes:
         slot_id = str(slot.get("id") or f"sb{index + 1}")
         label = str(slot.get("label") or slot_id)
         path_text = str(slot.get("path") or "")
+        background_path = str(slot.get("background_path") or "").strip()
+        background_exists = bool(background_path and Path(background_path).expanduser().is_file())
         disabled = "" if path_text else "disabled"
         subtitle = Path(path_text).name if path_text else "No sound"
+        pad_class = "pad has-bg" if background_exists else "pad"
+        style_attr = ""
+        if background_exists:
+            background_url = (
+                "/background?token="
+                + quote(TOKEN, safe="")
+                + "&slot="
+                + quote(slot_id, safe="")
+            )
+            style_attr = f' style="--pad-bg: url({html.escape(background_url, quote=True)})"'
 
         buttons.append(
             f"""
@@ -339,11 +355,12 @@ def page(status: str = "") -> bytes:
               data-index="{index}"
             >
               <button
-                class="pad"
+                class="{pad_class}"
                 type="button"
                 data-slot="{html.escape(slot_id, quote=True)}"
                 data-label="{html.escape(label, quote=True)}"
                 onclick="playSlotFromButton(this)"
+                {style_attr}
                 {disabled}
               >
                 <strong>{html.escape(label)}</strong>
@@ -441,11 +458,26 @@ def page(status: str = "") -> bytes:
           border: 1px solid rgba(62,216,255,.34);
           border-radius: var(--ksh-pad-radius, {pad_radius}px);
           background: var(--card);
+          background-size: cover;
+          background-position: center;
+          background-repeat: no-repeat;
           color: var(--text);
           padding: var(--ksh-pad-padding, {pad_padding}px);
           text-align: left;
           box-shadow: 0 14px 34px rgba(0,0,0,.28);
           touch-action: manipulation;
+        }}
+        .pad.has-bg {{
+          background-image:
+            linear-gradient(135deg, rgba(5, 8, 15, .38), rgba(5, 8, 15, .72)),
+            var(--pad-bg);
+        }}
+        .pad.has-bg span {{
+          color: rgba(236, 247, 255, .82);
+          text-shadow: 0 2px 8px rgba(0,0,0,.85);
+        }}
+        .pad.has-bg strong {{
+          text-shadow: 0 2px 10px rgba(0,0,0,.92);
         }}
         .pad:active, .pad.sending {{
           transform: scale(.98);
@@ -620,7 +652,7 @@ def page(status: str = "") -> bytes:
           </div>
           <span id="volumeSendState" style="display:none">Ready</span>
         </div>
-        <button class="stop-mini" type="button" onclick="stopAllSounds()" title="Stop all" aria-label="Stop all">⏹</button>
+        <button class="stop-mini" type="button" onclick="stopAllSounds()" title="Stop all" aria-label="Stop all">■</button>
       </section>
 
       <script>
@@ -1584,6 +1616,39 @@ class Handler(BaseHTTPRequestHandler):
 
         if not self._token_ok():
             json_response(self, 403, {"ok": False, "error": "Forbidden"})
+            return
+
+        if parsed.path == "/background":
+            query = parse_qs(parsed.query)
+            slot_id = query.get("slot", [""])[0].strip()
+            slot = next((item for item in read_slots() if str(item.get("id", "")) == slot_id), None)
+
+            if slot is None:
+                json_response(self, 404, {"ok": False, "error": "Background slot not found"})
+                return
+
+            image_path = Path(str(slot.get("background_path") or "")).expanduser()
+            if not image_path.is_file():
+                json_response(self, 404, {"ok": False, "error": "Background not found"})
+                return
+
+            mime_type = mimetypes.guess_type(str(image_path))[0] or "application/octet-stream"
+            if not mime_type.startswith("image/"):
+                json_response(self, 415, {"ok": False, "error": "Unsupported background type"})
+                return
+
+            try:
+                data = image_path.read_bytes()
+            except Exception as exc:
+                json_response(self, 500, {"ok": False, "error": str(exc)})
+                return
+
+            self.send_response(200)
+            self.send_header("Content-Type", mime_type)
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
             return
 
         if parsed.path == "/state":
