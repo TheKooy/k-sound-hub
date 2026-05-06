@@ -24,6 +24,10 @@ def test_soundboard_dialog_constructs_after_route_controls():
     try:
         assert dialog.windowTitle()
         assert hasattr(dialog, "status_label")
+        assert hasattr(dialog, "volume_bar")
+        assert hasattr(dialog, "global_volume_slider")
+        assert dialog.volume_bar.objectName() == "soundboardVolumeBar"
+        assert dialog.global_volume_slider.minimumWidth() >= 240
         assert hasattr(dialog, "monitor_to_mic_out_check")
         assert hasattr(dialog, "send_to_micro_check")
         assert hasattr(dialog, "_load_monitor_to_mic_out")

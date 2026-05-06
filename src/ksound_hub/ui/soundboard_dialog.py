@@ -1111,6 +1111,41 @@ class SoundboardDialog(QDialog):
         scroll.setWidget(host)
         root.addWidget(scroll, 1)
 
+        self.volume_bar = QFrame()
+        self.volume_bar.setObjectName("soundboardVolumeBar")
+        self.volume_bar.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+        volume_layout = QHBoxLayout(self.volume_bar)
+        volume_layout.setContentsMargins(10, 6, 10, 6)
+        volume_layout.setSpacing(10)
+
+        volume_title = QLabel("Soundboard volume")
+        volume_title.setObjectName("soundboardVolumeTitle")
+        volume_title.setToolTip("Global soundboard volume")
+        volume_title.setMinimumWidth(132)
+        volume_layout.addWidget(volume_title)
+
+        global_label = QLabel("🔊")
+        global_label.setObjectName("mutedLabel")
+        global_label.setToolTip("Global soundboard volume")
+        volume_layout.addWidget(global_label)
+
+        self.global_volume_slider = SoundboardNoWheelSlider(Qt.Horizontal)
+        self.global_volume_slider.setRange(0, 100)
+        self.global_volume_slider.setMinimumWidth(240)
+        self.global_volume_slider.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.global_volume_slider.setValue(int(self.global_volume))
+        self.global_volume_slider.valueChanged.connect(self._on_global_volume_changed)
+        volume_layout.addWidget(self.global_volume_slider, 1)
+
+        self.global_volume_value = QLabel(f"{int(self.global_volume)}%")
+        self.global_volume_value.setObjectName("mutedLabel")
+        self.global_volume_value.setMinimumWidth(42)
+        self.global_volume_value.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        volume_layout.addWidget(self.global_volume_value)
+
+        root.addWidget(self.volume_bar)
+
         footer = QFrame()
         footer.setObjectName("footerBar")
 
@@ -1137,24 +1172,6 @@ class SoundboardDialog(QDialog):
         self.shortcuts_note.setVisible(bool(self.show_shortcuts))
         footer_layout.addWidget(self.shortcuts_note)
 
-
-        global_label = QLabel("🔊")
-        global_label.setObjectName("mutedLabel")
-        global_label.setToolTip("Volume soundboard")
-        footer_layout.addWidget(global_label)
-
-        self.global_volume_slider = SoundboardNoWheelSlider(Qt.Horizontal)
-        self.global_volume_slider.setRange(0, 100)
-        self.global_volume_slider.setMinimumWidth(55)
-        self.global_volume_slider.setMaximumWidth(130)
-        self.global_volume_slider.setValue(int(self.global_volume))
-        self.global_volume_slider.valueChanged.connect(self._on_global_volume_changed)
-        footer_layout.addWidget(self.global_volume_slider)
-
-        self.global_volume_value = QLabel(f"{int(self.global_volume)}%")
-        self.global_volume_value.setObjectName("mutedLabel")
-        self.global_volume_value.setMinimumWidth(38)
-        footer_layout.addWidget(self.global_volume_value)
 
         self.scale_btn = QPushButton("Scale")
         self.scale_btn.setObjectName("soundboardScaleButton")
@@ -1300,6 +1317,16 @@ class SoundboardDialog(QDialog):
             QFrame#soundboardPad[dropTarget="true"] {
                 border: 2px solid rgba(62, 216, 255, 1.00);
                 background: rgba(62, 216, 255, 0.32);
+            }
+            QFrame#soundboardVolumeBar {
+                border: 1px solid rgba(62, 216, 255, 0.36);
+                border-radius: 12px;
+                background: rgba(12, 18, 30, 0.64);
+            }
+            QLabel#soundboardVolumeTitle {
+                font-size: 11px;
+                font-weight: 900;
+                color: rgba(236, 247, 255, 230);
             }
             QPushButton#soundPadPlay {
                 font-size: 18px;
