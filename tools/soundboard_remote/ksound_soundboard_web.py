@@ -79,6 +79,7 @@ def read_soundboard_settings() -> dict:
         "global_volume": 100,
         "auto_level_enabled": False,
         "pad_scale": 100,
+        "remote_columns": 0,
     }
 
     if not CONFIG_PATH.is_file():
@@ -100,6 +101,12 @@ def read_soundboard_settings() -> dict:
         defaults["pad_scale"] = max(35, min(130, int(data.get("pad_scale", 100))))
     except Exception:
         defaults["pad_scale"] = 100
+
+    try:
+        raw_columns = int(data.get("remote_columns", 0))
+        defaults["remote_columns"] = max(1, min(8, raw_columns)) if raw_columns else 0
+    except Exception:
+        defaults["remote_columns"] = 0
 
     return defaults
 
@@ -181,6 +188,7 @@ def read_soundboard_state() -> dict:
         "global_volume": int(data.get("global_volume", 100)),
         "auto_level_enabled": bool(data.get("auto_level_enabled", False)),
         "pad_scale": int(data.get("pad_scale", 100)),
+        "remote_columns": read_soundboard_settings().get("remote_columns", 0),
         "slot_count": len(slots),
         "slots": slots,
     }
@@ -300,6 +308,7 @@ def page(status: str = "") -> bytes:
     auto_level_text = "ON" if settings.get("auto_level_enabled") else "OFF"
 
     pad_scale = max(35, min(130, int(settings.get("pad_scale", 100))))
+    remote_columns = max(0, min(8, int(settings.get("remote_columns", 0))))
     pad_factor = pad_scale / 100.0
     pad_min_width = max(92, int(145 * pad_factor))
     pad_min_height = max(58, int(92 * pad_factor))
@@ -627,7 +636,10 @@ def page(status: str = "") -> bytes:
         let pinchRaf = 0;
         let pendingPreviewColumns = null;
         let gestureCooldownUntil = 0;
-        let currentColumns = Number(window.localStorage.getItem("ksoundSoundboardColumns") || "0");
+        let layoutSaveTimer = null;
+        let serverColumns = Number("{remote_columns}");
+        let storedColumns = Number(window.localStorage.getItem("ksoundSoundboardColumns") || "0");
+        let currentColumns = storedColumns || serverColumns || 0;
         let soundboardRevision = "{config_revision}";
         let refreshInFlight = false;
 
@@ -782,12 +794,32 @@ def page(status: str = "") -> bytes:
           }}
         }}
 
+        function saveColumnsToServer(columns) {{
+          const safeColumns = clampColumns(columns);
+
+          if (layoutSaveTimer) {{
+            clearTimeout(layoutSaveTimer);
+          }}
+
+          layoutSaveTimer = window.setTimeout(() => {{
+            fetch("/layout?token={escaped_token}", {{
+              method: "POST",
+              headers: {{
+                "Content-Type": "application/x-www-form-urlencoded",
+                "X-Requested-With": "fetch"
+              }},
+              body: "columns=" + encodeURIComponent(String(safeColumns))
+            }}).catch(() => {{}});
+          }}, 120);
+        }}
+
         function applyColumns(columns, persist = true, visualColumns = null) {{
           setGridColumns(columns);
           applyPadVisualScale(visualColumns === null ? currentColumns : visualColumns);
 
           if (persist) {{
             window.localStorage.setItem("ksoundSoundboardColumns", String(currentColumns));
+            saveColumnsToServer(currentColumns);
           }}
         }}
 
@@ -1623,6 +1655,18 @@ class Handler(BaseHTTPRequestHandler):
 
             ok, msg = send_ipc({"command": "soundboard-set-global-volume", "volume": volume})
             self._send_page(f"Volume global {volume}%: {msg if not ok else 'sent'}")
+            return
+
+        if parsed.path == "/layout":
+            raw_columns = form.get("columns", ["0"])[0]
+            try:
+                columns = max(1, min(8, int(raw_columns)))
+            except Exception:
+                json_response(self, 400, {"ok": False, "error": "Invalid columns"})
+                return
+
+            update_soundboard_setting("remote_columns", columns)
+            json_response(self, 200, {"ok": True, "remote_columns": columns})
             return
 
         self.send_response(404)
