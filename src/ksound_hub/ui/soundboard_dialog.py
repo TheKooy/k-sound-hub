@@ -221,159 +221,12 @@ def _ensure_soundboard_bus() -> bool:
     return proc.returncode == 0 or _sink_exists(SOUNDBOARD_BUS)
 
 
-def _soundboard_monitor_module_ids() -> list[tuple[str, str]]:
-    proc = _run_pactl(["list", "modules", "short"])
-    if proc.returncode != 0:
-        return []
-
-    modules: list[tuple[str, str]] = []
-    for line in proc.stdout.splitlines():
-        if "source=soundboard.monitor" not in line:
-            continue
-        if SOUNDBOARD_MONITOR_MEDIA_NAME not in line:
-            continue
-
-        parts = line.split(None, 2)
-        if parts:
-            modules.append((parts[0], line))
-
-    return modules
 
 
-def _ensure_soundboard_monitor_route(target_channel: str) -> bool:
-    # Native micro/return path:
-    # keep the soundboard bus available, but do NOT keep the old permanent
-    # soundboard.monitor -> MEDIA/GAME/... loopback alive.
-    #
-    # That old route makes SOUNDBOARD appear stuck on MEDIA and can interfere
-    # with the new native micro/return routing.
-    #
-    # Emergency override:
-    #   KSH_SOUNDBOARD_MONITOR_ROUTE=1
-    # restores the previous behavior.
-    enabled = str(os.environ.get("KSH_SOUNDBOARD_MONITOR_ROUTE", "0")).strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
-
-    if not enabled:
-        for module_id, _line in _soundboard_monitor_module_ids():
-            _run_pactl(["unload-module", module_id])
-        return False
-
-    target_channel = str(target_channel or "").strip().lower()
-    if target_channel not in PLAYBACK_TARGETS:
-        target_channel = "media"
-
-    if not _ensure_soundboard_bus():
-        return False
-
-    if not _sink_exists(target_channel):
-        return False
-
-    wanted = f"sink={target_channel}"
-
-    for _module_id, line in _soundboard_monitor_module_ids():
-        if wanted in line:
-            return True
-
-    for module_id, _line in _soundboard_monitor_module_ids():
-        _run_pactl(["unload-module", module_id])
-
-    proc = _run_pactl([
-        "load-module",
-        "module-loopback",
-        "source=soundboard.monitor",
-        f"sink={target_channel}",
-        "latency_msec=20",
-        "source_dont_move=true",
-        "sink_dont_move=true",
-        f"sink_input_properties=media.name={SOUNDBOARD_MONITOR_MEDIA_NAME}",
-    ])
-    return proc.returncode == 0
 
 
-def _current_process_sink_inputs() -> list[dict[str, str]]:
-    proc = _run_pactl(["list", "sink-inputs"])
-    if proc.returncode != 0:
-        return []
-
-    own_pid = str(os.getpid())
-    sink_map = _sink_index_to_name()
-    inputs: list[dict[str, str]] = []
-    current: dict[str, str] | None = None
-    prop_re = re.compile(r'^\s*([^=]+?)\s*=\s*"(.*)"\s*$')
-
-    def flush() -> None:
-        if not current:
-            return
-        props = {k[5:]: v for k, v in current.items() if k.startswith("prop:")}
-        if props.get("application.process.id") != own_pid:
-            return
-        media_name = props.get("media.name", "")
-        if any(
-            needle in media_name
-            for needle in (
-                "K-Sound Hub " + "Return " + "Mic",
-                "K-Sounds Hub Mic Output Monitor",
-                "K-Sound Hub Mic Physical",
-                "K-Sound Hub Mic Send",
-                "K-Sound Hub EQ",
-            )
-        ):
-            return
-        current["media_name"] = media_name
-        current["sink_name"] = sink_map.get(current.get("sink_index", ""), "")
-        inputs.append(dict(current))
-
-    for raw_line in proc.stdout.splitlines():
-        line = raw_line.rstrip("\n")
-        if line.startswith("Sink Input #"):
-            flush()
-            current = {"id": line.split("#", 1)[1].strip(), "sink_index": ""}
-            continue
-
-        if current is None:
-            continue
-
-        stripped = line.strip()
-        if stripped.startswith("Sink: "):
-            current["sink_index"] = stripped.split(":", 1)[1].strip()
-            continue
-
-        match = prop_re.match(line)
-        if match:
-            current[f"prop:{match.group(1).strip()}"] = match.group(2).strip()
-
-    flush()
-    return inputs
 
 
-def _move_latest_soundboard_stream(target_channel: str) -> bool:
-    target_channel = target_channel.strip().lower()
-    valid_targets = set(PLAYBACK_TARGETS) | {SOUNDBOARD_BUS}
-    if target_channel not in valid_targets or not _sink_exists(target_channel):
-        return False
-
-    candidates = [
-        item
-        for item in _current_process_sink_inputs()
-        if item.get("sink_name") not in {target_channel, "micro_bus"}
-    ]
-    if not candidates:
-        return False
-
-    def sort_key(item: dict[str, str]) -> int:
-        try:
-            return int(item.get("id", "0"))
-        except Exception:
-            return 0
-
-    stream = sorted(candidates, key=sort_key)[-1]
-    proc = _run_pactl(["move-sink-input", stream["id"], target_channel])
-    return proc.returncode == 0
 
 
 def _device_haystack(device) -> str:
@@ -1030,7 +883,7 @@ class SoundboardDialog(QDialog):
 
         self._save_debounce_timer = QTimer(self)
         self._save_debounce_timer.setSingleShot(True)
-        self._save_debounce_timer.timeout.connect(self.save)
+        self._save_debounce_timer.timeout.connect(lambda: self.save(rebuild_shortcuts=False))
 
         root = QVBoxLayout(self)
         root.setContentsMargins(14, 14, 14, 14)
@@ -1482,7 +1335,7 @@ class SoundboardDialog(QDialog):
 
         return _ensure_unique_slot_ids(raw_slots)
 
-    def save(self) -> None:
+    def save(self, *, rebuild_shortcuts: bool = True) -> None:
         timer = getattr(self, "_save_debounce_timer", None)
         if timer is not None and timer.isActive():
             timer.stop()
@@ -1507,7 +1360,8 @@ class SoundboardDialog(QDialog):
             encoding="utf-8",
         )
         self.status_label.setText(f"Saved: {SOUNDBOARD_PATH}")
-        self._rebuild_shortcuts()
+        if rebuild_shortcuts:
+            self._rebuild_shortcuts()
 
         timer = getattr(self, "_cache_warmup_timer", None)
         if timer is not None and bool(getattr(self, "auto_level_enabled", False)):
@@ -1530,7 +1384,7 @@ class SoundboardDialog(QDialog):
         timer = getattr(self, "_save_debounce_timer", None)
         if timer is not None and timer.isActive():
             timer.stop()
-            self.save()
+            self.save(rebuild_shortcuts=False)
 
     def add_one_slot(self) -> None:
         self.slots = _ensure_unique_slot_ids(self.slots)
@@ -2537,7 +2391,7 @@ class SoundboardDialog(QDialog):
 
 
     def stop_all(self) -> None:
-        stopped = self._stop_external_soundboard_players()
+        stopped = 0
 
         for player, _audio in list(self._players.values()):
             try:
@@ -2629,127 +2483,9 @@ class SoundboardDialog(QDialog):
         return device_found
 
 
-    def _prune_external_soundboard_players(self) -> None:
-        alive = []
-        for ffmpeg_proc, paplay_proc in list(getattr(self, "_external_soundboard_players", [])):
-            try:
-                ffmpeg_done = ffmpeg_proc.poll() is not None
-            except Exception:
-                ffmpeg_done = True
 
-            try:
-                paplay_done = paplay_proc.poll() is not None
-            except Exception:
-                paplay_done = True
 
-            if ffmpeg_done and paplay_done:
-                continue
 
-            alive.append((ffmpeg_proc, paplay_proc))
-
-        self._external_soundboard_players = alive
-
-    def _stop_external_soundboard_players(self) -> int:
-        stopped = 0
-
-        for ffmpeg_proc, paplay_proc in list(getattr(self, "_external_soundboard_players", [])):
-            for proc in (paplay_proc, ffmpeg_proc):
-                try:
-                    if proc.poll() is None:
-                        proc.terminate()
-                        stopped += 1
-                except Exception:
-                    pass
-
-        self._external_soundboard_players = []
-        return stopped
-
-    def _start_pipewire_file_player(self, *, key: str, path: Path, sink_name: str, volume: float) -> bool:
-        """Decode any supported audio file with ffmpeg and send PCM to an exact PipeWire/Pulse sink.
-
-        This avoids the Qt/QMediaPlayer device-selection path, which can create a sink-input
-        without audible samples after startup or when launched through the Android remote.
-        """
-        if not _sink_exists(sink_name):
-            return False
-
-        ffmpeg_bin = "/usr/bin/ffmpeg" if Path("/usr/bin/ffmpeg").is_file() else "ffmpeg"
-        paplay_bin = "/usr/bin/paplay" if Path("/usr/bin/paplay").is_file() else "paplay"
-
-        try:
-            volume_factor = max(0.0, min(1.0, float(volume) / 100.0))
-        except Exception:
-            volume_factor = 0.8
-
-        media_name = f"K-Sounds Soundboard {key}"
-
-        ffmpeg_cmd = [
-            ffmpeg_bin,
-            "-nostdin",
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-i",
-            str(path),
-            "-filter:a",
-            f"volume={volume_factor:.6f}",
-            "-f",
-            "s16le",
-            "-acodec",
-            "pcm_s16le",
-            "-ac",
-            "2",
-            "-ar",
-            "48000",
-            "pipe:1",
-        ]
-
-        paplay_cmd = [
-            paplay_bin,
-            f"--device={sink_name}",
-            "--raw",
-            "--format=s16le",
-            "--rate=48000",
-            "--channels=2",
-            f"--property=media.name={media_name}",
-        ]
-
-        try:
-            self._prune_external_soundboard_players()
-
-            ffmpeg_proc = subprocess.Popen(
-                ffmpeg_cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-            )
-
-            if ffmpeg_proc.stdout is None:
-                try:
-                    ffmpeg_proc.terminate()
-                except Exception:
-                    pass
-                return False
-
-            paplay_proc = subprocess.Popen(
-                paplay_cmd,
-                stdin=ffmpeg_proc.stdout,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-
-            ffmpeg_proc.stdout.close()
-
-            players = list(getattr(self, "_external_soundboard_players", []))
-            players.append((ffmpeg_proc, paplay_proc))
-            self._external_soundboard_players = players
-
-            return True
-        except Exception:
-            return False
-
-    def _schedule_output_move_fallback(self, target_channel: str) -> None:
-        for delay in (90, 220, 480):
-            QTimer.singleShot(delay, lambda channel=target_channel: _move_latest_soundboard_stream(channel))
 
 
 
