@@ -15,13 +15,10 @@ std::string try_enable_realtime() {
         result += "mlockall=fail ";
     }
 
-    sched_param param{};
-    param.sched_priority = 20;
-    if (sched_setscheduler(0, SCHED_FIFO, &param) == 0) {
-        result += "sched_fifo=ok";
-    } else {
-        result += "sched_fifo=fail";
-    }
+    // Do not put the whole native engine in SCHED_FIFO.
+    // It spawns parec/pacat children; if they inherit realtime scheduling,
+    // playback can lag badly or destabilize.
+    result += "sched_fifo=disabled";
 
     return result;
 }

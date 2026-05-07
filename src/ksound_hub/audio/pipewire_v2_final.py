@@ -44,6 +44,12 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
     Micro / return-mic intentionally stay on the inherited implementation.
     """
 
+    def _native_playback_enabled(self) -> bool:
+        # Emergency safe default: native final-render playback is disabled.
+        # It can be re-enabled explicitly with KSH_NATIVE_PLAYBACK=1 after the
+        # pacat/native playback instability is fixed.
+        return str(os.environ.get("KSH_NATIVE_PLAYBACK", "0")).strip().lower() not in {"0", "false", "no", "off"}
+
     def __init__(self) -> None:
         super().__init__()
         self._native_runtime_dir = self.runtime_dir / "native-engine"
@@ -65,7 +71,11 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
         self._last_volume_state_signature = ""
         self._v2_levels_cache_mtime_ns = 0
         self._v2_levels_cache_payload: dict[str, Any] = {}
-        self._disable_legacy_playback_slots()
+        if self._native_playback_enabled():
+            self._disable_legacy_playback_slots()
+        else:
+            for slot in self.eq_slots.values():
+                slot.status = "legacy playback safe mode"
 
     def _disable_legacy_playback_slots(self) -> None:
         for slot in self.eq_slots.values():
@@ -114,6 +124,12 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
                     pass
 
     def shutdown(self) -> None:
+        if not self._native_playback_enabled():
+            self._stop_v2_engine()
+            self._stop_native_micro_engine()
+            PipeWireAudioEngineBase.shutdown(self)
+            return
+
         self._stop_v2_engine()
         self._stop_native_micro_engine()
         for probe in self._meter_probes.values():
@@ -124,6 +140,9 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
         self._disable_return_mic()
 
     def status_text(self) -> str:
+        if not self._native_playback_enabled():
+            return PipeWireAudioEngineBase.status_text(self) + " • playback-v2: disabled safe legacy"
+
         parts = [self._status_base(), "playback-v2: native final-render"]
         for key in STATUS_ORDER:
             slot = self.eq_slots[key]
@@ -758,6 +777,10 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
         return Path(__file__).resolve().parents[3] / "native_engine" / "build" / "ksound_native_engine"
 
     def _ensure_v2_engine(self) -> None:
+        if not self._native_playback_enabled():
+            self._stop_v2_engine()
+            return
+
         if self._v2_engine_proc is not None and self._v2_engine_proc.poll() is None:
             return
         self._stop_v2_engine()
@@ -812,6 +835,10 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
             self._run_no_fail(["pactl", "set-sink-mute", sink_name, "0"])
 
     def _apply_playback_channel(self, settings: AppSettings, channel_key: str) -> None:
+        if not self._native_playback_enabled():
+            PipeWireAudioEngineBase._apply_playback_channel(self, settings, channel_key)
+            return
+
         channel = self._find_channel(settings, channel_key)
         if channel is not None:
             self._apply_playback_controls_to_visible_sink(channel)
@@ -824,6 +851,10 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
         slot.status = "v2 native final-render active"
 
     def apply_channel_volume_fast(self, settings: AppSettings, channel_key: str) -> None:
+        if not self._native_playback_enabled():
+            self.apply_channel(settings, channel_key)
+            return
+
         if channel_key == "micro":
             channel = self._find_channel(settings, "micro")
             if channel is None:
@@ -865,6 +896,10 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
         self._ensure_v2_engine()
 
     def apply_channel(self, settings: AppSettings, channel_key: str) -> None:
+        if not self._native_playback_enabled():
+            PipeWireAudioEngineBase.apply_channel(self, settings, channel_key)
+            return
+
         if channel_key == "return-mic":
             # MIC OUT is also rendered by the V2 playback engine, but its
             # monitored sources are managed by _apply_return_mic(). It must be
@@ -915,6 +950,12 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
         self._apply_node_controls(channel, node_type=node_type, node_name=node_name)
 
     def apply_settings(self, settings: AppSettings) -> None:
+        if not self._native_playback_enabled():
+            self._stop_v2_engine()
+            self._stop_native_micro_engine()
+            PipeWireAudioEngineBase.apply_settings(self, settings)
+            return
+
         for key in PLAYBACK_KEYS:
             channel = self._find_channel(settings, key)
             if channel is not None:
@@ -994,6 +1035,9 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
                 return max(0.0, min(1.0, raw * scale))
 
             return one(pair[0]), one(pair[1])
+
+        if not self._native_playback_enabled():
+            return boost_micro_meter(super().meter_levels(channel_key))
 
         if channel_key in PLAYBACK_KEYS:
             payload = self._read_v2_levels_payload()
