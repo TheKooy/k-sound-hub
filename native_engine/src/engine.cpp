@@ -360,11 +360,13 @@ ChildProcess spawn_process(const std::vector<std::string>& args, bool write_mode
 
 struct ChannelState {
     std::string key;
-    bool enabled{true};
+    // Safe default: a channel must be explicitly enabled by render_state.txt.
+    // Never create implicit playback toward a real hardware sink.
+    bool enabled{false};
     bool muted{false};
-    float volume{1.0f};
-    std::string target_label{"ANPW"};
-    std::string target_sink{"alsa_output.usb-SteelSeries_Arctis_Nova_Pro_Wireless-00.analog-stereo"};
+    float volume{0.0f};
+    std::string target_label{};
+    std::string target_sink{};
     std::vector<Biquad> filters;
 };
 
@@ -674,7 +676,9 @@ void parse_state_text(const std::string& text) {
     g_channels = std::move(parsed);
     for (const auto& [key, st] : g_channels) {
         if (!g_captures.contains(key)) {
-            g_captures[key] = CaptureClient{key};
+            CaptureClient capture;
+            capture.key = key;
+            g_captures[key] = std::move(capture);
         }
     }
 }
