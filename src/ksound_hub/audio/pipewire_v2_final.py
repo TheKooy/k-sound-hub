@@ -803,7 +803,7 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
                     "--log",
                     str(self._v2_engine_log),
                     "--period-ms",
-                    "10",
+                    "20",
                 ],
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
