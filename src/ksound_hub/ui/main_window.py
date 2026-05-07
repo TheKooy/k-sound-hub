@@ -164,14 +164,14 @@ class MainWindow(QMainWindow):
 
         self.footer_bar = QFrame()
         self.footer_bar.setObjectName("footerBar")
-        footer_layout = QHBoxLayout(self.footer_bar)
-        footer_layout.setContentsMargins(10, 6, 10, 6)
-        footer_layout.setSpacing(8)
+        footer_outer = QVBoxLayout(self.footer_bar)
+        footer_outer.setContentsMargins(10, 6, 10, 6)
+        footer_outer.setSpacing(6)
 
-        self.backend_status = QLabel(self.audio_engine.status_text())
-        self.backend_status.setObjectName("mutedLabel")
-        self.backend_status.setWordWrap(True)
-        footer_layout.addWidget(self.backend_status, 1)
+        footer_layout = QHBoxLayout()
+        footer_layout.setContentsMargins(0, 0, 0, 0)
+        footer_layout.setSpacing(8)
+        footer_layout.addStretch(1)
 
         self.soundboard_btn = QPushButton("Soundboard")
         self.soundboard_btn.setObjectName("ghostButton")
@@ -183,10 +183,24 @@ class MainWindow(QMainWindow):
         self.settings_btn.clicked.connect(self.open_settings)
         footer_layout.addWidget(self.settings_btn)
 
+        self.info_btn = QPushButton("Info")
+        self.info_btn.setObjectName("ghostButton")
+        self.info_btn.setCheckable(True)
+        self.info_btn.toggled.connect(self._toggle_info_panel)
+        footer_layout.addWidget(self.info_btn)
+
         self.refresh_btn = QPushButton("Refresh")
         self.refresh_btn.setObjectName("ghostButton")
         self.refresh_btn.clicked.connect(self.refresh_status)
         footer_layout.addWidget(self.refresh_btn)
+
+        footer_outer.addLayout(footer_layout)
+
+        self.backend_status = QLabel(self.audio_engine.status_text())
+        self.backend_status.setObjectName("mutedLabel")
+        self.backend_status.setWordWrap(True)
+        self.backend_status.setVisible(False)
+        footer_outer.addWidget(self.backend_status)
 
         root.addWidget(self.footer_bar)
 
@@ -251,6 +265,10 @@ class MainWindow(QMainWindow):
 
         event.accept()
         return True
+
+    def _toggle_info_panel(self, checked: bool) -> None:
+        self.backend_status.setVisible(bool(checked))
+        self.info_btn.setText("Hide info" if checked else "Info")
 
     def _schedule_startup_runtime_refresh(self) -> None:
         """Resync routing and UI after cold start.
