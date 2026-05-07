@@ -13,6 +13,7 @@
 #include <fcntl.h>
 #include <fstream>
 #include <iomanip>
+#include <iostream>
 #include <map>
 #include <poll.h>
 #include <sstream>
@@ -32,6 +33,7 @@ constexpr int CHUNK_FRAMES = 960;
 constexpr int CAPTURE_LATENCY_MS = 60;
 constexpr int PLAYBACK_LATENCY_MS = 120;
 constexpr int PLAYBACK_PROCESS_MS = 40;
+constexpr int PLAYBACK_MIN_RESTART_MS = 1000;
 constexpr int SAMPLE_BYTES = 4;
 constexpr int CHUNK_BYTES = CHUNK_FRAMES * CHANNELS * SAMPLE_BYTES;
 constexpr float MAX_OUTPUT = 0.98f;
@@ -141,18 +143,95 @@ Biquad make_peaking(float freq, float gain_db, float q) {
     return out;
 }
 
+std::filesystem::path g_child_log_dir;
+
+std::string safe_child_label(const std::string& label) {
+    std::string out;
+    out.reserve(label.size());
+    for (char c : label) {
+        const bool ok =
+            (c >= 'a' && c <= 'z') ||
+            (c >= 'A' && c <= 'Z') ||
+            (c >= '0' && c <= '9') ||
+            c == '_' ||
+            c == '-';
+        out.push_back(ok ? c : '_');
+    }
+    return out.empty() ? "child" : out;
+}
+
+std::string join_args(const std::vector<std::string>& args) {
+    std::ostringstream out;
+    bool first = true;
+    for (const auto& arg : args) {
+        if (!first) {
+            out << ' ';
+        }
+        first = false;
+        out << arg;
+    }
+    return out.str();
+}
+
+std::string child_status_text(int status) {
+    std::ostringstream out;
+    if (WIFEXITED(status)) {
+        out << "exit=" << WEXITSTATUS(status);
+    } else if (WIFSIGNALED(status)) {
+        out << "signal=" << WTERMSIG(status);
+    } else {
+        out << "status=" << status;
+    }
+    return out.str();
+}
+
+void log_child_event(const std::string& line) {
+    std::cerr << "[" << now_string() << "] " << line << std::endl;
+}
+
 struct ChildProcess {
     pid_t pid{-1};
     int fd{-1};
     bool write_mode{false};
+    std::string label;
 
-    bool running() const {
+    bool running() {
         if (pid <= 0) {
             return false;
         }
+
         int status = 0;
         pid_t res = waitpid(pid, &status, WNOHANG);
-        return res == 0;
+        if (res == 0) {
+            return true;
+        }
+
+        if (res == pid) {
+            log_child_event(
+                "child_exit label=" + label +
+                " pid=" + std::to_string(pid) +
+                " " + child_status_text(status));
+            if (fd >= 0) {
+                ::close(fd);
+                fd = -1;
+            }
+            pid = -1;
+            return false;
+        }
+
+        if (errno == ECHILD) {
+            log_child_event(
+                "child_exit label=" + label +
+                " pid=" + std::to_string(pid) +
+                " status=ECHILD");
+            if (fd >= 0) {
+                ::close(fd);
+                fd = -1;
+            }
+            pid = -1;
+        }
+
+        return false;
     }
 
     void stop() {
@@ -160,36 +239,66 @@ struct ChildProcess {
             ::close(fd);
             fd = -1;
         }
-        if (pid > 0) {
-            if (running()) {
-                ::kill(pid, SIGTERM);
-                for (int i = 0; i < 20; ++i) {
-                    if (!running()) {
-                        break;
-                    }
-                    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+
+        if (pid <= 0) {
+            return;
+        }
+
+        const pid_t target_pid = pid;
+
+        if (running() && pid == target_pid) {
+            log_child_event("child_stop label=" + label + " pid=" + std::to_string(target_pid));
+            ::kill(target_pid, SIGTERM);
+
+            for (int i = 0; i < 20; ++i) {
+                if (pid != target_pid || !running()) {
+                    break;
                 }
-                if (running()) {
-                    ::kill(pid, SIGKILL);
-                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
             }
+
+            if (pid == target_pid && running()) {
+                log_child_event("child_kill label=" + label + " pid=" + std::to_string(target_pid));
+                ::kill(target_pid, SIGKILL);
+            }
+        }
+
+        if (pid == target_pid) {
             int status = 0;
-            waitpid(pid, &status, WNOHANG);
+            pid_t res = waitpid(target_pid, &status, WNOHANG);
+            if (res == target_pid) {
+                log_child_event(
+                    "child_reap label=" + label +
+                    " pid=" + std::to_string(target_pid) +
+                    " " + child_status_text(status));
+            }
             pid = -1;
         }
     }
 };
 
-ChildProcess spawn_process(const std::vector<std::string>& args, bool write_mode) {
+ChildProcess spawn_process(const std::vector<std::string>& args, bool write_mode, const std::string& label) {
     int pipefd[2];
     if (pipe(pipefd) != 0) {
+        log_child_event("child_spawn_fail label=" + label + " error=pipe");
         return {};
+    }
+
+    std::string stderr_path;
+    if (!g_child_log_dir.empty()) {
+        try {
+            std::filesystem::create_directories(g_child_log_dir);
+            stderr_path = (g_child_log_dir / (safe_child_label(label) + ".stderr.log")).string();
+        } catch (...) {
+            stderr_path.clear();
+        }
     }
 
     pid_t pid = fork();
     if (pid < 0) {
         ::close(pipefd[0]);
         ::close(pipefd[1]);
+        log_child_event("child_spawn_fail label=" + label + " error=fork");
         return {};
     }
 
@@ -199,11 +308,19 @@ ChildProcess spawn_process(const std::vector<std::string>& args, bool write_mode
         } else {
             dup2(pipefd[1], STDOUT_FILENO);
         }
-        int devnull = ::open("/dev/null", O_WRONLY);
-        if (devnull >= 0) {
-            dup2(devnull, STDERR_FILENO);
-            ::close(devnull);
+
+        int errfd = -1;
+        if (!stderr_path.empty()) {
+            errfd = ::open(stderr_path.c_str(), O_WRONLY | O_CREAT | O_APPEND, 0644);
         }
+        if (errfd < 0) {
+            errfd = ::open("/dev/null", O_WRONLY);
+        }
+        if (errfd >= 0) {
+            dup2(errfd, STDERR_FILENO);
+            ::close(errfd);
+        }
+
         ::close(pipefd[0]);
         ::close(pipefd[1]);
 
@@ -220,6 +337,13 @@ ChildProcess spawn_process(const std::vector<std::string>& args, bool write_mode
     ChildProcess proc;
     proc.pid = pid;
     proc.write_mode = write_mode;
+    proc.label = label;
+
+    log_child_event(
+        "child_start label=" + label +
+        " pid=" + std::to_string(pid) +
+        " args=" + join_args(args));
+
     if (write_mode) {
         ::close(pipefd[0]);
         proc.fd = pipefd[1];
@@ -270,7 +394,8 @@ struct CaptureClient {
                 "--channels=2",
                 std::string("--latency-msec=") + std::to_string(CAPTURE_LATENCY_MS),
             },
-            false);
+            false,
+            std::string("capture_") + key);
     }
 
     void stop() {
@@ -349,12 +474,31 @@ struct PlaybackClient {
     std::string label;
     std::string sink_name;
     ChildProcess proc;
+    std::chrono::steady_clock::time_point last_start{};
+    int backoff_log_count{0};
 
     void ensure_started() {
         if (proc.running()) {
+            backoff_log_count = 0;
             return;
         }
+
+        const auto now = std::chrono::steady_clock::now();
+        if (last_start.time_since_epoch().count() != 0 &&
+            now - last_start < std::chrono::milliseconds(PLAYBACK_MIN_RESTART_MS)) {
+            if (backoff_log_count < 3) {
+                log_child_event(
+                    "playback_restart_backoff label=" + label +
+                    " sink=" + sink_name +
+                    " min_ms=" + std::to_string(PLAYBACK_MIN_RESTART_MS));
+                ++backoff_log_count;
+            }
+            return;
+        }
+
         stop();
+        last_start = now;
+        backoff_log_count = 0;
         proc = spawn_process(
             {
                 "pacat",
@@ -367,7 +511,8 @@ struct PlaybackClient {
                 std::string("--latency-msec=") + std::to_string(PLAYBACK_LATENCY_MS),
                 std::string("--process-time-msec=") + std::to_string(PLAYBACK_PROCESS_MS),
             },
-            true);
+            true,
+            std::string("playback_") + label);
     }
 
     void stop() {
@@ -391,6 +536,10 @@ struct PlaybackClient {
             if (n < 0 && errno == EINTR) {
                 continue;
             }
+            log_child_event(
+                "playback_write_break label=" + label +
+                " sink=" + sink_name +
+                " errno=" + std::to_string(errno));
             break;
         }
     }
@@ -739,7 +888,9 @@ int Engine::run() {
     std::signal(SIGTERM, signal_handler);
     std::signal(SIGINT, signal_handler);
 
+    g_child_log_dir = config_.log_path.parent_path() / "children";
     log("engine_start " + try_enable_realtime());
+    log("child_log_dir=" + g_child_log_dir.string());
     log("state=" + config_.state_path.string());
     log("volume_state=" + config_.volume_state_path.string());
     log("levels=" + config_.levels_path.string());
