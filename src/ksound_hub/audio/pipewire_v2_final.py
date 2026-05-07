@@ -237,6 +237,54 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
         tmp.write_text(text, encoding="utf-8")
         tmp.replace(self._v2_volume_state_path)
 
+    def _kill_orphan_native_micro_runtime(self) -> None:
+        """Remove native micro engines that outlived the Python owner.
+
+        This intentionally targets only the native micro engine binary and the
+        exact long-running parec/pacat children it creates. It does not change
+        routing, EQ slots, soundboard settings, or PipeWire modules.
+        """
+
+        patterns = (
+            "ksound_native_micro_engine",
+            "parec --device=soundboard.monitor --raw --format=float32le --rate=48000 --channels=2 --latency-msec=20",
+            "pacat --playback --device=micro_bus --raw --format=float32le --rate=48000 --channels=2 --latency-msec=40 --process-time-msec=10",
+            "parec --device=alsa_input.usb-RODE_Microphones_RODE_NT-USB-00.iec958-stereo --raw --format=float32le --rate=48000 --channels=2 --latency-msec=20",
+            "parec --device=alsa_input.usb-SteelSeries_Arctis_Nova_Pro_Wireless-00.mono-fallback --raw --format=float32le --rate=48000 --channels=2 --latency-msec=20",
+        )
+
+        pids: list[int] = []
+        for pattern in patterns:
+            try:
+                proc = self._run(["pgrep", "-u", str(os.getuid()), "-af", pattern])
+            except Exception:
+                continue
+            if proc.returncode != 0:
+                continue
+
+            for line in proc.stdout.splitlines():
+                parts = line.split(None, 1)
+                if not parts or not parts[0].isdigit():
+                    continue
+                pid = int(parts[0])
+                if pid == os.getpid() or pid in pids:
+                    continue
+                pids.append(pid)
+
+        if not pids:
+            return
+
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            for pid in list(pids):
+                try:
+                    os.kill(pid, sig)
+                except ProcessLookupError:
+                    pass
+                except Exception:
+                    pass
+            if sig == signal.SIGTERM:
+                time.sleep(0.3)
+
     def _native_micro_enabled(self) -> bool:
         return str(os.environ.get("KSH_NATIVE_MIC", "1")).strip().lower() not in {"0", "false", "no", "off"}
 
@@ -554,18 +602,18 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
         proc = self._native_micro_proc
         self._native_micro_proc = None
 
-        if proc is None:
-            return
+        if proc is not None:
+            try:
+                if proc.poll() is None:
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=1.2)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+            except Exception:
+                pass
 
-        try:
-            if proc.poll() is None:
-                proc.terminate()
-                try:
-                    proc.wait(timeout=1.2)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-        except Exception:
-            pass
+        self._kill_orphan_native_micro_runtime()
 
     def _apply_micro_transport(self, settings: AppSettings) -> None:
         if self._native_micro_enabled():

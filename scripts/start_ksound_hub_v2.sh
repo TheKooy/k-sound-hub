@@ -159,8 +159,52 @@ for entry in proc_root.iterdir():
     if env.get("KSH_RUNTIME_ROLE") in TARGET_ROLES:
         pids.append(pid)
 
+def cmdline_for(pid: int) -> str:
+    try:
+        raw = (proc_root / str(pid) / "cmdline").read_bytes()
+    except Exception:
+        return ""
+    return raw.replace(b"\\0", b" ").decode("utf-8", errors="replace")
+
+
+COMMAND_PATTERNS = (
+    "ksound_native_micro_engine",
+    "ksound_native_engine",
+    "pipewire -c filter-chain.conf",
+    "parec --device=soundboard.monitor --raw --format=float32le --rate=48000 --channels=2 --latency-msec=20",
+    "pacat --playback --device=micro_bus --raw --format=float32le --rate=48000 --channels=2 --latency-msec=40 --process-time-msec=10",
+    "parec --device=alsa_input.usb-RODE_Microphones_RODE_NT-USB-00.iec958-stereo --raw --format=float32le --rate=48000 --channels=2 --latency-msec=20",
+    "parec --device=alsa_input.usb-SteelSeries_Arctis_Nova_Pro_Wireless-00.mono-fallback --raw --format=float32le --rate=48000 --channels=2 --latency-msec=20",
+)
+
+for entry in proc_root.iterdir():
+    if not entry.name.isdigit():
+        continue
+    pid = int(entry.name)
+    if pid == os.getpid() or pid in pids:
+        continue
+
+    try:
+        status_text = (entry / "status").read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        continue
+
+    real_uid = None
+    for line in status_text.splitlines():
+        if line.startswith("Uid:"):
+            parts = line.split()
+            if len(parts) >= 2:
+                real_uid = int(parts[1])
+            break
+    if real_uid != uid:
+        continue
+
+    cmdline = cmdline_for(pid)
+    if any(pattern in cmdline for pattern in COMMAND_PATTERNS):
+        pids.append(pid)
+
 for sig in (signal.SIGTERM, signal.SIGKILL):
-    for pid in list(pids):
+    for pid in list(dict.fromkeys(pids)):
         try:
             os.kill(pid, sig)
         except ProcessLookupError:
