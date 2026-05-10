@@ -6,6 +6,7 @@ import os
 import re
 import secrets
 import subprocess
+import wave
 import threading
 import time
 from pathlib import Path
@@ -1083,7 +1084,10 @@ class SoundboardDialog(QDialog):
         self.pad_widgets: list[SoundboardPadWidget] = []
         self._players: dict[str, tuple[QMediaPlayer, QAudioOutput]] = {}
         self._player_source_paths: dict[str, str] = {}
-        self._external_playback_processes: list[tuple[subprocess.Popen, subprocess.Popen]] = []
+        self._external_playback_processes: list[tuple[subprocess.Popen, subprocess.Popen, float, float]] = []
+        self._external_playback_cleanup_timer = QTimer(self)
+        self._external_playback_cleanup_timer.setInterval(500)
+        self._external_playback_cleanup_timer.timeout.connect(self._cleanup_finished_external_players)
         self._soundboard_bus_ready = False
         self._soundboard_monitor_routes_ready: set[str] = set()
         self._shortcuts: list[QShortcut] = []
@@ -2854,31 +2858,116 @@ class SoundboardDialog(QDialog):
         # avoids Qt/FFmpeg/Pulse hangs when many pads have been touched.
         return True
 
-    def _cleanup_finished_external_players(self) -> None:
-        active: list[tuple[subprocess.Popen, subprocess.Popen]] = []
 
-        for decoder, player in list(getattr(self, "_external_playback_processes", [])):
-            decoder_running = decoder.poll() is None
-            player_running = player.poll() is None
-            if decoder_running or player_running:
-                active.append((decoder, player))
+    def _external_proc_running(self, proc: subprocess.Popen) -> bool:
+        """Poll one external soundboard child and reap it when it is finished."""
+
+        try:
+            return proc.poll() is None
+        except Exception:
+            return False
+
+    def _terminate_external_proc(self, proc: subprocess.Popen) -> bool:
+        try:
+            if proc.poll() is not None:
+                return False
+            proc.terminate()
+            try:
+                proc.wait(timeout=0.20)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=0.20)
+            return True
+        except Exception:
+            return False
+
+    def _stop_external_player_pair(self, decoder: subprocess.Popen, player: subprocess.Popen) -> int:
+        stopped = 0
+        for proc in (player, decoder):
+            if self._terminate_external_proc(proc):
+                stopped += 1
+        return stopped
+
+    def _external_player_max_age_seconds(self, path: Path) -> float:
+        try:
+            fallback = float(os.environ.get("KSH_SOUNDBOARD_EXTERNAL_PLAYER_MAX_AGE", "30"))
+        except Exception:
+            fallback = 30.0
+
+        fallback = max(3.0, min(180.0, fallback))
+
+        try:
+            with wave.open(str(path), "rb") as wav:
+                rate = wav.getframerate() or 48000
+                frames = wav.getnframes()
+                duration = float(frames) / float(rate)
+                return max(3.0, min(180.0, duration + 2.0))
+        except Exception:
+            return fallback
+
+    def _external_player_entry_parts(self, entry):
+        try:
+            decoder = entry[0]
+            player = entry[1]
+            started_at = float(entry[2]) if len(entry) >= 3 else time.monotonic()
+            max_age = float(entry[3]) if len(entry) >= 4 else 30.0
+            return decoder, player, started_at, max_age
+        except Exception:
+            return None
+
+    def _start_external_playback_cleanup_timer(self) -> None:
+        timer = getattr(self, "_external_playback_cleanup_timer", None)
+        if timer is not None and not timer.isActive():
+            timer.start()
+
+    def _cleanup_finished_external_players(self) -> None:
+        now = time.monotonic()
+        active: list[tuple[subprocess.Popen, subprocess.Popen, float, float]] = []
+
+        for entry in list(getattr(self, "_external_playback_processes", [])):
+            parts = self._external_player_entry_parts(entry)
+            if parts is None:
+                continue
+
+            decoder, player, started_at, max_age = parts
+            decoder_running = self._external_proc_running(decoder)
+            player_running = self._external_proc_running(player)
+            expired = (now - started_at) > max_age
+
+            if expired:
+                self._stop_external_player_pair(decoder, player)
+                continue
+
+            if decoder_running and player_running:
+                active.append((decoder, player, started_at, max_age))
+                continue
+
+            self._stop_external_player_pair(decoder, player)
 
         self._external_playback_processes = active
+
+        timer = getattr(self, "_external_playback_cleanup_timer", None)
+        if timer is not None and not active and timer.isActive():
+            timer.stop()
 
     def _stop_external_players(self) -> int:
         stopped = 0
 
-        for decoder, player in list(getattr(self, "_external_playback_processes", [])):
-            for proc in (player, decoder):
-                try:
-                    if proc.poll() is None:
-                        proc.terminate()
-                        stopped += 1
-                except Exception:
-                    pass
+        for entry in list(getattr(self, "_external_playback_processes", [])):
+            parts = self._external_player_entry_parts(entry)
+            if parts is None:
+                continue
+            decoder, player, _started_at, _max_age = parts
+            stopped += self._stop_external_player_pair(decoder, player)
 
         self._external_playback_processes = []
+
+        timer = getattr(self, "_external_playback_cleanup_timer", None)
+        if timer is not None and timer.isActive():
+            timer.stop()
+
         return stopped
+
 
     def _start_pulse_direct_player(self, *, path: Path, sink_name: str, volume: float) -> bool:
         """Play one soundboard pad directly into the Pulse/PipeWire sink.
@@ -2948,13 +3037,18 @@ class SoundboardDialog(QDialog):
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
+            if decoder.stdout is not None:
+                try:
+                    decoder.stdout.close()
+                except Exception:
+                    pass
 
-            try:
-                decoder.stdout.close()
-            except Exception:
-                pass
-
-            self._external_playback_processes.append((decoder, player))
+            max_age = self._external_player_max_age_seconds(path)
+            self._external_playback_processes.append((decoder, player, time.monotonic(), max_age))
+            self._start_external_playback_cleanup_timer()
+            QTimer.singleShot(250, self._cleanup_finished_external_players)
+            QTimer.singleShot(1500, self._cleanup_finished_external_players)
+            QTimer.singleShot(int(max_age * 1000) + 250, self._cleanup_finished_external_players)
             return True
         except Exception:
             if decoder is not None:
