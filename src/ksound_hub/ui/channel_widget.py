@@ -450,6 +450,171 @@ class ClickOutsideMessageDialog(QDialog):
         return super().eventFilter(obj, event)
 
 
+
+
+def _unload_return_mic_monitor_channel_widget(linked_key: str) -> None:
+    """Unload one stale MIC OUT monitor loopback immediately.
+
+    This is intentionally narrow: only K-Sound module-loopback entries with
+    sink=retour and the exact MIC OUT monitor media.name prefix are touched.
+    """
+
+    key = str(linked_key).strip().lower()
+    if not key:
+        return
+
+    prefix = "K-Sounds Hub Mic Output Monitor Monitor "
+
+    try:
+        proc = subprocess.run(
+            ["pactl", "list", "short", "modules"],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    except Exception:
+        return
+
+    if proc.returncode != 0:
+        return
+
+    for line in proc.stdout.splitlines():
+        parts = line.split(None, 2)
+        if len(parts) < 3:
+            continue
+
+        module_id, module_name, args = parts
+        if module_name != "module-loopback":
+            continue
+        if "sink=retour" not in args:
+            continue
+        if prefix not in args:
+            continue
+
+        found_key = args.split(prefix, 1)[1].split()[0].strip().lower()
+        if found_key != key:
+            continue
+
+        subprocess.run(["pactl", "unload-module", module_id], check=False)
+
+
+def _ensure_return_mic_monitor_channel_widget(linked_key: str) -> None:
+    """Ensure one MIC OUT monitor loopback exists immediately.
+
+    Narrow UI-side helper:
+    - adds source=soundboard.monitor sink=retour when SOUNDBOARD is added to MIC OUT
+    - does not touch MICRO routing
+    - does not remove any feature
+    """
+
+    key = str(linked_key).strip()
+    key_lower = key.lower()
+    if not key_lower:
+        return
+
+    static_sources = {
+        "soundboard": "soundboard.monitor",
+        "micro": "micro",
+        "micro-final": "micro",
+    }
+
+    source_name = static_sources.get(key_lower, "")
+    if not source_name and key_lower.startswith("source:") and ":" in key:
+        source_name = key.split(":", 1)[1].strip()
+    if not source_name:
+        source_name = key
+
+    prefix = "K-Sounds Hub Mic Output Monitor Monitor "
+    media_name = prefix + key_lower
+
+    try:
+        sources = subprocess.run(
+            ["pactl", "list", "short", "sources"],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if sources.returncode != 0:
+            return
+
+        source_names = {
+            line.split()[1]
+            for line in sources.stdout.splitlines()
+            if len(line.split()) >= 2
+        }
+        if source_name not in source_names:
+            return
+
+        sinks = subprocess.run(
+            ["pactl", "list", "short", "sinks"],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if sinks.returncode != 0:
+            return
+
+        sink_names = {
+            line.split()[1]
+            for line in sinks.stdout.splitlines()
+            if len(line.split()) >= 2
+        }
+        if "retour" not in sink_names:
+            subprocess.run(
+                [
+                    "pactl",
+                    "load-module",
+                    "module-null-sink",
+                    "sink_name=retour",
+                    "sink_properties=device.description=🎧MIC OUT",
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+        modules = subprocess.run(
+            ["pactl", "list", "short", "modules"],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if modules.returncode != 0:
+            return
+
+        for line in modules.stdout.splitlines():
+            parts = line.split(None, 2)
+            if len(parts) < 3:
+                continue
+
+            _module_id, module_name, args = parts
+            if module_name != "module-loopback":
+                continue
+
+            if f"source={source_name}" in args and "sink=retour" in args and media_name in args:
+                return
+
+        cmd = [
+            "pactl",
+            "load-module",
+            "module-loopback",
+            f"source={source_name}",
+            "sink=retour",
+            "latency_msec=20",
+            "source_dont_move=true",
+            "sink_dont_move=true",
+        ]
+
+        if source_name.endswith(".monitor") or source_name == "micro":
+            cmd.append("channels=2")
+
+        cmd.append(f"sink_input_properties=media.name={media_name}")
+
+        subprocess.run(cmd, text=True, capture_output=True, check=False)
+    except Exception:
+        return
+
+
 class ChannelWidget(QFrame):
     changed = Signal()
 
@@ -829,6 +994,8 @@ class ChannelWidget(QFrame):
 
             if key not in [str(existing).lower() for existing in self.channel.linked_channels]:
                 self.channel.linked_channels.append(key)
+                if self.channel.key == "return-mic":
+                    _ensure_return_mic_monitor_channel_widget(key)
 
             self._emit_changed("return_micro_sources")
             return
@@ -934,6 +1101,7 @@ class ChannelWidget(QFrame):
                 key for key in self.channel.linked_channels
                 if str(key).lower() != linked_key.lower()
             ]
+            _unload_return_mic_monitor_channel_widget(linked_key)
             self._emit_changed("return_micro_sources")
             return
 
