@@ -624,6 +624,9 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
                 if self._ensure_native_micro_engine():
                     self._cleanup_legacy_micro_loopbacks_for_native()
                     self._run_no_fail(["pactl", "set-default-source", "micro"])
+                    channel = self._find_channel(settings, "micro")
+                    if channel is not None:
+                        self._apply_micro_endpoint_controls(channel)
                     try:
                         self._configure_easyeffects_for_settings(settings)
                     except Exception:
@@ -645,6 +648,8 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
 
         self._apply_micro_links(settings)
         self._apply_micro_link_send_volumes(settings)
+        if channel is not None:
+            self._apply_micro_endpoint_controls(channel)
 
 
     def _return_monitor_media_name(self, key: str) -> str:
@@ -803,7 +808,7 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
         # Like other V2 playback channels, the logical sink stays at 100%.
         # User volume is handled by the final playback engine.
         self._run_no_fail(["pactl", "set-sink-volume", "retour", "100%"])
-        self._run_no_fail(["pactl", "set-sink-mute", "retour", "0"])
+        self._run_no_fail(["pactl", "set-sink-mute", "retour", "1" if channel.muted else "0"])
 
         if will_change:
             channel.muted = original_muted
@@ -908,18 +913,27 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
             if channel is None:
                 return
 
-            # MICRO currently uses the fallback PipeWire loopback path:
+            if self._native_micro_enabled():
+                self._write_native_micro_state(settings)
+                self._apply_micro_link_send_volumes(settings)
+                self._ensure_native_micro_engine()
+                self._apply_micro_endpoint_controls(channel)
+                self._apply_return_mic(settings)
+                return
+
+            # Fallback PipeWire loopback path:
             # physical mic source -> KSH_MIC_PHYSICAL sink-input -> micro_bus -> micro source.
-            # For volume changes, avoid reapplying the whole micro transport.
-            # Updating the KSH_MIC_PHYSICAL sink-input is the lightest live path.
+            # Keep it light, but make mute apply to the full exported virtual mic.
             volume = max(0, min(150, int(channel.volume)))
-            muted = "1" if channel.muted else "0"
+            muted = "1" if self._micro_channel_is_muted(channel) else "0"
 
             sink_input_ids = self._find_sink_input_ids_by_media_name("KSH_MIC_PHYSICAL")
             if sink_input_ids:
                 for sink_input_id in sink_input_ids:
                     self._run_no_fail(["pactl", "set-sink-input-volume", sink_input_id, f"{volume}%"])
                     self._run_no_fail(["pactl", "set-sink-input-mute", sink_input_id, muted])
+                self._apply_micro_endpoint_controls(channel)
+                self._apply_return_mic(settings)
                 return
 
             # Rare fallback: if the loopback is missing, fall back to the normal
@@ -985,6 +999,7 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
                 self._ensure_physical_micro_loopbacks(channel)
             self._run_no_fail(["pactl", "set-default-source", "micro"])
             self._apply_micro_transport(settings)
+            self._apply_micro_endpoint_controls(channel)
             self._apply_return_mic(settings)
             return
 
@@ -1025,6 +1040,8 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
                 self._ensure_physical_micro_loopbacks(channel)
             self._run_no_fail(["pactl", "set-default-source", "micro"])
         self._apply_micro_transport(settings)
+        if channel is not None:
+            self._apply_micro_endpoint_controls(channel)
         self._apply_return_mic(settings)
 
     def _read_v2_levels_payload(self) -> dict[str, Any]:
@@ -1067,12 +1084,12 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
                 return pair
 
             try:
-                scale = float(os.environ.get("KSH_MIC_METER_BOOST", "4.0"))
+                scale = float(os.environ.get("KSH_MIC_METER_BOOST", "1.0"))
             except Exception:
                 scale = 4.0
 
             try:
-                floor = float(os.environ.get("KSH_MIC_METER_FLOOR", "0.0015"))
+                floor = float(os.environ.get("KSH_MIC_METER_FLOOR", "0.0025"))
             except Exception:
                 floor = 0.0015
 

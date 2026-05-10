@@ -348,12 +348,13 @@ class SourceMeterProbe:
             pass
 
     def _run(self) -> None:
-        # 240 frames @ 48 kHz ~= 5 ms.
-        # This probe is UI-only, not audio-path. Keep it responsive by dropping
-        # old buffered data and measuring only the newest complete chunk.
-        chunk_frames = 240
+        # 960 frames @ 48 kHz ~= 20 ms.
+        # This probe is UI-only, not audio-path. The UI refreshes meters at a
+        # much lower rate, so avoid 5 ms polling that burns CPU during games.
+        # Old buffered data is still dropped so the meter stays current.
+        chunk_frames = 960
         chunk_bytes = chunk_frames * 2 * 4
-        max_buffer_bytes = chunk_bytes * 8
+        max_buffer_bytes = chunk_bytes * 4
 
         while not self._stop_event.is_set():
             current_left = 0.0
@@ -369,7 +370,7 @@ class SourceMeterProbe:
                         "--format=float32le",
                         "--rate=48000",
                         "--channels=2",
-                        "--latency-msec=10",
+                        "--latency-msec=40",
                     ],
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.PIPE,
@@ -538,12 +539,21 @@ class PipeWireAudioEngine(AudioEngine):
     def shutdown(self) -> None:
         for slot in self.eq_slots.values():
             self._stop_slot(slot)
-        for probe in self._meter_probes.values():
-            probe.stop()
-        self._meter_probes.clear()
+        self.stop_meter_probes()
         for key in list(self._micro_links):
             self._unload_micro_link(key)
         self._disable_return_mic()
+
+    def stop_meter_probes(self) -> None:
+        """Stop UI-only meter capture processes.
+
+        Meters are visual only. When the UI is hidden/minimized or meters are
+        disabled, keeping parec probes alive wastes CPU during games.
+        """
+
+        for probe in list(self._meter_probes.values()):
+            probe.stop()
+        self._meter_probes.clear()
 
     def _log_path_for(self, key: str) -> Path:
         return self.runtime_dir / f"{key}-eq.log"
@@ -841,6 +851,27 @@ class PipeWireAudioEngine(AudioEngine):
             if block.media_name == media_name and block.muted is not None
         ]
 
+    def _micro_channel_is_muted(self, channel: ChannelConfig) -> bool:
+        return bool(channel.muted) or not bool(channel.enabled)
+
+    def _apply_micro_endpoint_controls(self, channel: ChannelConfig) -> None:
+        """Apply the user-facing MICRO mute to the exported virtual mic.
+
+        The physical-mic loopback feeds micro_bus, and apps capture from the
+        remapped source named "micro". Muting only the physical source is not
+        reliable enough: the bus/source can remain audible to Discord. Apply
+        the mute at the physical loopback sink-input, micro_bus and micro.
+        """
+
+        muted = "1" if self._micro_channel_is_muted(channel) else "0"
+
+        if self._sink_exists("micro_bus"):
+            self._run_no_fail(["pactl", "set-sink-mute", "micro_bus", muted])
+
+        if self._source_exists("micro"):
+            self._run_no_fail(["pactl", "set-source-volume", "micro", "100%"])
+            self._run_no_fail(["pactl", "set-source-mute", "micro", muted])
+
     def _unload_micro_link(self, channel_key: str) -> None:
         source_name = f"{channel_key}.monitor"
         sink_name = "micro_bus"
@@ -1104,20 +1135,15 @@ class PipeWireAudioEngine(AudioEngine):
         if will_change:
             time.sleep(0.12)
 
-        # Keep the physical-mic loopback itself neutral. The user-facing MICRO
-        # volume is applied on the selected source / native state, so this
-        # sink-input must not keep an old stale 80% volume and silently attenuate
-        # micro_bus.
+        # Keep the physical-mic loopback at unity gain, but do not force it
+        # audible. The user-facing MICRO mute must silence the complete virtual
+        # microphone path used by Discord and MIC OUT.
+        muted = "1" if self._micro_channel_is_muted(channel) else "0"
         for sink_input_id in self._find_sink_input_ids_by_media_name("KSH_MIC_PHYSICAL"):
             self._run_no_fail(["pactl", "set-sink-input-volume", sink_input_id, "100%"])
-            self._run_no_fail(["pactl", "set-sink-input-mute", sink_input_id, "0"])
+            self._run_no_fail(["pactl", "set-sink-input-mute", sink_input_id, muted])
 
-        if self._sink_exists("micro_bus"):
-            self._run_no_fail(["pactl", "set-sink-mute", "micro_bus", "0"])
-
-        if self._source_exists("micro"):
-            self._run_no_fail(["pactl", "set-source-volume", "micro", "100%"])
-            self._run_no_fail(["pactl", "set-source-mute", "micro", "0"])
+        self._apply_micro_endpoint_controls(channel)
 
 
     def _find_pw_port_spec(self, *, direction: str, node_names: list[str], port_name: str) -> str:

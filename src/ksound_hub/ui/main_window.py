@@ -90,7 +90,7 @@ class MainWindow(QMainWindow):
         self._runtime_view_timer.timeout.connect(self._refresh_runtime_views_only)
 
         self._meter_timer = QTimer(self)
-        self._meter_timer.setInterval(100)
+        self._meter_timer.setInterval(125)
         self._meter_timer.timeout.connect(self._refresh_meters)
 
         self._link_shared_eq_library()
@@ -901,8 +901,20 @@ class MainWindow(QMainWindow):
         self._apply_column_widths()
 
     def _refresh_meters(self) -> None:
+        if (
+            not self.settings.visualizer_enabled
+            or not self.isVisible()
+            or self.isMinimized()
+        ):
+            for widget in self.channel_widgets.values():
+                widget.clear_meter_levels()
+            stop_probes = getattr(self.audio_engine, "stop_meter_probes", None)
+            if callable(stop_probes):
+                stop_probes()
+            return
+
         for widget in self.channel_widgets.values():
-            if not self.settings.visualizer_enabled or not widget.channel.visualizer_enabled:
+            if not widget.channel.visualizer_enabled:
                 widget.clear_meter_levels()
                 continue
             left, right = self.audio_engine.meter_levels(widget.channel.key)
