@@ -1526,10 +1526,10 @@ class SoundboardDialog(QDialog):
 
         self._rebuild_grid()
         self._rebuild_shortcuts()
-        QTimer.singleShot(450, self._preload_soundboard_players)
+        # QtMultimedia preloading disabled: keeping many cached WAV files open can freeze audio.
         QTimer.singleShot(900, self._start_background_soundboard_cache)
-        QTimer.singleShot(2600, self._preload_soundboard_players)
-        QTimer.singleShot(6500, self._preload_soundboard_players)
+        # preload disabled
+        # preload disabled
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -2680,7 +2680,7 @@ class SoundboardDialog(QDialog):
             effective_volume = self._effective_volume(slot, path, volume)
 
             self._prime_player_source(
-                key=f"{slot_id}:soundboard",
+                key="soundboard",
                 path=playback_path,
                 sink_name=SOUNDBOARD_BUS,
                 volume=effective_volume,
@@ -2761,6 +2761,61 @@ class SoundboardDialog(QDialog):
 
         return False
 
+    def _release_player_for_key(self, key: str, player: QMediaPlayer | None = None) -> None:
+        """Stop and release one cached QtMultimedia player.
+
+        Qt/FFmpeg can keep the WAV file descriptor open after setSource().
+        Releasing the source and deleting the player prevents the soundboard
+        from accumulating many open cached files.
+        """
+
+        current = self._players.get(key)
+        if player is not None and current is not None and current[0] is not player:
+            return
+
+        pair = self._players.pop(key, None)
+        self._player_source_paths.pop(key, None)
+
+        if pair is None:
+            audio = None
+        else:
+            cached_player, audio = pair
+            if player is None:
+                player = cached_player
+
+        if player is not None:
+            try:
+                player.stop()
+            except Exception:
+                pass
+            try:
+                player.setSource(QUrl())
+            except Exception:
+                pass
+            try:
+                player.setAudioOutput(None)
+            except Exception:
+                pass
+            try:
+                player.deleteLater()
+            except Exception:
+                pass
+
+        if audio is not None:
+            try:
+                audio.deleteLater()
+            except Exception:
+                pass
+
+    def _release_all_players(self) -> None:
+        for key, (player, _audio) in list(self._players.items()):
+            self._release_player_for_key(key, player)
+
+    def _on_player_media_status(self, key: str, player: QMediaPlayer, status) -> None:
+        status_text = str(status)
+        if "EndOfMedia" in status_text or "InvalidMedia" in status_text:
+            QTimer.singleShot(150, lambda key=key, player=player: self._release_player_for_key(key, player))
+
     def _player_for_key(self, key: str, sink_name: str) -> tuple[QMediaPlayer, QAudioOutput, bool]:
         player, audio = self._players.get(key, (None, None))
         device_found = True
@@ -2769,43 +2824,49 @@ class SoundboardDialog(QDialog):
             player = QMediaPlayer(self)
             audio, device_found = _audio_output_for_sink_name(sink_name, self)
             player.setAudioOutput(audio)
+
+            try:
+                player.mediaStatusChanged.connect(
+                    lambda status, key=key, player=player: self._on_player_media_status(key, player, status)
+                )
+            except Exception:
+                pass
+
+            try:
+                player.errorOccurred.connect(
+                    lambda *_args, key=key, player=player: self._release_player_for_key(key, player)
+                )
+            except Exception:
+                pass
+
             self._players[key] = (player, audio)
 
         return player, audio, device_found
 
     def _prime_player_source(self, *, key: str, path: Path, sink_name: str, volume: float) -> bool:
-        player, audio, device_found = self._player_for_key(key, sink_name)
-        audio.setVolume(max(0.0, min(1.0, float(volume) / 100.0)))
-
-        source_path = str(path)
-        if self._player_source_paths.get(key) != source_path:
-            player.setSource(QUrl.fromLocalFile(source_path))
-            self._player_source_paths[key] = source_path
-
-        return device_found
+        # Disabled intentionally.
+        #
+        # Preloading via QMediaPlayer keeps many soundboard-cache WAV files open
+        # in the app process. Playback is still fast enough without this, and it
+        # avoids Qt/FFmpeg/Pulse hangs when many pads have been touched.
+        return True
 
     def _start_player(self, *, key: str, path: Path, sink_name: str, volume: float) -> bool:
+        # Use a fresh short-lived player for each pad hit. Reusing persistent
+        # QMediaPlayer objects keeps WAV descriptors open through Qt/FFmpeg.
+        if key in self._players:
+            self._release_player_for_key(key)
+
         player, audio, device_found = self._player_for_key(key, sink_name)
         audio.setVolume(max(0.0, min(1.0, float(volume) / 100.0)))
 
         source_path = str(path)
-        player.stop()
-
-        if self._player_source_paths.get(key) != source_path:
-            player.setSource(QUrl.fromLocalFile(source_path))
-            self._player_source_paths[key] = source_path
+        player.setSource(QUrl.fromLocalFile(source_path))
+        self._player_source_paths[key] = source_path
 
         player.setPosition(0)
         player.play()
         return device_found
-
-
-
-
-
-
-
-
 
     def play_slot(self, slot_id: str) -> None:
         slot = next((item for item in self.slots if str(item.get("id")) == str(slot_id)), None)
@@ -2833,7 +2894,7 @@ class SoundboardDialog(QDialog):
         output_found = False
         if bus_found:
             output_found = self._start_player(
-                key=f"{slot_id}:soundboard",
+                key="soundboard",
                 path=playback_path,
                 sink_name=SOUNDBOARD_BUS,
                 volume=effective_volume,
