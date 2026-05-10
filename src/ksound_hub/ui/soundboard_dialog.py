@@ -1083,6 +1083,7 @@ class SoundboardDialog(QDialog):
         self.pad_widgets: list[SoundboardPadWidget] = []
         self._players: dict[str, tuple[QMediaPlayer, QAudioOutput]] = {}
         self._player_source_paths: dict[str, str] = {}
+        self._external_playback_processes: list[tuple[subprocess.Popen, subprocess.Popen]] = []
         self._soundboard_bus_ready = False
         self._soundboard_monitor_routes_ready: set[str] = set()
         self._shortcuts: list[QShortcut] = []
@@ -2717,6 +2718,8 @@ class SoundboardDialog(QDialog):
             except Exception:
                 pass
 
+        stopped += self._stop_external_players()
+
         self.status_label.setText(f"Stop all: {stopped} player(s) stopped")
 
     def _rebuild_shortcuts(self) -> None:
@@ -2851,22 +2854,128 @@ class SoundboardDialog(QDialog):
         # avoids Qt/FFmpeg/Pulse hangs when many pads have been touched.
         return True
 
+    def _cleanup_finished_external_players(self) -> None:
+        active: list[tuple[subprocess.Popen, subprocess.Popen]] = []
+
+        for decoder, player in list(getattr(self, "_external_playback_processes", [])):
+            decoder_running = decoder.poll() is None
+            player_running = player.poll() is None
+            if decoder_running or player_running:
+                active.append((decoder, player))
+
+        self._external_playback_processes = active
+
+    def _stop_external_players(self) -> int:
+        stopped = 0
+
+        for decoder, player in list(getattr(self, "_external_playback_processes", [])):
+            for proc in (player, decoder):
+                try:
+                    if proc.poll() is None:
+                        proc.terminate()
+                        stopped += 1
+                except Exception:
+                    pass
+
+        self._external_playback_processes = []
+        return stopped
+
+    def _start_pulse_direct_player(self, *, path: Path, sink_name: str, volume: float) -> bool:
+        """Play one soundboard pad directly into the Pulse/PipeWire sink.
+
+        Avoid QMediaDevices.audioOutputs(), which can segfault inside
+        QtMultimedia/PipeWire on device enumeration. The soundboard bus is a
+        stable Pulse/PipeWire sink, so send decoded audio to it directly.
+        """
+
+        self._cleanup_finished_external_players()
+
+        try:
+            linear_volume = max(0.0, min(1.0, float(volume) / 100.0))
+        except Exception:
+            linear_volume = 1.0
+
+        decoder_cmd = [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-nostdin",
+            "-i",
+            str(path),
+            "-filter:a",
+            f"volume={linear_volume:.6f}",
+            "-f",
+            "f32le",
+            "-ar",
+            "48000",
+            "-ac",
+            "2",
+            "pipe:1",
+        ]
+
+        player_cmd = [
+            "pacat",
+            "--playback",
+            f"--device={sink_name}",
+            "--raw",
+            "--format=float32le",
+            "--rate=48000",
+            "--channels=2",
+            "--latency-msec=40",
+            "--process-time-msec=10",
+            "--property=media.name=K-Sounds-Hub-Soundboard-Player",
+        ]
+
+        decoder = None
+        try:
+            decoder = subprocess.Popen(
+                decoder_cmd,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+            )
+            if decoder.stdout is None:
+                try:
+                    decoder.terminate()
+                except Exception:
+                    pass
+                return False
+
+            player = subprocess.Popen(
+                player_cmd,
+                stdin=decoder.stdout,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+
+            try:
+                decoder.stdout.close()
+            except Exception:
+                pass
+
+            self._external_playback_processes.append((decoder, player))
+            return True
+        except Exception:
+            if decoder is not None:
+                try:
+                    decoder.terminate()
+                except Exception:
+                    pass
+            return False
+
     def _start_player(self, *, key: str, path: Path, sink_name: str, volume: float) -> bool:
-        # Use a fresh short-lived player for each pad hit. Reusing persistent
-        # QMediaPlayer objects keeps WAV descriptors open through Qt/FFmpeg.
+        # Do not use QMediaDevices.audioOutputs() for the soundboard path.
+        # A native Qt/PipeWire segfault was observed there under load. Use the
+        # deterministic Pulse/PipeWire sink path instead.
         if key in self._players:
             self._release_player_for_key(key)
 
-        player, audio, device_found = self._player_for_key(key, sink_name)
-        audio.setVolume(max(0.0, min(1.0, float(volume) / 100.0)))
-
-        source_path = str(path)
-        player.setSource(QUrl.fromLocalFile(source_path))
-        self._player_source_paths[key] = source_path
-
-        player.setPosition(0)
-        player.play()
-        return device_found
+        return self._start_pulse_direct_player(
+            path=path,
+            sink_name=sink_name,
+            volume=volume,
+        )
 
     def play_slot(self, slot_id: str) -> None:
         slot = next((item for item in self.slots if str(item.get("id")) == str(slot_id)), None)
