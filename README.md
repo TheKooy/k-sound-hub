@@ -8,7 +8,7 @@ This project is being developed with AI assistance.
 
 ## Status
 
-Current version: 0.3.4
+Current version: 0.4.1
 
 Main tested environment:
 
@@ -41,15 +41,15 @@ Important:
 - Do not use the green Code button for normal installation.
 - Do not download the automatic Source code zip or Source code tar.gz files.
 - Download one of the release assets instead:
-  - k-sounds-hub-linux-release-v0.3.4.tar.gz
-  - k-sounds-hub-linux-release-v0.3.4.zip
+  - k-sounds-hub-linux-release-v0.4.1.tar.gz
+  - k-sounds-hub-linux-release-v0.4.1.zip
 
 ### Install from the tar.gz release
 
 Open a terminal in the folder where you downloaded the file, then run:
 
-    tar -xzf k-sounds-hub-linux-release-v0.3.4.tar.gz
-    cd k-sounds-hub-linux-release-v0.3.4
+    tar -xzf k-sounds-hub-linux-release-v0.4.1.tar.gz
+    cd k-sounds-hub-linux-release-v0.4.1
     ./install.sh
 
 Then start the app with:
@@ -60,8 +60,8 @@ Then start the app with:
 
 Open a terminal in the folder where you downloaded the file, then run:
 
-    unzip k-sounds-hub-linux-release-v0.3.4.zip
-    cd k-sounds-hub-linux-release-v0.3.4
+    unzip k-sounds-hub-linux-release-v0.4.1.zip
+    cd k-sounds-hub-linux-release-v0.4.1
     ./install.sh
 
 Then start the app with:
@@ -135,6 +135,10 @@ Python dependencies are installed into the app-local virtual environment:
 
 - PySide6
 - NumPy
+
+## Audio stability note
+
+For heavy live use, such as K-Sounds Hub plus a game plus Discord/TeamSpeak plus virtual microphone routing, a PipeWire quantum of `512 / 48000` is recommended. This keeps latency reasonable while avoiding crackles seen on more aggressive `256 / 48000` setups.
 
 ## Development installation
 

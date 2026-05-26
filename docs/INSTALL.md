@@ -6,8 +6,8 @@ K-Sounds Hub is installed from GitHub Releases.
 
 On the GitHub Releases page, download one of these assets:
 
-- k-sounds-hub-linux-release-v0.3.4.tar.gz
-- k-sounds-hub-linux-release-v0.3.4.zip
+- k-sounds-hub-linux-release-v0.4.1.tar.gz
+- k-sounds-hub-linux-release-v0.4.1.zip
 
 Do not use the green Code button for normal installation.
 Do not download the automatic Source code zip or Source code tar.gz files.
@@ -16,8 +16,8 @@ Do not download the automatic Source code zip or Source code tar.gz files.
 
 Open a terminal in the download folder, then run:
 
-    tar -xzf k-sounds-hub-linux-release-v0.3.4.tar.gz
-    cd k-sounds-hub-linux-release-v0.3.4
+    tar -xzf k-sounds-hub-linux-release-v0.4.1.tar.gz
+    cd k-sounds-hub-linux-release-v0.4.1
     ./install.sh
 
 Start the app with:
@@ -28,8 +28,8 @@ Start the app with:
 
 Open a terminal in the download folder, then run:
 
-    unzip k-sounds-hub-linux-release-v0.3.4.zip
-    cd k-sounds-hub-linux-release-v0.3.4
+    unzip k-sounds-hub-linux-release-v0.4.1.zip
+    cd k-sounds-hub-linux-release-v0.4.1
     ./install.sh
 
 Start the app with:

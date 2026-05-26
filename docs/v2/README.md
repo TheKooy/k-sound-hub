@@ -115,3 +115,8 @@ Completed:
 - Obsolete Python audio prototypes removed.
 - Android keystore moved out of repo.
 - Android signing made automatic and local.
+
+## Recommended PipeWire settings
+
+For the current heavy-use routing profile, use `48000 Hz` with a `512` quantum when gaming or running voice chat at the same time. This is a stability recommendation, not a hard application requirement. The previous `256 / 48000` runtime can be too aggressive for the full virtual routing graph on some systems.
+
