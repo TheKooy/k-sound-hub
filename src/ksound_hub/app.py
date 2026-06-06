@@ -178,28 +178,32 @@ QLineEdit#eqFrequencyPill:focus {
 }
 
 QSlider#eqGainSlider::groove:vertical {
-    background: rgba(2, 5, 9, 225);
-    border: 1px solid rgba(110, 145, 180, 55);
-    border-radius: 5px;
+    background: rgba(0, 0, 0, 0);
+    border: none;
     width: 8px;
+    margin: 0px 19px;
 }
 
 QSlider#eqGainSlider::handle:vertical {
-    background: rgba(62, 216, 255, 230);
+    background: rgba(62, 216, 255, 235);
     border: 1px solid rgba(210, 245, 255, 190);
     height: 11px;
-    margin: 0px -7px;
+    margin: 0px 12px;
     border-radius: 6px;
 }
 
 QSlider#eqGainSlider::sub-page:vertical {
-    background: rgba(62, 216, 255, 92);
+    background: rgba(2, 5, 9, 230);
+    border: 1px solid rgba(110, 145, 180, 45);
     border-radius: 5px;
+    margin: 0px 19px;
 }
 
 QSlider#eqGainSlider::add-page:vertical {
-    background: rgba(0, 0, 0, 185);
+    background: rgba(62, 216, 255, 82);
+    border: 1px solid rgba(62, 216, 255, 42);
     border-radius: 5px;
+    margin: 0px 19px;
 }
 
 QSlider::groove:vertical {

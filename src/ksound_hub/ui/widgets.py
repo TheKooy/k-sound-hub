@@ -619,7 +619,7 @@ class EqBandSlider(QWidget):
         self.slider.setTickPosition(QSlider.NoTicks)
         self.slider.valueChanged.connect(self._on_value_changed)
         self.slider.setFixedHeight(124)
-        self.slider.setFixedWidth(26)
+        self.slider.setFixedWidth(46)
         root.addWidget(self.slider, alignment=Qt.AlignHCenter)
 
         self.frequency_edit = EditableFrequencyEdit(self._format_frequency(self._frequency))
