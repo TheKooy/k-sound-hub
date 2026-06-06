@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import copy
 
-from PySide6.QtCore import QTimer, Signal
+from PySide6.QtCore import QEvent, QTimer, Qt, Signal
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
+    QAbstractButton,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
@@ -12,6 +13,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
+    QSlider,
     QVBoxLayout,
     QWidget,
 )
@@ -27,6 +29,7 @@ class EqProfileDialog(QDialog):
     def __init__(self, profile: EqProfile, parent=None, *, title: str = "Edit EQ preset"):
         super().__init__(parent)
         self.setWindowTitle(title)
+        self.setFocusPolicy(Qt.ClickFocus)
         self.resize(760, 420)
         install_window_geometry(self, "eq_profile", default_size=(760, 420))
 
@@ -81,6 +84,28 @@ class EqProfileDialog(QDialog):
         self.buttons.accepted.connect(self.accept)
         self.buttons.rejected.connect(self._cancel_without_saving)
         root.addWidget(self.buttons)
+
+        self._install_background_focus_clear_filter()
+
+    def _install_background_focus_clear_filter(self) -> None:
+        self.installEventFilter(self)
+        for widget in self.findChildren(QWidget):
+            widget.installEventFilter(self)
+
+    def _is_focus_preserving_widget(self, widget: QWidget | None) -> bool:
+        while widget is not None and widget is not self:
+            if isinstance(widget, (QLineEdit, QSlider, QAbstractButton)):
+                return True
+            widget = widget.parentWidget()
+        return False
+
+    def eventFilter(self, watched, event) -> bool:
+        if event.type() == QEvent.MouseButtonPress and isinstance(watched, QWidget):
+            focused = self.focusWidget()
+            if focused is not None and not self._is_focus_preserving_widget(watched):
+                focused.clearFocus()
+                self.setFocus(Qt.MouseFocusReason)
+        return super().eventFilter(watched, event)
 
     def _band_label(self, frequency: float) -> str:
         if frequency >= 1000:
