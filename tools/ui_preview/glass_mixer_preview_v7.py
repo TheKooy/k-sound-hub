@@ -737,7 +737,13 @@ class PreviewWindow(QMainWindow):
         if not isinstance(obj, QWidget):
             return super().eventFilter(obj, event)
 
-        if obj.window() is not self:
+        owner_attr = getattr(obj, "window", None)
+        try:
+            owner = owner_attr() if callable(owner_attr) else owner_attr
+        except TypeError:
+            owner = None
+
+        if owner is not self:
             return super().eventFilter(obj, event)
 
         if self.isMaximized():
