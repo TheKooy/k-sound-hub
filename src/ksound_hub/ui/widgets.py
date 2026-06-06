@@ -532,9 +532,11 @@ class EditableFrequencyEdit(QLineEdit):
         super().__init__(text, parent)
         self.setReadOnly(True)
         self.setAlignment(Qt.AlignCenter)
-        self.setObjectName("mutedLabel")
-        self.setToolTip("Double-click to edit this EQ band frequency in Hz.")
-        self.setMinimumWidth(44)
+        self.setObjectName("eqFrequencyPill")
+        self.setToolTip("Advanced: double-click to edit this EQ band frequency in Hz.")
+        self.setFixedWidth(42)
+        self.setMinimumHeight(18)
+        self.setMaximumHeight(18)
         self.setMaxLength(8)
 
         validator = QDoubleValidator(20.0, 20000.0, 1, self)
@@ -574,8 +576,11 @@ class EqBandSlider(QWidget):
 
         self.value_label = QLabel(self._format_gain(self._value))
         self.value_label.setAlignment(Qt.AlignCenter)
-        self.value_label.setObjectName("mutedLabel")
-        root.addWidget(self.value_label)
+        self.value_label.setObjectName("eqValuePill")
+        self.value_label.setFixedWidth(42)
+        self.value_label.setMinimumHeight(18)
+        self.value_label.setMaximumHeight(18)
+        root.addWidget(self.value_label, alignment=Qt.AlignHCenter)
 
         self.slider = NoWheelSlider(Qt.Vertical)
         self.slider.setRange(

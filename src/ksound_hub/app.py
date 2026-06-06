@@ -152,6 +152,28 @@ QComboBox QAbstractItemView {
     selection-background-color: rgba(255, 92, 199, 120);
     selection-color: #edf4ff;
 }
+
+QLabel#eqValuePill,
+QLineEdit#eqFrequencyPill {
+    color: #b8c6d8;
+    background: rgba(8, 12, 19, 125);
+    border: 1px solid rgba(130, 170, 210, 55);
+    border-radius: 7px;
+    padding: 1px 4px;
+    font-size: 10px;
+    font-weight: 700;
+}
+
+QLineEdit#eqFrequencyPill {
+    selection-background-color: rgba(62, 216, 255, 110);
+}
+
+QLineEdit#eqFrequencyPill:focus {
+    color: #edf4ff;
+    background: rgba(10, 18, 28, 190);
+    border: 1px solid rgba(62, 216, 255, 125);
+}
+
 QSlider::groove:vertical {
     background: rgba(11, 16, 24, 235);
     width: 14px;
