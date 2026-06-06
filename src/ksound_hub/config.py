@@ -53,12 +53,14 @@ DEFAULT_CHANNELS = [
 ]
 
 DEFAULT_EQ_BANDS = [
-    {"frequency": 60.0, "gain_db": 0.0, "q": 1.0},
-    {"frequency": 170.0, "gain_db": 0.0, "q": 1.0},
-    {"frequency": 310.0, "gain_db": 0.0, "q": 1.0},
-    {"frequency": 600.0, "gain_db": 0.0, "q": 1.0},
+    {"frequency": 32.0, "gain_db": 0.0, "q": 1.0},
+    {"frequency": 64.0, "gain_db": 0.0, "q": 1.0},
+    {"frequency": 125.0, "gain_db": 0.0, "q": 1.0},
+    {"frequency": 250.0, "gain_db": 0.0, "q": 1.0},
+    {"frequency": 500.0, "gain_db": 0.0, "q": 1.0},
     {"frequency": 1000.0, "gain_db": 0.0, "q": 1.0},
-    {"frequency": 3000.0, "gain_db": 0.0, "q": 1.0},
-    {"frequency": 6000.0, "gain_db": 0.0, "q": 1.0},
-    {"frequency": 12000.0, "gain_db": 0.0, "q": 1.0},
+    {"frequency": 2000.0, "gain_db": 0.0, "q": 1.0},
+    {"frequency": 4000.0, "gain_db": 0.0, "q": 1.0},
+    {"frequency": 8000.0, "gain_db": 0.0, "q": 1.0},
+    {"frequency": 16000.0, "gain_db": 0.0, "q": 1.0},
 ]

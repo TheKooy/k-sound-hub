@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QPoint, QRectF, Qt, Signal, QTimer
-from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QColor, QDoubleValidator, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QSlider,
     QVBoxLayout,
     QWidget,
+    QLineEdit,
 )
 
 
@@ -524,44 +525,133 @@ class StereoLevelMeterWidget(QWidget):
         painter.drawRect(self.rect().adjusted(0, 0, -1, -1))
 
 
+class EditableFrequencyEdit(QLineEdit):
+    editStarted = Signal()
+
+    def __init__(self, text: str, parent=None):
+        super().__init__(text, parent)
+        self.setReadOnly(True)
+        self.setAlignment(Qt.AlignCenter)
+        self.setObjectName("mutedLabel")
+        self.setToolTip("Double-click to edit this EQ band frequency in Hz.")
+        self.setMinimumWidth(44)
+        self.setMaxLength(8)
+
+        validator = QDoubleValidator(20.0, 20000.0, 1, self)
+        validator.setNotation(QDoubleValidator.StandardNotation)
+        self.setValidator(validator)
+
+    def mouseDoubleClickEvent(self, event) -> None:
+        self.setReadOnly(False)
+        self.selectAll()
+        self.setFocus(Qt.MouseFocusReason)
+        self.editStarted.emit()
+        event.accept()
+
+    def focusOutEvent(self, event) -> None:
+        super().focusOutEvent(event)
+        self.setReadOnly(True)
+
+
 class EqBandSlider(QWidget):
-    def __init__(self, label: str, value: int = 0, parent=None):
+    frequencyChanged = Signal(float)
+
+    GAIN_SCALE = 2
+    MIN_GAIN_DB = -12.0
+    MAX_GAIN_DB = 12.0
+    MIN_FREQUENCY = 20.0
+    MAX_FREQUENCY = 20000.0
+
+    def __init__(self, label: str, value: float = 0.0, parent=None, *, frequency: float | None = None):
         super().__init__(parent)
         self._label_text = label
-        self._value = value
+        self._frequency = self._clamp_frequency(frequency if frequency is not None else self._parse_frequency(label))
+        self._value = self._clamp_gain(float(value))
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(4)
 
-        self.value_label = QLabel(f"{value:+d}")
+        self.value_label = QLabel(self._format_gain(self._value))
         self.value_label.setAlignment(Qt.AlignCenter)
         self.value_label.setObjectName("mutedLabel")
         root.addWidget(self.value_label)
 
         self.slider = NoWheelSlider(Qt.Vertical)
-        self.slider.setRange(-12, 12)
-        self.slider.setValue(value)
+        self.slider.setRange(
+            int(self.MIN_GAIN_DB * self.GAIN_SCALE),
+            int(self.MAX_GAIN_DB * self.GAIN_SCALE),
+        )
+        self.slider.setSingleStep(1)
+        self.slider.setPageStep(2)
+        self.slider.setValue(self._gain_to_slider_value(self._value))
         self.slider.setTickPosition(QSlider.NoTicks)
         self.slider.valueChanged.connect(self._on_value_changed)
-        self.slider.setFixedHeight(112)
-        self.slider.setFixedWidth(24)
+        self.slider.setFixedHeight(124)
+        self.slider.setFixedWidth(26)
         root.addWidget(self.slider, alignment=Qt.AlignHCenter)
 
-        self.label = QLabel(label)
-        self.label.setAlignment(Qt.AlignCenter)
-        self.label.setObjectName("mutedLabel")
-        root.addWidget(self.label)
+        self.frequency_edit = EditableFrequencyEdit(self._format_frequency(self._frequency))
+        self.frequency_edit.editingFinished.connect(self._on_frequency_edit_finished)
+        root.addWidget(self.frequency_edit)
+
+    def _clamp_gain(self, value: float) -> float:
+        value = max(self.MIN_GAIN_DB, min(self.MAX_GAIN_DB, float(value)))
+        return round(value * 2.0) / 2.0
+
+    def _clamp_frequency(self, value: float) -> float:
+        return max(self.MIN_FREQUENCY, min(self.MAX_FREQUENCY, float(value)))
+
+    def _parse_frequency(self, text: str) -> float:
+        raw = str(text or "").strip().lower().replace("hz", "").replace(" ", "").replace(",", ".")
+        multiplier = 1.0
+        if raw.endswith("k"):
+            multiplier = 1000.0
+            raw = raw[:-1]
+        try:
+            return self._clamp_frequency(float(raw) * multiplier)
+        except Exception:
+            return 1000.0
+
+    def _format_frequency(self, frequency: float) -> str:
+        frequency = self._clamp_frequency(frequency)
+        if float(frequency).is_integer():
+            return str(int(frequency))
+        return f"{frequency:.1f}"
+
+    def _format_gain(self, value: float) -> str:
+        return f"{self._clamp_gain(value):+.1f}"
+
+    def _gain_to_slider_value(self, value: float) -> int:
+        return int(round(self._clamp_gain(value) * self.GAIN_SCALE))
+
+    def _slider_value_to_gain(self, value: int) -> float:
+        return self._clamp_gain(float(value) / self.GAIN_SCALE)
 
     def _on_value_changed(self, value: int) -> None:
-        self._value = value
-        self.value_label.setText(f"{value:+d}")
+        self._value = self._slider_value_to_gain(value)
+        self.value_label.setText(self._format_gain(self._value))
 
-    def value(self) -> int:
-        return self.slider.value()
+    def _on_frequency_edit_finished(self) -> None:
+        old_frequency = self._frequency
+        self._frequency = self._parse_frequency(self.frequency_edit.text())
+        self.frequency_edit.setReadOnly(True)
+        self.frequency_edit.setText(self._format_frequency(self._frequency))
+        if abs(self._frequency - old_frequency) > 0.001:
+            self.frequencyChanged.emit(self._frequency)
 
-    def setValue(self, value: int) -> None:
-        self.slider.setValue(value)
+    def value(self) -> float:
+        return self._slider_value_to_gain(self.slider.value())
+
+    def setValue(self, value: float) -> None:
+        self.slider.setValue(self._gain_to_slider_value(float(value)))
+
+    def frequency(self) -> float:
+        return self._frequency
+
+    def setFrequency(self, frequency: float) -> None:
+        self._frequency = self._clamp_frequency(frequency)
+        self.frequency_edit.setText(self._format_frequency(self._frequency))
 
 
 class CollapsibleSection(QFrame):

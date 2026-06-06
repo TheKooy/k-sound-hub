@@ -27,8 +27,8 @@ class EqProfileDialog(QDialog):
     def __init__(self, profile: EqProfile, parent=None, *, title: str = "Edit EQ preset"):
         super().__init__(parent)
         self.setWindowTitle(title)
-        self.resize(560, 360)
-        install_window_geometry(self, "eq_profile", default_size=(560, 360))
+        self.resize(760, 420)
+        install_window_geometry(self, "eq_profile", default_size=(760, 420))
 
         self._source_profile = copy.deepcopy(profile)
         self._initial_profile = copy.deepcopy(profile)
@@ -54,7 +54,7 @@ class EqProfileDialog(QDialog):
         form.addRow("Preset", self.name_edit)
         root.addLayout(form)
 
-        hint = QLabel("Simple 8-band EQ. Changes are previewed after a short pause until you Save or Cancel.")
+        hint = QLabel("10-band EQ. Gain moves in 0.5 dB steps. Double-click a frequency to edit it.")
         hint.setObjectName("mutedLabel")
         hint.setWordWrap(True)
         root.addWidget(hint)
@@ -66,8 +66,13 @@ class EqProfileDialog(QDialog):
 
         self.band_sliders: list[EqBandSlider] = []
         for band in profile.bands:
-            slider = EqBandSlider(self._band_label(band.frequency), int(band.gain_db))
+            slider = EqBandSlider(
+                self._band_label(band.frequency),
+                float(band.gain_db),
+                frequency=float(band.frequency),
+            )
             slider.slider.valueChanged.connect(self._on_live_changed)
+            slider.frequencyChanged.connect(self._on_live_changed)
             self.band_sliders.append(slider)
             bands_row.addWidget(slider)
         root.addWidget(bands_wrap, 1)
@@ -148,5 +153,11 @@ class EqProfileDialog(QDialog):
         name = self.name_edit.text().strip() or self._source_profile.name
         bands: list[EqBand] = []
         for old_band, slider in zip(self._source_profile.bands, self.band_sliders, strict=False):
-            bands.append(EqBand(frequency=old_band.frequency, gain_db=float(slider.value()), q=old_band.q))
+            bands.append(
+                EqBand(
+                    frequency=float(slider.frequency()),
+                    gain_db=float(slider.value()),
+                    q=old_band.q,
+                )
+            )
         return EqProfile(name=name, bands=bands)

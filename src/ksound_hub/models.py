@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+import math
 from typing import Any
 
 from .config import DEFAULT_CHANNELS, DEFAULT_EQ_BANDS
@@ -21,9 +22,74 @@ class EqBand:
         )
 
 
+def _default_eq_band_frequencies() -> list[float]:
+    return [float(item["frequency"]) for item in DEFAULT_EQ_BANDS]
+
+
+def _interpolated_gain_db(source_bands: list[EqBand], target_frequency: float) -> float:
+    """Map old presets to the current default EQ frequencies without losing their shape."""
+
+    valid = sorted(
+        (
+            band
+            for band in source_bands
+            if float(band.frequency) > 0.0
+        ),
+        key=lambda band: float(band.frequency),
+    )
+    if not valid:
+        return 0.0
+
+    if len(valid) == 1:
+        return round(float(valid[0].gain_db) * 2.0) / 2.0
+
+    target_log = math.log(max(1.0, float(target_frequency)))
+    points = [(math.log(max(1.0, float(band.frequency))), float(band.gain_db)) for band in valid]
+
+    if target_log <= points[0][0]:
+        return round(points[0][1] * 2.0) / 2.0
+    if target_log >= points[-1][0]:
+        return round(points[-1][1] * 2.0) / 2.0
+
+    for (f1, g1), (f2, g2) in zip(points, points[1:], strict=False):
+        if f1 <= target_log <= f2:
+            span = max(0.000001, f2 - f1)
+            ratio = (target_log - f1) / span
+            gain = g1 + (g2 - g1) * ratio
+            return round(gain * 2.0) / 2.0
+
+    nearest = min(valid, key=lambda band: abs(math.log(float(band.frequency)) - target_log))
+    return round(float(nearest.gain_db) * 2.0) / 2.0
+
+
+def _normalized_eq_bands_for_load(source_bands: list[EqBand]) -> list[EqBand]:
+    """Keep custom 10-band profiles intact; migrate old/short profiles to 10 bands."""
+
+    if len(source_bands) == len(DEFAULT_EQ_BANDS):
+        return [
+            EqBand(
+                frequency=max(20.0, min(20000.0, float(band.frequency))),
+                gain_db=round(max(-12.0, min(12.0, float(band.gain_db))) * 2.0) / 2.0,
+                q=max(0.1, min(10.0, float(band.q))),
+            )
+            for band in source_bands
+        ]
+
+    target_frequencies = _default_eq_band_frequencies()
+    default_q = float(DEFAULT_EQ_BANDS[0].get("q", 1.0)) if DEFAULT_EQ_BANDS else 1.0
+    return [
+        EqBand(
+            frequency=frequency,
+            gain_db=_interpolated_gain_db(source_bands, frequency),
+            q=default_q,
+        )
+        for frequency in target_frequencies
+    ]
+
+
 @dataclass
 class EqProfile:
-    name: str
+    name: str = "Default"
     bands: list[EqBand] = field(default_factory=list)
 
     @classmethod
@@ -31,16 +97,22 @@ class EqProfile:
         return cls(name=name, bands=[EqBand.from_dict(item) for item in DEFAULT_EQ_BANDS])
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "EqProfile":
+    def from_dict(cls, data: dict) -> "EqProfile":
+        name = str(data.get("name", "Default"))
         bands = data.get("bands", [])
         if not isinstance(bands, list):
             bands = []
+
+        parsed_bands = [EqBand.from_dict(item) for item in bands]
+        if not parsed_bands:
+            parsed_bands = [EqBand.from_dict(item) for item in DEFAULT_EQ_BANDS]
+
         return cls(
-            name=str(data.get("name", "Default")),
-            bands=[EqBand.from_dict(item) for item in bands],
+            name=name,
+            bands=_normalized_eq_bands_for_load(parsed_bands),
         )
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict:
         return {"name": self.name, "bands": [asdict(band) for band in self.bands]}
 
 
