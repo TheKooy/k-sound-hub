@@ -601,11 +601,12 @@ class EqBandSlider(QWidget):
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(4)
+        root.setSpacing(0)
 
         self.value_label = EditableGainEdit(self._format_gain(self._value))
         self.value_label.editingFinished.connect(self._on_gain_edit_finished)
         root.addWidget(self.value_label, alignment=Qt.AlignHCenter)
+        root.addSpacing(14)
 
         self.slider = NoWheelSlider(Qt.Vertical)
         self.slider.setObjectName("eqGainSlider")
@@ -621,6 +622,7 @@ class EqBandSlider(QWidget):
         self.slider.setFixedHeight(124)
         self.slider.setFixedWidth(46)
         root.addWidget(self.slider, alignment=Qt.AlignHCenter)
+        root.addSpacing(4)
 
         self.frequency_edit = EditableFrequencyEdit(self._format_frequency(self._frequency))
         self.frequency_edit.editingFinished.connect(self._on_frequency_edit_finished)
