@@ -18,6 +18,52 @@ class NoWheelSlider(QSlider):
     def wheelEvent(self, event) -> None:
         event.accept()
 
+    def _position_to_value(self, pos) -> int:
+        minimum = self.minimum()
+        maximum = self.maximum()
+        span = max(1, maximum - minimum)
+
+        if self.orientation() == Qt.Vertical:
+            usable = max(1, self.height() - 1)
+            ratio = 1.0 - (max(0, min(usable, pos.y())) / usable)
+        else:
+            usable = max(1, self.width() - 1)
+            ratio = max(0, min(usable, pos.x())) / usable
+
+        if self.invertedAppearance():
+            ratio = 1.0 - ratio
+
+        return int(round(minimum + ratio * span))
+
+    def _set_value_from_mouse_event(self, event) -> None:
+        pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
+        self.setValue(self._position_to_value(pos))
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton:
+            self.setSliderDown(True)
+            self.sliderPressed.emit()
+            self._set_value_from_mouse_event(event)
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:
+        if event.buttons() & Qt.LeftButton:
+            self._set_value_from_mouse_event(event)
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton and self.isSliderDown():
+            self._set_value_from_mouse_event(event)
+            self.setSliderDown(False)
+            self.sliderReleased.emit()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
 
 class SelectorFrame(QFrame):
     def __init__(self, parent=None):

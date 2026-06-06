@@ -64,6 +64,7 @@ class MainWindow(QMainWindow):
         self.channel_widgets: dict[str, ChannelWidget] = {}
         self.soundboard_dialog: SoundboardDialog | None = None
         self._pending_apply_keys: set[str] = set()
+        self._pending_volume_fast_keys: set[str] = set()
 
         self._force_close = False
         self._tray_message_shown = False
@@ -83,6 +84,11 @@ class MainWindow(QMainWindow):
         self._apply_timer = QTimer(self)
         self._apply_timer.setSingleShot(True)
         self._apply_timer.timeout.connect(self._flush_pending_channel_apply)
+
+        self._volume_fast_timer = QTimer(self)
+        self._volume_fast_timer.setSingleShot(True)
+        self._volume_fast_timer.setInterval(55)
+        self._volume_fast_timer.timeout.connect(self._flush_pending_volume_fast_apply)
 
         self._runtime_view_timer = QTimer(self)
         self._runtime_view_timer.setSingleShot(True)
@@ -797,6 +803,24 @@ class MainWindow(QMainWindow):
             return
         self.audio_engine.apply_channel(self.settings, channel_key)
 
+    def _queue_channel_volume_fast(self, channel_key: str, delay_ms: int = 55) -> None:
+        self._pending_volume_fast_keys.add(channel_key)
+        remaining = self._volume_fast_timer.remainingTime()
+        if remaining < 0 or remaining > delay_ms:
+            self._volume_fast_timer.start(delay_ms)
+
+    def _flush_pending_volume_fast_apply(self) -> None:
+        keys = list(self._pending_volume_fast_keys)
+        self._pending_volume_fast_keys.clear()
+        for key in keys:
+            self._apply_channel_volume_fast(key)
+
+    def _flush_channel_volume_fast_now(self, channel_key: str) -> None:
+        self._pending_volume_fast_keys.discard(channel_key)
+        if not self._pending_volume_fast_keys and self._volume_fast_timer.isActive():
+            self._volume_fast_timer.stop()
+        self._apply_channel_volume_fast(channel_key)
+
     def _queue_channel_apply(self, channel_key: str, delay_ms: int) -> None:
         self._pending_apply_keys.add(channel_key)
         remaining = self._apply_timer.remainingTime()
@@ -808,7 +832,8 @@ class MainWindow(QMainWindow):
         self._pending_apply_keys.clear()
         for key in keys:
             self.audio_engine.apply_channel(self.settings, key)
-        self._status_timer.start()
+        # Live EQ preview should not trigger a full runtime/status refresh.
+        # Rebuilding lists while sliders are moving causes visible UI stutter.
 
     def _queue_runtime_view_refresh(self, delay_ms: int = 20) -> None:
         remaining = self._runtime_view_timer.remainingTime()
@@ -839,7 +864,7 @@ class MainWindow(QMainWindow):
         # as possible. No EQ library sync, no autosave reset, no overlay/status
         # refresh on every tick. The release event commits/saves afterwards.
         if hint == "volume_drag":
-            self._apply_channel_volume_fast(source_channel.key)
+            self._queue_channel_volume_fast(source_channel.key, 55)
             return
 
         # Volume, mute and slider commits do not need EQ library relinking.
@@ -851,7 +876,7 @@ class MainWindow(QMainWindow):
             self._normalize_app_rules()
 
         if hint == "volume_commit":
-            self._apply_channel_volume_fast(source_channel.key)
+            self._flush_channel_volume_fast_now(source_channel.key)
             self._show_overlay_for_change(source_channel, "volume")
             self._save_timer.start()
             self._status_timer.start()
@@ -864,7 +889,7 @@ class MainWindow(QMainWindow):
             return
 
         if hint == "eq_preview":
-            self._queue_channel_apply(source_channel.key, 95)
+            self._queue_channel_apply(source_channel.key, 220)
         elif hint == "app_route":
             self._queue_runtime_view_refresh(10)
             self._status_timer.start()
@@ -889,9 +914,15 @@ class MainWindow(QMainWindow):
             self.audio_engine.status_text()
             + f" • channels: {enabled_channels}/{total_channels} • overlay: {overlay} • meter: {visualizer}"
         )
+        interactive_slider = any(
+            bool(getattr(widget, "_slider_drag_active", False))
+            for widget in self.channel_widgets.values()
+        )
+
         for widget in self.channel_widgets.values():
             widget.set_global_visualizer_enabled(self.settings.visualizer_enabled)
-            widget.refresh_runtime_views()
+            if not interactive_slider:
+                widget.refresh_runtime_views()
 
         # Meters are refreshed by the dedicated throttled meter timer.
         # Calling them again from refresh_status made the UI do duplicate work.
@@ -911,6 +942,9 @@ class MainWindow(QMainWindow):
             stop_probes = getattr(self.audio_engine, "stop_meter_probes", None)
             if callable(stop_probes):
                 stop_probes()
+            return
+
+        if any(bool(getattr(widget, "_slider_drag_active", False)) for widget in self.channel_widgets.values()):
             return
 
         for widget in self.channel_widgets.values():

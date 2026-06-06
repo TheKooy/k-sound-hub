@@ -62,7 +62,8 @@ METER_SOURCE_BY_CHANNEL = {
     "micro": "micro_bus.monitor",
 }
 
-EQ_PIPEWIRE_LATENCY = "256/48000"
+# 512 / 48000 is safer for live EQ/filter-chain updates on a loaded K-Sounds graph.
+EQ_PIPEWIRE_LATENCY = "512/48000"
 
 
 @dataclass

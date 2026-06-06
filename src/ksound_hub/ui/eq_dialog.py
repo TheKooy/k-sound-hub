@@ -36,7 +36,9 @@ class EqProfileDialog(QDialog):
 
         self._preview_timer = QTimer(self)
         self._preview_timer.setSingleShot(True)
-        self._preview_timer.setInterval(95)
+        # Debounced live preview: avoid rebuilding/reapplying EQ on every tiny slider tick.
+        # This keeps the dialog responsive and reduces audible update artifacts.
+        self._preview_timer.setInterval(180)
         self._preview_timer.timeout.connect(self._emit_preview)
 
         root = QVBoxLayout(self)
@@ -52,7 +54,7 @@ class EqProfileDialog(QDialog):
         form.addRow("Preset", self.name_edit)
         root.addLayout(form)
 
-        hint = QLabel("Simple 8-band EQ. Changes are previewed live until you Save or Cancel.")
+        hint = QLabel("Simple 8-band EQ. Changes are previewed after a short pause until you Save or Cancel.")
         hint.setObjectName("mutedLabel")
         hint.setWordWrap(True)
         root.addWidget(hint)
