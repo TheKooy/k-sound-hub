@@ -155,13 +155,13 @@ QComboBox QAbstractItemView {
 
 QLineEdit#eqValuePill,
 QLineEdit#eqFrequencyPill {
-    color: #b8c6d8;
-    background: rgba(8, 12, 19, 125);
-    border: 1px solid rgba(130, 170, 210, 55);
-    border-radius: 7px;
-    padding: 1px 0px;
+    color: #c8d4e3;
+    background: rgba(8, 12, 19, 120);
+    border: 1px solid rgba(130, 170, 210, 45);
+    border-radius: 6px;
+    padding: 0px;
     font-family: "Noto Sans Mono", "DejaVu Sans Mono", monospace;
-    font-size: 9px;
+    font-size: 10px;
     font-weight: 700;
 }
 
@@ -175,6 +175,31 @@ QLineEdit#eqFrequencyPill:focus {
     color: #edf4ff;
     background: rgba(10, 18, 28, 190);
     border: 1px solid rgba(62, 216, 255, 125);
+}
+
+QSlider#eqGainSlider::groove:vertical {
+    background: rgba(2, 5, 9, 225);
+    border: 1px solid rgba(110, 145, 180, 55);
+    border-radius: 5px;
+    width: 8px;
+}
+
+QSlider#eqGainSlider::handle:vertical {
+    background: rgba(62, 216, 255, 230);
+    border: 1px solid rgba(210, 245, 255, 190);
+    height: 11px;
+    margin: 0px -7px;
+    border-radius: 6px;
+}
+
+QSlider#eqGainSlider::sub-page:vertical {
+    background: rgba(62, 216, 255, 92);
+    border-radius: 5px;
+}
+
+QSlider#eqGainSlider::add-page:vertical {
+    background: rgba(0, 0, 0, 185);
+    border-radius: 5px;
 }
 
 QSlider::groove:vertical {

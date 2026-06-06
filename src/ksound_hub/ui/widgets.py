@@ -534,7 +534,7 @@ class EditableFrequencyEdit(QLineEdit):
         self.setAlignment(Qt.AlignCenter)
         self.setObjectName("eqFrequencyPill")
         self.setToolTip("Advanced: double-click to edit this EQ band frequency in Hz.")
-        self.setFixedWidth(52)
+        self.setFixedWidth(46)
         self.setMinimumHeight(18)
         self.setMaximumHeight(18)
         self.setTextMargins(0, 0, 0, 0)
@@ -563,7 +563,7 @@ class EditableGainEdit(QLineEdit):
         self.setAlignment(Qt.AlignCenter)
         self.setObjectName("eqValuePill")
         self.setToolTip("Advanced: double-click to edit this EQ band gain in dB.")
-        self.setFixedWidth(52)
+        self.setFixedWidth(40)
         self.setMinimumHeight(18)
         self.setMaximumHeight(18)
         self.setTextMargins(0, 0, 0, 0)
@@ -608,6 +608,7 @@ class EqBandSlider(QWidget):
         root.addWidget(self.value_label, alignment=Qt.AlignHCenter)
 
         self.slider = NoWheelSlider(Qt.Vertical)
+        self.slider.setObjectName("eqGainSlider")
         self.slider.setRange(
             int(self.MIN_GAIN_DB * self.GAIN_SCALE),
             int(self.MAX_GAIN_DB * self.GAIN_SCALE),
