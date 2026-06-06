@@ -153,21 +153,24 @@ QComboBox QAbstractItemView {
     selection-color: #edf4ff;
 }
 
-QLabel#eqValuePill,
+QLineEdit#eqValuePill,
 QLineEdit#eqFrequencyPill {
     color: #b8c6d8;
     background: rgba(8, 12, 19, 125);
     border: 1px solid rgba(130, 170, 210, 55);
     border-radius: 7px;
-    padding: 1px 4px;
-    font-size: 10px;
+    padding: 1px 0px;
+    font-family: "Noto Sans Mono", "DejaVu Sans Mono", monospace;
+    font-size: 9px;
     font-weight: 700;
 }
 
+QLineEdit#eqValuePill,
 QLineEdit#eqFrequencyPill {
     selection-background-color: rgba(62, 216, 255, 110);
 }
 
+QLineEdit#eqValuePill:focus,
 QLineEdit#eqFrequencyPill:focus {
     color: #edf4ff;
     background: rgba(10, 18, 28, 190);

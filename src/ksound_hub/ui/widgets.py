@@ -534,9 +534,10 @@ class EditableFrequencyEdit(QLineEdit):
         self.setAlignment(Qt.AlignCenter)
         self.setObjectName("eqFrequencyPill")
         self.setToolTip("Advanced: double-click to edit this EQ band frequency in Hz.")
-        self.setFixedWidth(42)
+        self.setFixedWidth(52)
         self.setMinimumHeight(18)
         self.setMaximumHeight(18)
+        self.setTextMargins(0, 0, 0, 0)
         self.setMaxLength(8)
 
         validator = QDoubleValidator(20.0, 20000.0, 1, self)
@@ -548,6 +549,34 @@ class EditableFrequencyEdit(QLineEdit):
         self.selectAll()
         self.setFocus(Qt.MouseFocusReason)
         self.editStarted.emit()
+        event.accept()
+
+    def focusOutEvent(self, event) -> None:
+        super().focusOutEvent(event)
+        self.setReadOnly(True)
+
+
+class EditableGainEdit(QLineEdit):
+    def __init__(self, text: str, parent=None):
+        super().__init__(text, parent)
+        self.setReadOnly(True)
+        self.setAlignment(Qt.AlignCenter)
+        self.setObjectName("eqValuePill")
+        self.setToolTip("Advanced: double-click to edit this EQ band gain in dB.")
+        self.setFixedWidth(52)
+        self.setMinimumHeight(18)
+        self.setMaximumHeight(18)
+        self.setTextMargins(0, 0, 0, 0)
+        self.setMaxLength(6)
+
+        validator = QDoubleValidator(-12.0, 12.0, 1, self)
+        validator.setNotation(QDoubleValidator.StandardNotation)
+        self.setValidator(validator)
+
+    def mouseDoubleClickEvent(self, event) -> None:
+        self.setReadOnly(False)
+        self.selectAll()
+        self.setFocus(Qt.MouseFocusReason)
         event.accept()
 
     def focusOutEvent(self, event) -> None:
@@ -574,12 +603,8 @@ class EqBandSlider(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(4)
 
-        self.value_label = QLabel(self._format_gain(self._value))
-        self.value_label.setAlignment(Qt.AlignCenter)
-        self.value_label.setObjectName("eqValuePill")
-        self.value_label.setFixedWidth(42)
-        self.value_label.setMinimumHeight(18)
-        self.value_label.setMaximumHeight(18)
+        self.value_label = EditableGainEdit(self._format_gain(self._value))
+        self.value_label.editingFinished.connect(self._on_gain_edit_finished)
         root.addWidget(self.value_label, alignment=Qt.AlignHCenter)
 
         self.slider = NoWheelSlider(Qt.Vertical)
@@ -598,7 +623,7 @@ class EqBandSlider(QWidget):
 
         self.frequency_edit = EditableFrequencyEdit(self._format_frequency(self._frequency))
         self.frequency_edit.editingFinished.connect(self._on_frequency_edit_finished)
-        root.addWidget(self.frequency_edit)
+        root.addWidget(self.frequency_edit, alignment=Qt.AlignHCenter)
 
     def _clamp_gain(self, value: float) -> float:
         value = max(self.MIN_GAIN_DB, min(self.MAX_GAIN_DB, float(value)))
@@ -627,6 +652,13 @@ class EqBandSlider(QWidget):
     def _format_gain(self, value: float) -> str:
         return f"{self._clamp_gain(value):+.1f}"
 
+    def _parse_gain(self, text: str) -> float:
+        raw = str(text or "").strip().lower().replace("db", "").replace(",", ".")
+        try:
+            return self._clamp_gain(float(raw))
+        except Exception:
+            return self._value
+
     def _gain_to_slider_value(self, value: float) -> int:
         return int(round(self._clamp_gain(value) * self.GAIN_SCALE))
 
@@ -635,7 +667,14 @@ class EqBandSlider(QWidget):
 
     def _on_value_changed(self, value: int) -> None:
         self._value = self._slider_value_to_gain(value)
-        self.value_label.setText(self._format_gain(self._value))
+        if not self.value_label.hasFocus() or self.value_label.isReadOnly():
+            self.value_label.setText(self._format_gain(self._value))
+
+    def _on_gain_edit_finished(self) -> None:
+        gain = self._parse_gain(self.value_label.text())
+        self.value_label.setReadOnly(True)
+        self.value_label.setText(self._format_gain(gain))
+        self.slider.setValue(self._gain_to_slider_value(gain))
 
     def _on_frequency_edit_finished(self) -> None:
         old_frequency = self._frequency
