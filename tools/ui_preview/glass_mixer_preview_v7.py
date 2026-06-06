@@ -85,16 +85,16 @@ QFrame#drawer {
 }
 
 QFrame#channelCard {
-    background: rgba(0, 0, 0, 102);
+    background: rgba(0, 0, 0, 128);
 }
 
 QFrame#channelCard:hover {
-    background: rgba(5, 13, 22, 142);
+    background: rgba(5, 13, 22, 150);
     border: 1px solid rgba(86, 197, 255, 82);
 }
 
 QFrame#drawer {
-    background: rgba(0, 0, 0, 134);
+    background: rgba(0, 0, 0, 128);
 }
 
 QPushButton#windowButton {
@@ -661,6 +661,11 @@ class PreviewWindow(QMainWindow):
         stack.addWidget(self.background_label)
         stack.addWidget(tint)
         stack.addWidget(foreground)
+        stack.setCurrentWidget(foreground)
+
+        self.background_label.lower()
+        tint.raise_()
+        foreground.raise_()
 
         outer = QVBoxLayout(foreground)
         outer.setContentsMargins(0, 0, 0, 0)
