@@ -822,6 +822,27 @@ QLabel#soundPadMeta {
     min-height: 13px;
     max-height: 13px;
 }
+
+
+/* Glass final pads polish */
+QPushButton#padAddButton,
+QPushButton#padBulkDeleteButton {
+    qproperty-iconSize: 0px 0px;
+    padding: 0px;
+    text-align: center;
+}
+
+QPushButton#padDeleteButton {
+    qproperty-iconSize: 0px 0px;
+    padding: 0px;
+    text-align: center;
+}
+
+QScrollArea#padsGridScroll {
+    border: none;
+    background: transparent;
+    padding-right: 0px;
+}
 """
 
 
@@ -1284,6 +1305,26 @@ class AppsPanel(QWidget):
 
 
 
+
+class CenterGlyphButton(QPushButton):
+    def __init__(self, glyph: str, parent=None):
+        super().__init__("", parent)
+        self._glyph = glyph
+        self.setMinimumWidth(0)
+
+    def set_glyph(self, glyph: str) -> None:
+        self._glyph = glyph
+        self.update()
+
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.TextAntialiasing, True)
+        painter.setFont(self.font())
+        painter.setPen(self.palette().color(self.foregroundRole()))
+        painter.drawText(self.rect(), Qt.AlignCenter, self._glyph)
+
 class HoverScrollLabel(QLabel):
     SCROLL_GAP = 34
     SCROLL_STEP = 2
@@ -1433,7 +1474,7 @@ class SoundPadCard(QFrame):
         sound_button.setToolTip("Edit sound")
         actions_layout.addWidget(sound_button)
 
-        delete_button = QPushButton("🗑")
+        delete_button = CenterGlyphButton("🗑")
         delete_button.setObjectName("padDeleteButton")
         delete_button.setToolTip("Delete")
         delete_button.clicked.connect(self._request_delete)
@@ -1589,12 +1630,12 @@ class PadsPanel(QWidget):
         self.edit.toggled.connect(self._set_edit_mode)
         top_layout.addWidget(self.edit)
 
-        add = QPushButton("+")
+        add = CenterGlyphButton("+")
         add.setObjectName("padAddButton")
         add.clicked.connect(self._add_pad)
         top_layout.addWidget(add)
 
-        self.bulk_delete = QPushButton("🗑")
+        self.bulk_delete = CenterGlyphButton("🗑")
         self.bulk_delete.setObjectName("padBulkDeleteButton")
         self.bulk_delete.setCheckable(True)
         self.bulk_delete.setToolTip("Bulk delete")
@@ -1604,17 +1645,22 @@ class PadsPanel(QWidget):
         top_layout.addStretch(1)
         root.addWidget(top_bar)
 
+        self.grid_scroll = AdaptiveScrollArea()
+        self.grid_scroll.setObjectName("padsGridScroll")
+        self.grid_scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
         self.grid_host = QWidget()
         self.grid = QGridLayout(self.grid_host)
         self.grid.setContentsMargins(0, 0, 0, 0)
         self.grid.setHorizontalSpacing(6)
         self.grid.setVerticalSpacing(6)
-        root.addWidget(self.grid_host)
+
+        self.grid_scroll.setWidget(self.grid_host)
+        self.grid_scroll._schedule_margin_update()
+        root.addWidget(self.grid_scroll, 1)
 
         for name, icon, meta in self._load_real_soundboard_pads():
             self._add_pad(name, icon, meta)
-
-        root.addStretch(1)
 
         self.emoji_overlay = QFrame(self)
         self.emoji_overlay.setObjectName("emojiPalette")
@@ -2251,10 +2297,9 @@ class Drawer(QFrame):
         root.addWidget(title)
 
         self.pads_panel = PadsPanel(detach_callback=self._detach_pads, columns=3)
-        root.addWidget(self.pads_panel)
+        root.addWidget(self.pads_panel, 1)
 
-        root.addStretch(1)
-        return self._make_scroll_page(content)
+        return content
 
     def _detach_pads(self) -> None:
         window = getattr(self, "_detached_pads_window", None)
