@@ -331,6 +331,93 @@ class GlassBackendController(QObject):
         self.status_changed.emit(f"Apps route: {name} → {label}")
         return True
 
+    def eq_profile_names(self, channel_key: str) -> tuple[list[str], str]:
+        channel = self._find_channel(channel_key)
+        if channel is None:
+            return [], ""
+
+        profiles = list(getattr(channel, "eq_profiles", []) or [])
+        names = [str(getattr(profile, "name", "") or "").strip() for profile in profiles]
+        names = [name for name in names if name]
+
+        selected = str(getattr(channel, "selected_eq_profile", "") or "").strip()
+        if selected not in names and names:
+            selected = names[0]
+
+        return names, selected
+
+    def _eq_profile_for(self, channel_key: str, profile_name: str | None = None):
+        channel = self._find_channel(channel_key)
+        if channel is None:
+            return None, None
+
+        profiles = list(getattr(channel, "eq_profiles", []) or [])
+        if not profiles:
+            return channel, None
+
+        wanted = str(profile_name or getattr(channel, "selected_eq_profile", "") or "").strip()
+        for profile in profiles:
+            if str(getattr(profile, "name", "") or "").strip() == wanted:
+                return channel, profile
+
+        return channel, profiles[0]
+
+    def eq_profile_bands(self, channel_key: str, profile_name: str | None = None) -> list[tuple[float, float, float]]:
+        _channel, profile = self._eq_profile_for(channel_key, profile_name)
+        if profile is None:
+            return []
+
+        bands = []
+        for band in list(getattr(profile, "bands", []) or []):
+            try:
+                bands.append((float(band.frequency), float(band.gain_db), float(band.q)))
+            except Exception:
+                continue
+        return bands
+
+    def select_eq_profile(self, channel_key: str, profile_name: str) -> bool:
+        channel, profile = self._eq_profile_for(channel_key, profile_name)
+        if channel is None or profile is None:
+            return False
+
+        channel.selected_eq_profile = str(getattr(profile, "name", "") or profile_name)
+        try:
+            self.audio_engine.apply_channel(self.settings, channel.key)
+        except Exception as exc:
+            self.status_changed.emit(f"EQ apply error on {channel.key} — {exc}")
+            return False
+
+        self._save_timer.start()
+        label = GLASS_CHANNEL_OVERLAY_META.get(channel.key, ("≋", channel.name))[1]
+        self.overlay_message_requested.emit(f"≋ {label} EQ → {channel.selected_eq_profile}", False)
+        return True
+
+    def set_eq_band_gain(self, channel_key: str, band_index: int, gain_db: float, profile_name: str | None = None) -> bool:
+        channel, profile = self._eq_profile_for(channel_key, profile_name)
+        if channel is None or profile is None:
+            return False
+
+        bands = list(getattr(profile, "bands", []) or [])
+        try:
+            band = bands[int(band_index)]
+        except Exception:
+            return False
+
+        try:
+            band.gain_db = max(-12.0, min(12.0, round(float(gain_db) * 2.0) / 2.0))
+        except Exception:
+            return False
+
+        channel.selected_eq_profile = str(getattr(profile, "name", "") or getattr(channel, "selected_eq_profile", ""))
+        try:
+            self.audio_engine.apply_channel(self.settings, channel.key)
+        except Exception as exc:
+            self.status_changed.emit(f"EQ band apply error on {channel.key} — {exc}")
+            return False
+
+        self._save_timer.start()
+        return True
+
     def _overlay_text(self, channel, hint: str) -> str:
         icon, label = GLASS_CHANNEL_OVERLAY_META.get(channel.key, ("🎚", channel.name))
         if hint == "mute":
@@ -1849,11 +1936,13 @@ class AppRouteCard(QFrame):
 
         name_label = QLabel(self._stream_name(stream))
         name_label.setObjectName("appRouteName")
+        name_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
         name_label.setToolTip(self._tooltip_for_stream(stream))
         text_col.addWidget(name_label)
 
         self.meta_label = QLabel(self._stream_meta(stream))
         self.meta_label.setObjectName("appRouteMeta")
+        self.meta_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
         self.meta_label.setToolTip(self._tooltip_for_stream(stream))
         text_col.addWidget(self.meta_label)
 
@@ -1867,7 +1956,8 @@ class AppRouteCard(QFrame):
         current_key = str(getattr(stream, "sink_name", "") or "").strip()
         current_label = APP_ROUTE_LABEL_BY_KEY.get(current_key, "ALL")
         self.select = SelectButton([label for label, _key in APP_ROUTE_CHANNELS], current_label, self._channel_changed)
-        self.select.setMinimumWidth(88)
+        self.select.setMinimumWidth(70)
+        self.select.setMaximumWidth(82)
         root.addWidget(self.select)
 
     def _stream_name(self, stream) -> str:
@@ -1973,12 +2063,14 @@ class AppsPanel(QWidget):
         top.setContentsMargins(0, 0, 0, 0)
         top.setSpacing(8)
 
-        hint = QLabel("Move active playback streams to channels")
+        hint = QLabel("Active playback streams")
         hint.setObjectName("muted")
         top.addWidget(hint, 1)
 
-        refresh_btn = QPushButton("Refresh")
+        refresh_btn = QPushButton("↻")
         refresh_btn.setObjectName("padTopButton")
+        refresh_btn.setToolTip("Refresh streams")
+        refresh_btn.setFixedWidth(34)
         refresh_btn.clicked.connect(lambda: self.refresh_streams(force=True))
         top.addWidget(refresh_btn)
 
@@ -2054,6 +2146,222 @@ class AppsPanel(QWidget):
         ok = bool(self.backend_controller.move_app_stream(stream_id, channel_key))
         QTimer.singleShot(150, lambda: self.refresh_streams(force=True))
         return ok
+
+
+
+
+class EqPanel(QWidget):
+    CHANNELS = [
+        ("ALL", "all"),
+        ("GAME", "game"),
+        ("CHAT", "chat"),
+        ("MEDIA", "media"),
+        ("MORE", "more"),
+    ]
+
+    def __init__(self, backend_controller=None):
+        super().__init__()
+        self.backend_controller = backend_controller
+        self._channel_label_by_key = {key: label for label, key in self.CHANNELS}
+        self._channel_key_by_label = {label: key for label, key in self.CHANNELS}
+        self._syncing = False
+        self._pending_band_index: int | None = None
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(8)
+
+        root.addWidget(QLabel("Channel"))
+        self.eq_channel_select = SelectButton(
+            [label for label, _key in self.CHANNELS],
+            "GAME",
+            self._eq_channel_changed,
+        )
+        root.addWidget(self.eq_channel_select)
+
+        root.addWidget(QLabel("Preset"))
+        self.eq_preset_select = SelectButton(["Default"], "Default", self._eq_preset_changed)
+        root.addWidget(self.eq_preset_select)
+
+        self.bands_card = QFrame()
+        self.bands_card.setObjectName("channelCard")
+        self.bands_card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+        bands_layout = QHBoxLayout(self.bands_card)
+        bands_layout.setContentsMargins(7, 8, 7, 8)
+        bands_layout.setSpacing(3)
+
+        self.band_controls: list[tuple[QLabel, NoWheelSlider, QLabel]] = []
+        for index in range(10):
+            col = QVBoxLayout()
+            col.setSpacing(3)
+
+            gain_label = QLabel("+0.0")
+            gain_label.setObjectName("muted")
+            gain_label.setAlignment(Qt.AlignCenter)
+            col.addWidget(gain_label)
+
+            slider = NoWheelSlider(Qt.Vertical)
+            slider.setRange(-24, 24)
+            slider.setValue(0)
+            slider.setMinimumHeight(118)
+            slider.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
+            slider.setTracking(False)
+            slider.sliderMoved.connect(lambda raw, idx=index: self._preview_band_label(idx, raw))
+            slider.valueChanged.connect(lambda raw, idx=index: self._eq_band_changed(idx, raw))
+            col.addWidget(slider, 1, Qt.AlignHCenter)
+
+            freq_label = QLabel("—")
+            freq_label.setObjectName("muted")
+            freq_label.setAlignment(Qt.AlignCenter)
+            col.addWidget(freq_label)
+
+            self.band_controls.append((gain_label, slider, freq_label))
+            bands_layout.addLayout(col)
+
+        root.addWidget(self.bands_card, 1)
+
+        self.status_label = QLabel("EQ changes apply live and are saved automatically.")
+        self.status_label.setObjectName("muted")
+        self.status_label.setWordWrap(True)
+        root.addWidget(self.status_label)
+
+        self.apply_timer = QTimer(self)
+        self.apply_timer.setSingleShot(True)
+        self.apply_timer.setInterval(120)
+        self.apply_timer.timeout.connect(self._apply_pending_band)
+
+        self._reload_profiles()
+
+    def _current_channel_key(self) -> str:
+        return self._channel_key_by_label.get(self.eq_channel_select.current_text(), "game")
+
+    def _current_profile_name(self) -> str:
+        return str(self.eq_preset_select.current_text() or "").strip()
+
+    def _set_select_items(self, select: SelectButton, items: list[str], current: str) -> None:
+        select.items = list(items) if items else ["Default"]
+        select._current = current if current in select.items else select.items[0]
+        select._sync_text()
+
+    def _format_frequency(self, frequency: float) -> str:
+        try:
+            value = float(frequency)
+        except Exception:
+            return "—"
+        if value >= 1000:
+            return f"{value / 1000:g}k"
+        return f"{int(value)}"
+
+    def _format_gain(self, gain_db: float) -> str:
+        try:
+            value = round(float(gain_db) * 2.0) / 2.0
+        except Exception:
+            value = 0.0
+        return f"{value:+.1f}"
+
+    def _raw_to_gain(self, raw: int) -> float:
+        return round(float(raw) / 2.0, 1)
+
+    def _gain_to_raw(self, gain_db: float) -> int:
+        try:
+            return int(round(float(gain_db) * 2.0))
+        except Exception:
+            return 0
+
+    def _reload_profiles(self) -> None:
+        if self.backend_controller is None:
+            self.status_label.setText("EQ backend not connected yet.")
+            return
+
+        channel_key = self._current_channel_key()
+        names, selected = self.backend_controller.eq_profile_names(channel_key)
+
+        self._syncing = True
+        self._set_select_items(self.eq_preset_select, names or ["Default"], selected or (names[0] if names else "Default"))
+        self._syncing = False
+
+        self._reload_bands()
+
+    def _reload_bands(self) -> None:
+        if self.backend_controller is None:
+            return
+
+        channel_key = self._current_channel_key()
+        profile_name = self._current_profile_name()
+        bands = self.backend_controller.eq_profile_bands(channel_key, profile_name)
+
+        self._syncing = True
+        for index, (gain_label, slider, freq_label) in enumerate(self.band_controls):
+            if index < len(bands):
+                frequency, gain_db, _q = bands[index]
+                raw = self._gain_to_raw(gain_db)
+                slider.setEnabled(True)
+                slider.setValue(max(slider.minimum(), min(slider.maximum(), raw)))
+                gain_label.setText(self._format_gain(self._raw_to_gain(slider.value())))
+                freq_label.setText(self._format_frequency(frequency))
+            else:
+                slider.setEnabled(False)
+                slider.setValue(0)
+                gain_label.setText("—")
+                freq_label.setText("—")
+        self._syncing = False
+
+        label = self._channel_label_by_key.get(channel_key, channel_key.upper())
+        self.status_label.setText(f"{label} · {profile_name or 'Default'} · live EQ")
+
+    def _eq_channel_changed(self, channel_label: str) -> None:
+        if self._syncing:
+            return
+        self._reload_profiles()
+
+    def _eq_preset_changed(self, preset: str) -> None:
+        if self._syncing or self.backend_controller is None:
+            return
+
+        channel_key = self._current_channel_key()
+        if self.backend_controller.select_eq_profile(channel_key, preset):
+            self._reload_bands()
+        else:
+            self.status_label.setText("Could not apply EQ preset.")
+
+    def _preview_band_label(self, index: int, raw: int) -> None:
+        if not (0 <= index < len(self.band_controls)):
+            return
+        gain_label, _slider, _freq_label = self.band_controls[index]
+        gain_label.setText(self._format_gain(self._raw_to_gain(raw)))
+
+    def _eq_band_changed(self, index: int, raw: int) -> None:
+        if self._syncing:
+            return
+        self._preview_band_label(index, raw)
+        self._pending_band_index = index
+        self.apply_timer.start()
+
+    def _apply_pending_band(self) -> None:
+        if self.backend_controller is None or self._pending_band_index is None:
+            return
+
+        index = int(self._pending_band_index)
+        self._pending_band_index = None
+
+        try:
+            _gain_label, slider, _freq_label = self.band_controls[index]
+        except Exception:
+            return
+
+        gain_db = self._raw_to_gain(slider.value())
+        ok = self.backend_controller.set_eq_band_gain(
+            self._current_channel_key(),
+            index,
+            gain_db,
+            self._current_profile_name(),
+        )
+        if ok:
+            self.status_label.setText(f"Saved band {index + 1}: {self._format_gain(gain_db)} dB")
+        else:
+            self.status_label.setText("Could not save EQ band.")
+
 
 
 
@@ -3033,20 +3341,6 @@ class Drawer(QFrame):
 
 
     def _eq_page(self) -> QWidget:
-        self._eq_presets_by_channel = getattr(
-            self,
-            "_eq_presets_by_channel",
-            {
-                "ALL": "KSH Neutral",
-                "GAME": "KSH Neutral",
-                "MEDIA": "KSH Media",
-                "CHAT": "KSH Chat",
-                "MORE": "Default",
-                "MICRO": "Default",
-                "MIC OUT": "Default",
-            },
-        )
-
         content = QWidget()
         root = QVBoxLayout(content)
         root.setContentsMargins(0, 0, 0, 0)
@@ -3056,76 +3350,10 @@ class Drawer(QFrame):
         title.setObjectName("sectionTitle")
         root.addWidget(title)
 
-        root.addWidget(QLabel("Channel"))
-        self.eq_channel_select = SelectButton(
-            ["ALL", "GAME", "MEDIA", "CHAT", "MORE", "MICRO", "MIC OUT"],
-            "GAME",
-            self._eq_channel_changed,
-        )
-        root.addWidget(self.eq_channel_select)
-
-        root.addWidget(QLabel("Preset"))
-        self.eq_preset_select = SelectButton(
-            ["Default", "KSH Neutral", "KSH Game", "KSH Media", "KSH Chat"],
-            self._eq_presets_by_channel.get("GAME", "Default"),
-            self._eq_preset_changed,
-        )
-        root.addWidget(self.eq_preset_select)
-
-        bands_card = QFrame()
-        bands_card.setObjectName("channelCard")
-        bands_card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        bands_layout = QHBoxLayout(bands_card)
-        bands_layout.setContentsMargins(8, 8, 8, 8)
-        bands_layout.setSpacing(4)
-
-        bands = [
-            ("32", 44), ("64", 42), ("125", 48), ("250", 50), ("500", 54),
-            ("1k", 58), ("2k", 66), ("4k", 68), ("8k", 60), ("16k", 52),
-        ]
-
-        for label, value in bands:
-            col = QVBoxLayout()
-            col.setSpacing(3)
-
-            gain = QLabel("+0.0")
-            gain.setObjectName("muted")
-            gain.setAlignment(Qt.AlignCenter)
-            col.addWidget(gain)
-
-            slider = NoWheelSlider(Qt.Vertical)
-            slider.setRange(0, 100)
-            slider.setValue(value)
-            slider.setMinimumHeight(112)
-            slider.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
-            col.addWidget(slider, 1, Qt.AlignHCenter)
-
-            freq = QLabel(label)
-            freq.setObjectName("muted")
-            freq.setAlignment(Qt.AlignCenter)
-            col.addWidget(freq)
-
-            bands_layout.addLayout(col)
-
-        root.addWidget(bands_card, 1)
-
-        actions = QHBoxLayout()
-        save = QPushButton("Save")
-        save.setObjectName("primaryButton")
-        cancel = QPushButton("Cancel")
-        actions.addWidget(save)
-        actions.addWidget(cancel)
-        root.addLayout(actions)
+        root.addWidget(EqPanel(self._backend_controller), 1)
 
         return self._make_scroll_page(content)
 
-    def _eq_channel_changed(self, channel: str) -> None:
-        preset = self._eq_presets_by_channel.get(channel, "Default")
-        self.eq_preset_select.set_current_text(preset)
-
-    def _eq_preset_changed(self, preset: str) -> None:
-        channel = self.eq_channel_select.current_text()
-        self._eq_presets_by_channel[channel] = preset
 
     def _settings_page(self) -> QWidget:
         content = QWidget()
