@@ -524,7 +524,15 @@ class MainWindow(QMainWindow):
         hint = "generic"
         changed = False
 
-        if action in {"volup", "voldown", "set-volume"} and channel.muted:
+        if action in {"set-mute", "set_mute"}:
+            raw_muted = payload.get("muted", payload.get("checked", False))
+            if isinstance(raw_muted, str):
+                channel.muted = raw_muted.strip().lower() in {"1", "true", "yes", "on", "muted"}
+            else:
+                channel.muted = bool(raw_muted)
+            hint = "mute"
+            changed = True
+        elif action in {"volup", "voldown", "set-volume"} and channel.muted:
             self._sync_widget_for_channel(channel.key)
             self._show_overlay_for_change(channel, "mute")
             return

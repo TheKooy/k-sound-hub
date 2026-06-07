@@ -11,6 +11,7 @@ Real audio/backend bindings should be added gradually.
 
 import json
 import math
+import socket
 import sys
 from pathlib import Path
 
@@ -41,6 +42,7 @@ from PySide6.QtWidgets import (
 
 
 from .config import CONFIG_DIR
+from .control import resolve_ipc_socket_path
 from .ui.soundboard_dialog import SoundboardDialog
 
 PACKAGE_ROOT = Path(__file__).resolve().parent
@@ -48,14 +50,25 @@ APP_ICON = PACKAGE_ROOT / "assets/app_icon.png"
 APP_BG = PACKAGE_ROOT / "assets/backgrounds/ksound_hub_wallpaper_4k_blurfill_3840x2160.png"
 SOUNDBOARD_PATH = CONFIG_DIR / "soundboard.json"
 
+
+def _send_ksh_ipc_payload(payload: dict) -> bool:
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+            sock.connect(resolve_ipc_socket_path())
+            sock.sendall((json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8"))
+        return True
+    except Exception:
+        return False
+
+
 CHANNELS = [
-    ("ALL", "A", ["Arctis Nova Pro", "USB / SPDIF", "System default"], 76),
-    ("GAME", "G", ["Arctis Nova Pro", "USB / SPDIF", "System default"], 72),
-    ("MEDIA", "M", ["USB / SPDIF", "Arctis Nova Pro", "System default"], 64),
-    ("CHAT", "C", ["Arctis Nova Pro", "USB / SPDIF", "System default"], 70),
-    ("MORE", "+", ["System default", "Arctis Nova Pro", "USB / SPDIF"], 58),
-    ("MICRO", "µ", ["RØDE NT-USB", "Arctis Mic", "System default"], 84),
-    ("MIC OUT", "R", ["Arctis monitor", "USB / SPDIF", "System default"], 52),
+    ("ALL", "A", ["Arctis Nova Pro", "USB / SPDIF", "System default"], 76, "all"),
+    ("GAME", "G", ["Arctis Nova Pro", "USB / SPDIF", "System default"], 72, "game"),
+    ("MEDIA", "M", ["USB / SPDIF", "Arctis Nova Pro", "System default"], 64, "media"),
+    ("CHAT", "C", ["Arctis Nova Pro", "USB / SPDIF", "System default"], 70, "chat"),
+    ("MORE", "+", ["System default", "Arctis Nova Pro", "USB / SPDIF"], 58, "more"),
+    ("MICRO", "µ", ["RØDE NT-USB", "Arctis Mic", "System default"], 84, "micro"),
+    ("MIC OUT", "R", ["Arctis monitor", "USB / SPDIF", "System default"], 52, "return-mic"),
 ]
 
 
@@ -1187,9 +1200,22 @@ class NavButton(QPushButton):
 
 
 class ChannelCard(QFrame):
-    def __init__(self, name: str, icon: str, devices: list[str], value: int):
+    def __init__(
+        self,
+        name: str,
+        icon: str,
+        devices: list[str],
+        value: int,
+        channel_key: str = "",
+        volume_callback=None,
+        mute_callback=None,
+    ):
         super().__init__()
-        self.value = value
+        self.channel_key = str(channel_key or "").strip()
+        self._volume_callback = volume_callback
+        self._mute_callback = mute_callback
+        self._syncing_controls = False
+        self.value = int(value)
         self.setObjectName("channelCard")
         self.setProperty("muted", "false")
         self.setMinimumWidth(78)
@@ -1224,33 +1250,60 @@ class ChannelCard(QFrame):
         self.right_meter = LevelMeter(0.0)
         meter_row.addWidget(self.left_meter)
 
-        slider = NoWheelSlider(Qt.Vertical)
-        slider.setRange(0, 100)
-        slider.setValue(value)
-        slider.setMinimumHeight(124)
-        slider.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
-        meter_row.addWidget(slider, 0, Qt.AlignHCenter)
+        self.slider = NoWheelSlider(Qt.Vertical)
+        self.slider.setRange(0, 100)
+        self.slider.setValue(value)
+        self.slider.setMinimumHeight(124)
+        self.slider.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
+        self.slider.setTracking(False)
+        self.slider.sliderMoved.connect(self._on_slider_moved)
+        self.slider.valueChanged.connect(self._on_volume_changed)
+        meter_row.addWidget(self.slider, 0, Qt.AlignHCenter)
 
         meter_row.addWidget(self.right_meter)
         meter_row.addStretch(1)
         root.addLayout(meter_row, 1)
 
-        value_label = QLabel(f"{value}%")
-        value_label.setObjectName("volumeValue")
-        value_label.setAlignment(Qt.AlignCenter)
-        root.addWidget(value_label)
+        self.value_label = QLabel(f"{value}%")
+        self.value_label.setObjectName("volumeValue")
+        self.value_label.setAlignment(Qt.AlignCenter)
+        root.addWidget(self.value_label)
 
-        mute = QPushButton("Mute")
-        mute.setObjectName("muteButton")
-        mute.setCheckable(True)
-        mute.toggled.connect(self._set_muted)
-        root.addWidget(mute)
+        self.mute_btn = QPushButton("Mute")
+        self.mute_btn.setObjectName("muteButton")
+        self.mute_btn.setCheckable(True)
+        self.mute_btn.toggled.connect(self._on_muted_changed)
+        root.addWidget(self.mute_btn)
 
-    def _set_muted(self, checked: bool) -> None:
+    def _set_volume_label(self, value: int) -> None:
+        self.value = max(0, min(100, int(value)))
+        self.value_label.setText(f"{self.value}%")
+
+    def _on_slider_moved(self, value: int) -> None:
+        self._set_volume_label(value)
+
+    def _on_volume_changed(self, value: int) -> None:
+        self._set_volume_label(value)
+        if self._syncing_controls or self._volume_callback is None or not self.channel_key:
+            return
+        ok = bool(self._volume_callback(self.channel_key, self.value))
+        if not ok:
+            self.setToolTip("K-Sounds real app IPC is not reachable.")
+
+    def _apply_muted_style(self, checked: bool) -> None:
         self.setProperty("muted", "true" if checked else "false")
+        self.mute_btn.setText("Muted" if checked else "Mute")
         self.style().unpolish(self)
         self.style().polish(self)
         self.update()
+
+    def _on_muted_changed(self, checked: bool) -> None:
+        self._apply_muted_style(bool(checked))
+        if self._syncing_controls or self._mute_callback is None or not self.channel_key:
+            return
+        ok = bool(self._mute_callback(self.channel_key, bool(checked)))
+        if not ok:
+            self.setToolTip("K-Sounds real app IPC is not reachable.")
 
     def set_meter_levels(self, left: float, right: float) -> None:
         self.left_meter.set_level(left)
@@ -2549,7 +2602,11 @@ class PreviewWindow(QMainWindow):
         cards_row.setContentsMargins(0, 0, 0, 0)
 
         for channel in CHANNELS:
-            card = ChannelCard(*channel)
+            card = ChannelCard(
+                *channel,
+                volume_callback=self._send_channel_volume,
+                mute_callback=self._set_channel_muted,
+            )
             self.channel_cards.append(card)
             cards_row.addWidget(card)
 
@@ -2690,6 +2747,24 @@ QFrame#channelCard[muted="true"]:hover {{
         app = QApplication.instance()
         if app is not None:
             app.setStyleSheet(STYLE + dynamic_style)
+
+    def _send_channel_volume(self, channel_key: str, value: int) -> bool:
+        return _send_ksh_ipc_payload(
+            {
+                "channel": channel_key,
+                "action": "set-volume",
+                "volume": max(0, min(100, int(value))),
+            }
+        )
+
+    def _set_channel_muted(self, channel_key: str, muted: bool) -> bool:
+        return _send_ksh_ipc_payload(
+            {
+                "channel": channel_key,
+                "action": "set-mute",
+                "muted": bool(muted),
+            }
+        )
 
     def _start_meter_simulation(self) -> None:
         self.meter_timer = QTimer(self)
