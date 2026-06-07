@@ -5,8 +5,8 @@ Experimental K-Sounds Hub Glass UI.
 
 This module is intentionally separate from ksound_hub.app.
 The stable app stays available as the fallback launcher.
-This first Glass app keeps the V21 UI shell and simulated/no-impact actions.
-Real audio/backend bindings should be added gradually.
+Glass is being migrated into the real K-Sounds frontend.
+Backend bindings are added gradually while the stable UI remains a fallback.
 """
 
 import json
@@ -15,7 +15,7 @@ import socket
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QPoint, QRect, QRectF, QSize, QTimer, Qt
+from PySide6.QtCore import QEvent, QObject, QPoint, QRect, QRectF, QSize, QTimer, Qt, Signal
 from PySide6.QtGui import QColor, QIcon, QImage, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -41,8 +41,11 @@ from PySide6.QtWidgets import (
 )
 
 
-from .config import CONFIG_DIR
+from .audio.pipewire_v2_final import PipeWireAudioEngine
+from .config import CONFIG_DIR, IPC_SOCKET_PATH
 from .control import resolve_ipc_socket_path
+from .ipc import AudioIpcServer
+from .settings_store import SettingsStore
 from .ui.soundboard_dialog import SoundboardDialog
 
 PACKAGE_ROOT = Path(__file__).resolve().parent
@@ -92,6 +95,207 @@ def _read_saved_mixer_channel_state() -> dict[str, tuple[int, bool]]:
         state[key] = (volume, bool(channel.get("muted", False)))
 
     return state
+
+
+GLASS_CHANNEL_KEY_ALIASES = {
+    "all": "all",
+    "game": "game",
+    "chat": "chat",
+    "media": "media",
+    "more": "more",
+    "micro": "micro",
+    "retour": "return-mic",
+    "retourmic": "return-mic",
+    "return-mic": "return-mic",
+    "return_mic": "return-mic",
+}
+
+
+class GlassBackendController(QObject):
+    channel_state_changed = Signal(str, int, bool)
+    status_changed = Signal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.settings_store = SettingsStore()
+        self.settings = self.settings_store.load()
+        self.audio_engine = PipeWireAudioEngine()
+
+        self._pending_volume_fast_keys: set[str] = set()
+        self._pending_apply_keys: set[str] = set()
+
+        self._save_timer = QTimer(self)
+        self._save_timer.setSingleShot(True)
+        self._save_timer.setInterval(180)
+        self._save_timer.timeout.connect(self._autosave)
+
+        self._volume_fast_timer = QTimer(self)
+        self._volume_fast_timer.setSingleShot(True)
+        self._volume_fast_timer.setInterval(45)
+        self._volume_fast_timer.timeout.connect(self._flush_pending_volume_fast_apply)
+
+        self._apply_timer = QTimer(self)
+        self._apply_timer.setSingleShot(True)
+        self._apply_timer.setInterval(35)
+        self._apply_timer.timeout.connect(self._flush_pending_channel_apply)
+
+        self.ipc_server = AudioIpcServer(IPC_SOCKET_PATH, self)
+        self.ipc_server.message_received.connect(self.handle_ipc_message)
+        self.ipc_server.status_changed.connect(self.status_changed)
+        self.ipc_server.start()
+
+        # Apply backend after the UI has had a chance to appear.
+        QTimer.singleShot(0, self.apply_startup_settings)
+
+    def apply_startup_settings(self) -> None:
+        try:
+            self.audio_engine.apply_settings(self.settings)
+            self.status_changed.emit(self.audio_engine.status_text())
+        except Exception as exc:
+            self.status_changed.emit(f"Audio backend startup error — {exc}")
+
+    def shutdown(self) -> None:
+        try:
+            self._autosave()
+        except Exception:
+            pass
+        try:
+            self.ipc_server.stop()
+        except Exception:
+            pass
+        try:
+            self.audio_engine.shutdown()
+        except Exception:
+            pass
+
+    def _normalize_channel_key(self, value: str) -> str:
+        raw = str(value or "").strip().lower().replace(" ", "-")
+        return GLASS_CHANNEL_KEY_ALIASES.get(raw, raw)
+
+    def _find_channel(self, channel_key: str):
+        key = self._normalize_channel_key(channel_key)
+        for channel in self.settings.channels:
+            if channel.key == key:
+                return channel
+        return None
+
+    def channel_state(self, channel_key: str) -> tuple[int, bool] | None:
+        channel = self._find_channel(channel_key)
+        if channel is None:
+            return None
+        return int(channel.volume), bool(channel.muted)
+
+    def set_channel_volume(self, channel_key: str, value: int) -> bool:
+        return self._apply_mixer_action(channel_key, "set-volume", volume=value)
+
+    def set_channel_muted(self, channel_key: str, muted: bool) -> bool:
+        return self._apply_mixer_action(channel_key, "set-mute", muted=muted)
+
+    def handle_ipc_message(self, payload: dict) -> None:
+        channel_key = self._normalize_channel_key(payload.get("channel", ""))
+        action = str(payload.get("action", "")).strip().lower()
+        if not channel_key or not action:
+            return
+
+        self._apply_mixer_action(
+            channel_key,
+            action,
+            volume=payload.get("volume"),
+            muted=payload.get("muted", payload.get("checked", None)),
+        )
+
+    def _apply_mixer_action(self, channel_key: str, action: str, *, volume=None, muted=None) -> bool:
+        channel = self._find_channel(channel_key)
+        if channel is None:
+            return False
+
+        action = str(action or "").strip().lower()
+        hint = "generic"
+        changed = False
+
+        if action in {"set-mute", "set_mute"}:
+            if isinstance(muted, str):
+                channel.muted = muted.strip().lower() in {"1", "true", "yes", "on", "muted"}
+            else:
+                channel.muted = bool(muted)
+            hint = "mute"
+            changed = True
+
+        elif action in {"volup", "voldown", "set-volume"} and channel.muted:
+            # Keep the stable app behavior: volume shortcuts do not move muted channels.
+            self.channel_state_changed.emit(channel.key, int(channel.volume), bool(channel.muted))
+            return True
+
+        elif action == "volup":
+            channel.volume = min(100, int(channel.volume) + 5)
+            hint = "volume"
+            changed = True
+
+        elif action == "voldown":
+            channel.volume = max(0, int(channel.volume) - 5)
+            hint = "volume"
+            changed = True
+
+        elif action == "mute":
+            channel.muted = not bool(channel.muted)
+            hint = "mute"
+            changed = True
+
+        elif action == "set-volume":
+            try:
+                channel.volume = max(0, min(100, int(volume)))
+            except Exception:
+                return False
+            hint = "volume"
+            changed = True
+
+        if not changed:
+            return False
+
+        # UI first: shortcuts feel instant, audio apply is coalesced right after.
+        self.channel_state_changed.emit(channel.key, int(channel.volume), bool(channel.muted))
+
+        if hint == "volume":
+            self._pending_volume_fast_keys.add(channel.key)
+            if not self._volume_fast_timer.isActive():
+                self._volume_fast_timer.start()
+        else:
+            self._pending_apply_keys.add(channel.key)
+            if not self._apply_timer.isActive():
+                self._apply_timer.start()
+
+        self._save_timer.start()
+        return True
+
+    def _flush_pending_volume_fast_apply(self) -> None:
+        keys = set(self._pending_volume_fast_keys)
+        self._pending_volume_fast_keys.clear()
+
+        fast_apply = getattr(self.audio_engine, "apply_channel_volume_fast", None)
+        for key in keys:
+            try:
+                if callable(fast_apply):
+                    fast_apply(self.settings, key)
+                else:
+                    self.audio_engine.apply_channel(self.settings, key)
+            except Exception as exc:
+                self.status_changed.emit(f"Volume apply error on {key} — {exc}")
+
+    def _flush_pending_channel_apply(self) -> None:
+        keys = set(self._pending_apply_keys)
+        self._pending_apply_keys.clear()
+
+        for key in keys:
+            try:
+                self.audio_engine.apply_channel(self.settings, key)
+            except Exception as exc:
+                self.status_changed.emit(f"Channel apply error on {key} — {exc}")
+
+    def _autosave(self) -> None:
+        try:
+            self.settings_store.save(self.settings)
+        except Exception as exc:
+            self.status_changed.emit(f"Settings save error — {exc}")
 
 
 CHANNELS = [
@@ -2623,6 +2827,8 @@ class PreviewWindow(QMainWindow):
         self._glass_opacity = 178
         self._meter_phase = 0.0
         self._settings_sync_mtime_ns = 0
+        self.backend_controller = GlassBackendController(self)
+        self.backend_controller.channel_state_changed.connect(self._sync_channel_card_from_backend)
         self.channel_cards: list[ChannelCard] = []
 
         self._background_refresh_timer = QTimer(self)
@@ -2716,11 +2922,18 @@ class PreviewWindow(QMainWindow):
         cards_row.setContentsMargins(0, 0, 0, 0)
 
         for channel in CHANNELS:
+            name, icon, devices, fallback_value, channel_key = channel
+            value, muted = self._channel_state_for_card(channel_key, fallback_value)
             card = ChannelCard(
-                *channel,
+                name,
+                icon,
+                devices,
+                value,
+                channel_key,
                 volume_callback=self._send_channel_volume,
                 mute_callback=self._set_channel_muted,
             )
+            card.sync_from_saved_state(volume=value, muted=muted)
             self.channel_cards.append(card)
             cards_row.addWidget(card)
 
@@ -2798,6 +3011,13 @@ class PreviewWindow(QMainWindow):
                         pass
 
         return super().eventFilter(obj, event)
+
+    def closeEvent(self, event) -> None:
+        try:
+            self.backend_controller.shutdown()
+        except Exception:
+            pass
+        super().closeEvent(event)
 
     def _on_nav_clicked(self, idx: int) -> None:
         if idx == 0:
@@ -2890,23 +3110,27 @@ QFrame#channelCard[muted="true"]:hover {{
             volume, muted = states[key]
             card.sync_from_saved_state(volume=volume, muted=muted)
 
+    def _channel_state_for_card(self, channel_key: str, fallback_value: int) -> tuple[int, bool]:
+        state = self.backend_controller.channel_state(channel_key)
+        if state is None:
+            return max(0, min(100, int(fallback_value))), False
+        return state
+
+    def _sync_channel_card_from_backend(self, channel_key: str, volume: int, muted: bool) -> None:
+        key = str(channel_key or "").strip()
+        for card in self.channel_cards:
+            if str(getattr(card, "channel_key", "") or "").strip() == key:
+                card.sync_from_saved_state(volume=volume, muted=muted)
+                return
+
     def _send_channel_volume(self, channel_key: str, value: int) -> bool:
-        return _send_ksh_ipc_payload(
-            {
-                "channel": channel_key,
-                "action": "set-volume",
-                "volume": max(0, min(100, int(value))),
-            }
+        return self.backend_controller.set_channel_volume(
+            channel_key,
+            max(0, min(100, int(value))),
         )
 
     def _set_channel_muted(self, channel_key: str, muted: bool) -> bool:
-        return _send_ksh_ipc_payload(
-            {
-                "channel": channel_key,
-                "action": "set-mute",
-                "muted": bool(muted),
-            }
-        )
+        return self.backend_controller.set_channel_muted(channel_key, bool(muted))
 
     def _start_meter_simulation(self) -> None:
         self.meter_timer = QTimer(self)
