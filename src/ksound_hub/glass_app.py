@@ -46,6 +46,7 @@ from .config import CONFIG_DIR, IPC_SOCKET_PATH
 from .control import resolve_ipc_socket_path
 from .ipc import AudioIpcServer
 from .settings_store import SettingsStore
+from .ui.overlay import OverlayManager
 from .ui.soundboard_dialog import SoundboardDialog
 
 PACKAGE_ROOT = Path(__file__).resolve().parent
@@ -110,9 +111,20 @@ GLASS_CHANNEL_KEY_ALIASES = {
     "return_mic": "return-mic",
 }
 
+GLASS_CHANNEL_OVERLAY_META = {
+    "all": ("🌍", "ALL"),
+    "game": ("🎮", "GAME"),
+    "chat": ("💬", "CHAT"),
+    "media": ("🎵", "MEDIA"),
+    "more": ("🔊", "MORE"),
+    "micro": ("🎤", "MICRO"),
+    "return-mic": ("🎧", "MIC OUT"),
+}
+
 
 class GlassBackendController(QObject):
     channel_state_changed = Signal(str, int, bool)
+    overlay_message_requested = Signal(str, bool)
     status_changed = Signal(str)
 
     def __init__(self, parent=None):
@@ -185,6 +197,20 @@ class GlassBackendController(QObject):
             return None
         return int(channel.volume), bool(channel.muted)
 
+    def meter_levels(self, channel_key: str) -> tuple[float, float]:
+        try:
+            left, right = self.audio_engine.meter_levels(self._normalize_channel_key(channel_key))
+            return max(0.0, min(1.0, float(left))), max(0.0, min(1.0, float(right)))
+        except Exception as exc:
+            self.status_changed.emit(f"Meter read error on {channel_key} — {exc}")
+            return 0.0, 0.0
+
+    def _overlay_text(self, channel, hint: str) -> str:
+        icon, label = GLASS_CHANNEL_OVERLAY_META.get(channel.key, ("🎚", channel.name))
+        if hint == "mute":
+            return f"{icon} {label} {'🔇' if channel.muted else '🔊'}"
+        return f"{icon} {label} {int(channel.volume)}%"
+
     def set_channel_volume(self, channel_key: str, value: int) -> bool:
         return self._apply_mixer_action(channel_key, "set-volume", volume=value)
 
@@ -224,6 +250,7 @@ class GlassBackendController(QObject):
         elif action in {"volup", "voldown", "set-volume"} and channel.muted:
             # Keep the stable app behavior: volume shortcuts do not move muted channels.
             self.channel_state_changed.emit(channel.key, int(channel.volume), bool(channel.muted))
+            self.overlay_message_requested.emit(self._overlay_text(channel, "mute"), True)
             return True
 
         elif action == "volup":
@@ -254,6 +281,11 @@ class GlassBackendController(QObject):
 
         # UI first: shortcuts feel instant, audio apply is coalesced right after.
         self.channel_state_changed.emit(channel.key, int(channel.volume), bool(channel.muted))
+        if hint in {"volume", "mute"}:
+            self.overlay_message_requested.emit(
+                self._overlay_text(channel, hint),
+                bool(hint == "mute" and channel.muted),
+            )
 
         if hint == "volume":
             self._pending_volume_fast_keys.add(channel.key)
@@ -2829,6 +2861,11 @@ class PreviewWindow(QMainWindow):
         self._settings_sync_mtime_ns = 0
         self.backend_controller = GlassBackendController(self)
         self.backend_controller.channel_state_changed.connect(self._sync_channel_card_from_backend)
+
+        self.overlay = OverlayManager(self)
+        self.overlay.set_enabled(bool(getattr(self.backend_controller.settings, "overlay_enabled", False)))
+        self.backend_controller.overlay_message_requested.connect(self._show_overlay_message)
+
         self.channel_cards: list[ChannelCard] = []
 
         self._background_refresh_timer = QTimer(self)
@@ -3014,6 +3051,10 @@ class PreviewWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         try:
+            self.overlay.shutdown()
+        except Exception:
+            pass
+        try:
             self.backend_controller.shutdown()
         except Exception:
             pass
@@ -3110,6 +3151,10 @@ QFrame#channelCard[muted="true"]:hover {{
             volume, muted = states[key]
             card.sync_from_saved_state(volume=volume, muted=muted)
 
+    def _show_overlay_message(self, text: str, muted_active: bool = False) -> None:
+        self.overlay.set_enabled(bool(getattr(self.backend_controller.settings, "overlay_enabled", False)))
+        self.overlay.show_message(str(text or ""), muted_active=bool(muted_active))
+
     def _channel_state_for_card(self, channel_key: str, fallback_value: int) -> tuple[int, bool]:
         state = self.backend_controller.channel_state(channel_key)
         if state is None:
@@ -3139,16 +3184,14 @@ QFrame#channelCard[muted="true"]:hover {{
         self.meter_timer.start()
 
     def _animate_meters(self) -> None:
-        self._meter_phase += 0.145
+        for card in self.channel_cards:
+            key = str(getattr(card, "channel_key", "") or "").strip()
+            if not key:
+                card.set_meter_levels(0.0, 0.0)
+                card.tick_meters()
+                continue
 
-        for idx, card in enumerate(self.channel_cards):
-            base = max(0.08, min(1.0, card.value / 100.0))
-            l_wave = 0.50 + 0.50 * math.sin(self._meter_phase * (1.0 + idx * 0.035) + idx * 0.73)
-            r_wave = 0.50 + 0.50 * math.sin(self._meter_phase * (1.13 + idx * 0.04) + idx * 0.91 + 0.8)
-            pulse = 0.68 + 0.32 * math.sin(self._meter_phase * 0.31 + idx * 1.7) ** 2
-
-            left = min(1.0, base * (0.20 + 0.72 * l_wave) * pulse)
-            right = min(1.0, base * (0.20 + 0.72 * r_wave) * (1.0 - 0.10 * math.sin(idx + self._meter_phase)))
+            left, right = self.backend_controller.meter_levels(key)
             card.set_meter_levels(left, right)
             card.tick_meters()
 
