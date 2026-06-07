@@ -843,6 +843,40 @@ QScrollArea#padsGridScroll {
     background: transparent;
     padding-right: 0px;
 }
+
+
+/* Glass pads internal scrollbar */
+QScrollBar#padsGridScrollbar:vertical {
+    background: rgba(0, 0, 0, 95);
+    width: 8px;
+    margin: 4px 1px 4px 3px;
+    border: none;
+    border-radius: 4px;
+}
+
+QScrollBar#padsGridScrollbar::handle:vertical {
+    background: rgba(92, 204, 255, 170);
+    border: none;
+    border-radius: 4px;
+    min-height: 32px;
+}
+
+QScrollBar#padsGridScrollbar::handle:vertical:hover {
+    background: rgba(115, 220, 255, 215);
+}
+
+QScrollBar#padsGridScrollbar::add-line:vertical,
+QScrollBar#padsGridScrollbar::sub-line:vertical {
+    height: 0px;
+    background: transparent;
+    border: none;
+}
+
+QScrollBar#padsGridScrollbar::add-page:vertical,
+QScrollBar#padsGridScrollbar::sub-page:vertical {
+    background: transparent;
+    border: none;
+}
 """
 
 
@@ -1648,6 +1682,11 @@ class PadsPanel(QWidget):
         self.grid_scroll = AdaptiveScrollArea()
         self.grid_scroll.setObjectName("padsGridScroll")
         self.grid_scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.grid_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+
+        pads_scrollbar = self.grid_scroll.verticalScrollBar()
+        pads_scrollbar.setObjectName("padsGridScrollbar")
+        pads_scrollbar.setFixedWidth(8)
 
         self.grid_host = QWidget()
         self.grid = QGridLayout(self.grid_host)
