@@ -142,6 +142,7 @@ class GlassBackendController(QObject):
         self.settings = self.settings_store.load()
         self._link_shared_eq_library()
         self.audio_engine = PipeWireAudioEngine()
+        self._android_soundboard_dialog: SoundboardDialog | None = None
 
         self._pending_volume_fast_keys: set[str] = set()
         self._pending_apply_keys: set[str] = set()
@@ -184,6 +185,18 @@ class GlassBackendController(QObject):
             pass
         try:
             self.ipc_server.stop()
+        except Exception:
+            pass
+        try:
+            dialog = self._android_soundboard_dialog
+            self._android_soundboard_dialog = None
+            if dialog is not None:
+                try:
+                    dialog.stop_all()
+                except Exception:
+                    pass
+                dialog.close()
+                dialog.deleteLater()
         except Exception:
             pass
         try:
@@ -572,7 +585,143 @@ class GlassBackendController(QObject):
     def set_channel_muted(self, channel_key: str, muted: bool) -> bool:
         return self._apply_mixer_action(channel_key, "set-mute", muted=muted)
 
+    def _soundboard_route_state(self) -> dict[str, bool]:
+        def linked(channel_key: str) -> bool:
+            channel = self._find_channel(channel_key)
+            if channel is None:
+                return False
+            return "soundboard" in {
+                str(key).strip().lower()
+                for key in getattr(channel, "linked_channels", []) or []
+            }
+
+        return {
+            "monitor_to_mic_out": linked("return-mic"),
+            "send_to_micro": linked("micro"),
+        }
+
+    def _set_soundboard_route_state(self, route_key: str, enabled: bool) -> bool:
+        route_to_channel = {
+            "monitor_to_mic_out": "return-mic",
+            "send_to_micro": "micro",
+        }
+
+        channel_key = route_to_channel.get(str(route_key or "").strip())
+        if not channel_key:
+            return False
+
+        channel = self._find_channel(channel_key)
+        if channel is None:
+            return False
+
+        linked = [
+            str(key).strip().lower()
+            for key in getattr(channel, "linked_channels", []) or []
+            if str(key).strip()
+        ]
+
+        before = list(linked)
+        if enabled:
+            if "soundboard" not in linked:
+                linked.append("soundboard")
+        else:
+            linked = [key for key in linked if key != "soundboard"]
+
+        channel.linked_channels = linked
+
+        if linked != before:
+            try:
+                self.audio_engine.apply_channel(self.settings, channel_key)
+            except Exception as exc:
+                self.status_changed.emit(f"Soundboard route error — {exc}")
+                return False
+            self._save_timer.start()
+            self.status_changed.emit(f"Soundboard route updated: {route_key}={bool(enabled)}")
+
+        return True
+
+    def _ensure_android_soundboard_dialog(self) -> SoundboardDialog:
+        dialog = self._android_soundboard_dialog
+        if dialog is None:
+            dialog = SoundboardDialog(
+                route_state_provider=self._soundboard_route_state,
+                route_state_changed=self._set_soundboard_route_state,
+            )
+            dialog.hide()
+            self._android_soundboard_dialog = dialog
+        return dialog
+
+    def _refresh_android_soundboard_slots(self, dialog: SoundboardDialog) -> None:
+        try:
+            dialog.slots = dialog._load_slots()
+        except Exception:
+            pass
+
+    def _handle_soundboard_command(self, payload: dict, command: str) -> bool:
+        command = str(command or "").strip().lower()
+        if command not in {
+            "soundboard",
+            "soundboard-play",
+            "soundboard_play",
+            "soundboard-stop-all",
+            "soundboard_stop_all",
+            "soundboard-set-global-volume",
+            "soundboard_set_global_volume",
+            "soundboard-move-slot",
+            "soundboard_move_slot",
+            "soundboard-reorder-slots",
+            "soundboard_reorder_slots",
+        }:
+            return False
+
+        dialog = self._ensure_android_soundboard_dialog()
+
+        if command in {"soundboard-stop-all", "soundboard_stop_all"}:
+            dialog.stop_all()
+            self.overlay_message_requested.emit("🎛 Soundboard stop all", False)
+            self.status_changed.emit("Android remote: stop all")
+            return True
+
+        if command in {"soundboard-set-global-volume", "soundboard_set_global_volume"}:
+            dialog.set_global_volume(payload.get("volume"))
+            self.status_changed.emit(f"Android remote: global volume {payload.get('volume')}")
+            return True
+
+        if command in {"soundboard-move-slot", "soundboard_move_slot"}:
+            slot = str(payload.get("slot") or payload.get("id") or payload.get("label") or "")
+            direction = str(payload.get("direction") or "")
+            self._refresh_android_soundboard_slots(dialog)
+            ok = bool(dialog.move_slot_by_key(slot, direction))
+            self.status_changed.emit(f"Android remote: move {slot} {direction} {'OK' if ok else 'failed'}")
+            return True
+
+        if command in {"soundboard-reorder-slots", "soundboard_reorder_slots"}:
+            order = payload.get("order")
+            self._refresh_android_soundboard_slots(dialog)
+            ok = bool(dialog.reorder_slots_by_ids(order if isinstance(order, list) else []))
+            self.status_changed.emit(f"Android remote: reorder {'OK' if ok else 'failed'}")
+            return True
+
+        if command in {"soundboard", "soundboard-play", "soundboard_play"}:
+            slot = str(payload.get("slot") or payload.get("id") or payload.get("label") or "")
+            self._refresh_android_soundboard_slots(dialog)
+            ok = bool(dialog.play_slot_by_key(slot))
+            if ok:
+                self.overlay_message_requested.emit(f"🎛 Soundboard {slot}", False)
+            self.status_changed.emit(f"Android remote: play {slot} {'OK' if ok else 'failed'}")
+            return True
+
+        return False
+
+
     def handle_ipc_message(self, payload: dict) -> None:
+        if not isinstance(payload, dict):
+            return
+
+        command = str(payload.get("command", "")).strip().lower()
+        if command and self._handle_soundboard_command(payload, command):
+            return
+
         channel_key = self._normalize_channel_key(payload.get("channel", ""))
         action = str(payload.get("action", "")).strip().lower()
         if not channel_key or not action:
