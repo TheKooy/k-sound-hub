@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QGraphicsBlurEffect,
     QGridLayout,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMainWindow,
@@ -45,6 +46,7 @@ from .audio.pipewire_v2_final import PipeWireAudioEngine
 from .config import CONFIG_DIR, IPC_SOCKET_PATH
 from .control import resolve_ipc_socket_path
 from .ipc import AudioIpcServer
+from .models import EqProfile
 from .settings_store import SettingsStore
 from .ui.overlay import OverlayManager
 from .ui.soundboard_dialog import SoundboardDialog
@@ -138,6 +140,7 @@ class GlassBackendController(QObject):
         super().__init__(parent)
         self.settings_store = SettingsStore()
         self.settings = self.settings_store.load()
+        self._link_shared_eq_library()
         self.audio_engine = PipeWireAudioEngine()
 
         self._pending_volume_fast_keys: set[str] = set()
@@ -331,11 +334,65 @@ class GlassBackendController(QObject):
         self.status_changed.emit(f"Apps route: {name} → {label}")
         return True
 
+    def _link_shared_eq_library(self, source_channel=None) -> None:
+        shared_profiles = None
+        if source_channel is not None and getattr(source_channel, "eq_profiles", None):
+            shared_profiles = source_channel.eq_profiles
+
+        if shared_profiles is None:
+            for channel in self.settings.channels:
+                if getattr(channel, "eq_profiles", None):
+                    shared_profiles = channel.eq_profiles
+                    break
+
+        if not shared_profiles:
+            shared_profiles = [EqProfile.default()]
+
+        valid_names = {str(getattr(profile, "name", "") or "") for profile in shared_profiles}
+        default_name = str(getattr(shared_profiles[0], "name", "") or "Default")
+
+        for channel in self.settings.channels:
+            channel.eq_profiles = shared_profiles
+            if channel.selected_eq_profile not in valid_names:
+                channel.selected_eq_profile = default_name
+
+    def _unique_eq_profile_name(self, channel, wanted: str, *, preserve_current: str | None = None) -> str:
+        base = str(wanted or "").strip() or "Preset"
+        preserve = str(preserve_current or "").strip()
+        existing = {str(getattr(profile, "name", "") or "") for profile in getattr(channel, "eq_profiles", [])}
+        if base not in existing or base == preserve:
+            return base
+
+        index = 2
+        while f"{base} {index}" in existing:
+            index += 1
+        return f"{base} {index}"
+
+    def _apply_eq_profile_runtime(self, profile_name: str, preferred_channel_key: str | None = None) -> bool:
+        profile_name = str(profile_name or "").strip()
+        preferred = self._normalize_channel_key(preferred_channel_key or "")
+        ok = True
+
+        for channel in self.settings.channels:
+            key = self._normalize_channel_key(getattr(channel, "key", ""))
+            if key not in APP_ROUTE_KEYS:
+                continue
+            if key != preferred and str(getattr(channel, "selected_eq_profile", "") or "") != profile_name:
+                continue
+            try:
+                self.audio_engine.apply_channel(self.settings, key)
+            except Exception as exc:
+                ok = False
+                self.status_changed.emit(f"EQ apply error on {key} — {exc}")
+
+        return ok
+
     def eq_profile_names(self, channel_key: str) -> tuple[list[str], str]:
         channel = self._find_channel(channel_key)
         if channel is None:
             return [], ""
 
+        self._link_shared_eq_library(source_channel=channel)
         profiles = list(getattr(channel, "eq_profiles", []) or [])
         names = [str(getattr(profile, "name", "") or "").strip() for profile in profiles]
         names = [name for name in names if name]
@@ -343,6 +400,7 @@ class GlassBackendController(QObject):
         selected = str(getattr(channel, "selected_eq_profile", "") or "").strip()
         if selected not in names and names:
             selected = names[0]
+            channel.selected_eq_profile = selected
 
         return names, selected
 
@@ -351,15 +409,18 @@ class GlassBackendController(QObject):
         if channel is None:
             return None, None
 
+        self._link_shared_eq_library(source_channel=channel)
         profiles = list(getattr(channel, "eq_profiles", []) or [])
         if not profiles:
-            return channel, None
+            channel.eq_profiles = [EqProfile.default()]
+            profiles = channel.eq_profiles
 
         wanted = str(profile_name or getattr(channel, "selected_eq_profile", "") or "").strip()
         for profile in profiles:
             if str(getattr(profile, "name", "") or "").strip() == wanted:
                 return channel, profile
 
+        channel.selected_eq_profile = str(getattr(profiles[0], "name", "") or "Default")
         return channel, profiles[0]
 
     def eq_profile_bands(self, channel_key: str, profile_name: str | None = None) -> list[tuple[float, float, float]]:
@@ -381,16 +442,99 @@ class GlassBackendController(QObject):
             return False
 
         channel.selected_eq_profile = str(getattr(profile, "name", "") or profile_name)
-        try:
-            self.audio_engine.apply_channel(self.settings, channel.key)
-        except Exception as exc:
-            self.status_changed.emit(f"EQ apply error on {channel.key} — {exc}")
+        if not self._apply_eq_profile_runtime(channel.selected_eq_profile, channel.key):
             return False
 
         self._save_timer.start()
         label = GLASS_CHANNEL_OVERLAY_META.get(channel.key, ("≋", channel.name))[1]
         self.overlay_message_requested.emit(f"≋ {label} EQ → {channel.selected_eq_profile}", False)
         return True
+
+    def create_eq_profile(self, channel_key: str, name: str) -> str:
+        channel = self._find_channel(channel_key)
+        if channel is None:
+            return ""
+
+        self._link_shared_eq_library(source_channel=channel)
+        profile_name = self._unique_eq_profile_name(channel, name or "New preset")
+        profile = EqProfile.default(name=profile_name)
+        channel.eq_profiles.append(profile)
+        channel.selected_eq_profile = profile.name
+
+        self._save_timer.start()
+        self._apply_eq_profile_runtime(profile.name, channel.key)
+        label = GLASS_CHANNEL_OVERLAY_META.get(channel.key, ("≋", channel.name))[1]
+        self.overlay_message_requested.emit(f"≋ {label} EQ new → {profile.name}", False)
+        return profile.name
+
+    def duplicate_eq_profile(self, channel_key: str, profile_name: str, new_name: str) -> str:
+        channel, profile = self._eq_profile_for(channel_key, profile_name)
+        if channel is None or profile is None:
+            return ""
+
+        wanted = new_name or f"{getattr(profile, 'name', 'Preset')} copy"
+        clone_name = self._unique_eq_profile_name(channel, wanted)
+        clone = EqProfile.from_dict(profile.to_dict())
+        clone.name = clone_name
+        channel.eq_profiles.append(clone)
+        channel.selected_eq_profile = clone.name
+
+        self._save_timer.start()
+        self._apply_eq_profile_runtime(clone.name, channel.key)
+        label = GLASS_CHANNEL_OVERLAY_META.get(channel.key, ("≋", channel.name))[1]
+        self.overlay_message_requested.emit(f"≋ {label} EQ duplicate → {clone.name}", False)
+        return clone.name
+
+    def rename_eq_profile(self, channel_key: str, profile_name: str, new_name: str) -> str:
+        channel, profile = self._eq_profile_for(channel_key, profile_name)
+        if channel is None or profile is None:
+            return ""
+
+        old_name = str(getattr(profile, "name", "") or "").strip()
+        renamed = self._unique_eq_profile_name(channel, new_name, preserve_current=old_name)
+        if not renamed:
+            return ""
+
+        profile.name = renamed
+        for item in self.settings.channels:
+            if str(getattr(item, "selected_eq_profile", "") or "") == old_name:
+                item.selected_eq_profile = renamed
+
+        channel.selected_eq_profile = renamed
+        self._save_timer.start()
+        self._apply_eq_profile_runtime(renamed, channel.key)
+        label = GLASS_CHANNEL_OVERLAY_META.get(channel.key, ("≋", channel.name))[1]
+        self.overlay_message_requested.emit(f"≋ {label} EQ rename → {renamed}", False)
+        return renamed
+
+    def delete_eq_profile(self, channel_key: str, profile_name: str) -> str:
+        channel, profile = self._eq_profile_for(channel_key, profile_name)
+        if channel is None or profile is None:
+            return ""
+
+        self._link_shared_eq_library(source_channel=channel)
+        profiles = list(getattr(channel, "eq_profiles", []) or [])
+        if len(profiles) <= 1:
+            self.status_changed.emit("EQ delete blocked — at least one preset must remain")
+            return ""
+
+        deleted_name = str(getattr(profile, "name", "") or profile_name)
+        remaining = [item for item in profiles if str(getattr(item, "name", "") or "") != deleted_name]
+        if not remaining:
+            return ""
+
+        replacement = str(getattr(remaining[0], "name", "") or "Default")
+        for item in self.settings.channels:
+            item.eq_profiles = remaining
+            if str(getattr(item, "selected_eq_profile", "") or "") == deleted_name:
+                item.selected_eq_profile = replacement
+
+        channel.selected_eq_profile = replacement
+        self._save_timer.start()
+        self._apply_eq_profile_runtime(replacement, channel.key)
+        label = GLASS_CHANNEL_OVERLAY_META.get(channel.key, ("≋", channel.name))[1]
+        self.overlay_message_requested.emit(f"≋ {label} EQ deleted → {deleted_name}", False)
+        return replacement
 
     def set_eq_band_gain(self, channel_key: str, band_index: int, gain_db: float, profile_name: str | None = None) -> bool:
         channel, profile = self._eq_profile_for(channel_key, profile_name)
@@ -408,11 +552,9 @@ class GlassBackendController(QObject):
         except Exception:
             return False
 
-        channel.selected_eq_profile = str(getattr(profile, "name", "") or getattr(channel, "selected_eq_profile", ""))
-        try:
-            self.audio_engine.apply_channel(self.settings, channel.key)
-        except Exception as exc:
-            self.status_changed.emit(f"EQ band apply error on {channel.key} — {exc}")
+        profile_name = str(getattr(profile, "name", "") or getattr(channel, "selected_eq_profile", ""))
+        channel.selected_eq_profile = profile_name
+        if not self._apply_eq_profile_runtime(profile_name, channel.key):
             return False
 
         self._save_timer.start()
@@ -2183,6 +2325,32 @@ class EqPanel(QWidget):
         self.eq_preset_select = SelectButton(["Default"], "Default", self._eq_preset_changed)
         root.addWidget(self.eq_preset_select)
 
+        actions = QHBoxLayout()
+        actions.setContentsMargins(0, 0, 0, 0)
+        actions.setSpacing(6)
+
+        self.new_button = QPushButton("New")
+        self.new_button.setObjectName("padTopButton")
+        self.new_button.clicked.connect(self._create_preset)
+        actions.addWidget(self.new_button)
+
+        self.duplicate_button = QPushButton("Duplicate")
+        self.duplicate_button.setObjectName("padTopButton")
+        self.duplicate_button.clicked.connect(self._duplicate_preset)
+        actions.addWidget(self.duplicate_button)
+
+        self.rename_button = QPushButton("Rename")
+        self.rename_button.setObjectName("padTopButton")
+        self.rename_button.clicked.connect(self._rename_preset)
+        actions.addWidget(self.rename_button)
+
+        self.delete_button = QPushButton("Delete")
+        self.delete_button.setObjectName("padDeleteButton")
+        self.delete_button.clicked.connect(self._delete_preset)
+        actions.addWidget(self.delete_button)
+
+        root.addLayout(actions)
+
         self.bands_card = QFrame()
         self.bands_card.setObjectName("channelCard")
         self.bands_card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -2244,6 +2412,12 @@ class EqPanel(QWidget):
         select._current = current if current in select.items else select.items[0]
         select._sync_text()
 
+    def _ask_name(self, title: str, label: str, default: str) -> str:
+        value, ok = QInputDialog.getText(self, title, label, text=str(default or ""))
+        if not ok:
+            return ""
+        return str(value or "").strip()
+
     def _format_frequency(self, frequency: float) -> str:
         try:
             value = float(frequency)
@@ -2269,13 +2443,15 @@ class EqPanel(QWidget):
         except Exception:
             return 0
 
-    def _reload_profiles(self) -> None:
+    def _reload_profiles(self, preferred: str | None = None) -> None:
         if self.backend_controller is None:
             self.status_label.setText("EQ backend not connected yet.")
             return
 
         channel_key = self._current_channel_key()
         names, selected = self.backend_controller.eq_profile_names(channel_key)
+        if preferred and preferred in names:
+            selected = preferred
 
         self._syncing = True
         self._set_select_items(self.eq_preset_select, names or ["Default"], selected or (names[0] if names else "Default"))
@@ -2324,6 +2500,80 @@ class EqPanel(QWidget):
             self._reload_bands()
         else:
             self.status_label.setText("Could not apply EQ preset.")
+
+    def _create_preset(self) -> None:
+        if self.backend_controller is None:
+            return
+
+        name = self._ask_name("New EQ preset", "Preset name:", "New preset")
+        if not name:
+            return
+
+        created = self.backend_controller.create_eq_profile(self._current_channel_key(), name)
+        if created:
+            self._reload_profiles(preferred=created)
+            self.status_label.setText(f"Created preset: {created}")
+        else:
+            self.status_label.setText("Could not create EQ preset.")
+
+    def _duplicate_preset(self) -> None:
+        if self.backend_controller is None:
+            return
+
+        current = self._current_profile_name()
+        name = self._ask_name("Duplicate EQ preset", "New preset name:", f"{current} copy")
+        if not name:
+            return
+
+        created = self.backend_controller.duplicate_eq_profile(self._current_channel_key(), current, name)
+        if created:
+            self._reload_profiles(preferred=created)
+            self.status_label.setText(f"Duplicated preset: {created}")
+        else:
+            self.status_label.setText("Could not duplicate EQ preset.")
+
+    def _rename_preset(self) -> None:
+        if self.backend_controller is None:
+            return
+
+        current = self._current_profile_name()
+        name = self._ask_name("Rename EQ preset", "New preset name:", current)
+        if not name:
+            return
+
+        renamed = self.backend_controller.rename_eq_profile(self._current_channel_key(), current, name)
+        if renamed:
+            self._reload_profiles(preferred=renamed)
+            self.status_label.setText(f"Renamed preset: {renamed}")
+        else:
+            self.status_label.setText("Could not rename EQ preset.")
+
+    def _delete_preset(self) -> None:
+        if self.backend_controller is None:
+            return
+
+        current = self._current_profile_name()
+        names, _selected = self.backend_controller.eq_profile_names(self._current_channel_key())
+        if len(names) <= 1:
+            QMessageBox.information(self, "EQ preset", "At least one EQ preset must remain.")
+            return
+
+        answer = QMessageBox.question(
+            self,
+            "Delete EQ preset",
+            f"Delete preset '{current}'?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+
+        replacement = self.backend_controller.delete_eq_profile(self._current_channel_key(), current)
+        if replacement:
+            self._reload_profiles(preferred=replacement)
+            self.status_label.setText(f"Deleted preset: {current}")
+        else:
+            self.status_label.setText("Could not delete EQ preset.")
 
     def _preview_band_label(self, index: int, raw: int) -> None:
         if not (0 <= index < len(self.band_controls)):
