@@ -2006,6 +2006,18 @@ QLabel#compactSelectItem:hover {
 
         menu.exec(pos)
 
+
+class LevelMeter(QWidget):
+    # Display-only mapping. These constants do not change audio volume.
+    # Raw PipeWire meter values are naturally small, so Glass uses a visual curve
+    # to make low-level movement readable without changing the backend signal.
+    VISUAL_NOISE_FLOOR = 0.0012
+    VISUAL_GAIN = 8.5
+    VISUAL_GAMMA = 0.42
+    PEAK_DECAY = 0.88
+    PEAK_SILENCE_DECAY = 0.70
+    PEAK_SILENCE_FLOOR = 0.006
+
     def __init__(self, level: float = 0.0, parent=None):
         super().__init__(parent)
         self.current = self._visual_level(level)
