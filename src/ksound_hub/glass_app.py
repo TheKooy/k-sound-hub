@@ -41,6 +41,7 @@ from PySide6.QtWidgets import (
 
 
 from .config import CONFIG_DIR
+from .ui.soundboard_dialog import SoundboardDialog
 
 PACKAGE_ROOT = Path(__file__).resolve().parent
 APP_ICON = PACKAGE_ROOT / "assets/app_icon.png"
@@ -1461,13 +1462,24 @@ class HoverScrollLabel(QLabel):
         painter.drawText(x + text_width + self.SCROLL_GAP, baseline, self._full_text)
 
 class SoundPadCard(QFrame):
-    def __init__(self, name: str, icon: str, meta: str, emoji_callback=None, delete_callback=None):
+    def __init__(
+        self,
+        name: str,
+        icon: str,
+        meta: str,
+        emoji_callback=None,
+        delete_callback=None,
+        play_callback=None,
+        slot_key: str = "",
+    ):
         super().__init__()
         self._edit_enabled = False
         self._bulk_select_enabled = False
         self._bulk_selected = False
         self._emoji_callback = emoji_callback
         self._delete_callback = delete_callback
+        self._play_callback = play_callback
+        self._slot_key = str(slot_key or "").strip()
 
         self.setObjectName("soundPadCard")
         self.setProperty("edit", "false")
@@ -1537,6 +1549,12 @@ class SoundPadCard(QFrame):
             self.set_bulk_selected(not self._bulk_selected)
             event.accept()
             return
+
+        if event.button() == Qt.LeftButton and not self._edit_enabled:
+            if self._request_play():
+                event.accept()
+                return
+
         super().mousePressEvent(event)
 
     def display_name(self) -> str:
@@ -1578,8 +1596,17 @@ class SoundPadCard(QFrame):
         if self._delete_callback is not None:
             self._delete_callback(self)
 
+    def _request_play(self) -> bool:
+        if self._edit_enabled or self._bulk_select_enabled:
+            return False
+        if not self._slot_key or self._play_callback is None:
+            return False
+        self._play_callback(self._slot_key)
+        return True
+
     def _request_emoji_palette(self) -> None:
         if not self._edit_enabled:
+            self._request_play()
             return
         if self._emoji_callback is not None:
             self._emoji_callback(self)
@@ -1644,6 +1671,7 @@ class PadsPanel(QWidget):
         self._edit_mode = False
         self._bulk_delete_mode = False
         self._active_emoji_card: SoundPadCard | None = None
+        self._soundboard_dialog: SoundboardDialog | None = None
         self.pad_cards: list[SoundPadCard] = []
 
         app = QApplication.instance()
@@ -1712,8 +1740,8 @@ class PadsPanel(QWidget):
         self.grid_scroll._schedule_margin_update()
         root.addWidget(self.grid_scroll, 1)
 
-        for name, icon, meta in self._load_real_soundboard_pads():
-            self._add_pad(name, icon, meta)
+        for name, icon, meta, slot_key in self._load_real_soundboard_pads():
+            self._add_pad(name, icon, meta, slot_key=slot_key)
 
         self.emoji_overlay = QFrame(self)
         self.emoji_overlay.setObjectName("emojiPalette")
@@ -1829,8 +1857,8 @@ class PadsPanel(QWidget):
         }
         return names.get(key, key.upper() if key else "MEDIA")
 
-    def _load_real_soundboard_pads(self) -> list[tuple[str, str, str]]:
-        pads: list[tuple[str, str, str]] = []
+    def _load_real_soundboard_pads(self) -> list[tuple[str, str, str, str]]:
+        pads: list[tuple[str, str, str, str]] = []
 
         for index, slot in enumerate(self._read_soundboard_slots(), start=1):
             path_text = str(slot.get("path") or "").strip()
@@ -1844,6 +1872,7 @@ class PadsPanel(QWidget):
 
             route = self._format_soundboard_route(str(slot.get("output_channel") or "media"))
             icon = self._icon_for_soundboard_slot(slot, path_text)
+            slot_key = str(slot.get("id") or "").strip() or str(index)
 
             if path_text:
                 sound_path = Path(path_text).expanduser()
@@ -1853,16 +1882,42 @@ class PadsPanel(QWidget):
             else:
                 meta = route
 
-            pads.append((label, icon, meta))
+            pads.append((label, icon, meta, slot_key))
 
         if pads:
             return pads
 
         if SOUNDBOARD_PATH.is_file():
-            return [("No saved sounds", "🎧", "soundboard.json empty")]
+            return [("No saved sounds", "🎧", "soundboard.json empty", "")]
 
-        return [("No soundboard file", "🎧", "soundboard.json missing")]
+        return [("No soundboard file", "🎧", "soundboard.json missing", "")]
 
+
+    def _soundboard_playback_dialog(self) -> SoundboardDialog:
+        dialog = self._soundboard_dialog
+        if dialog is None:
+            dialog = SoundboardDialog(self)
+            dialog.hide()
+            self._soundboard_dialog = dialog
+        return dialog
+
+    def _play_pad(self, slot_key: str) -> None:
+        if self._edit_mode or self._bulk_delete_mode:
+            return
+
+        key = str(slot_key or "").strip()
+        if not key:
+            return
+
+        try:
+            dialog = self._soundboard_playback_dialog()
+            # Keep Glass read-only, but refresh the hidden playback engine from
+            # the current soundboard.json so changes made in the real app apply.
+            dialog.slots = dialog._load_slots()
+            if not dialog.play_slot_by_key(key):
+                QMessageBox.warning(self, "Soundboard playback", "This sound could not be found.")
+        except Exception as exc:
+            QMessageBox.warning(self, "Soundboard playback", f"Could not play this sound.\n\n{exc}")
 
     def _detach(self) -> None:
         if self._detach_callback is not None:
@@ -1883,11 +1938,12 @@ class PadsPanel(QWidget):
         for card in self.pad_cards:
             card.set_edit_mode(enabled)
 
-    def _add_pad(self, name: str | None = None, icon: str = "🎧", meta: str = "new") -> None:
+    def _add_pad(self, name: str | None = None, icon: str = "🎧", meta: str = "new", slot_key: str = "") -> None:
         if name is None or isinstance(name, bool):
             name = f"New pad {len(self.pad_cards) + 1}"
             icon = "+"
             meta = "empty"
+            slot_key = ""
 
         card = SoundPadCard(
             name,
@@ -1895,6 +1951,8 @@ class PadsPanel(QWidget):
             meta,
             emoji_callback=self._show_emoji_palette,
             delete_callback=self._confirm_delete_card,
+            play_callback=self._play_pad,
+            slot_key=slot_key,
         )
         card.set_edit_mode(self._edit_mode)
         card.set_bulk_select_enabled(self._bulk_delete_mode)
