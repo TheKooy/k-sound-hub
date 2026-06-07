@@ -187,6 +187,10 @@ class AppSettings:
     wallpaper_path: str = ""
     wallpaper_blur: int = 0
     wallpaper_tint_strength: int = 40
+    glass_background_blur: int = 18
+    glass_background_saturation: int = 72
+    glass_background_darkness: int = 55
+    glass_opacity: int = 70
     channels: list[ChannelConfig] = field(default_factory=list)
 
     @classmethod
@@ -235,6 +239,10 @@ class AppSettings:
             wallpaper_path=str(data.get("wallpaper_path", "")),
             wallpaper_blur=max(0, min(32, int(data.get("wallpaper_blur", 0)))),
             wallpaper_tint_strength=max(0, min(100, int(data.get("wallpaper_tint_strength", 40)))),
+            glass_background_blur=max(0, min(100, int(data.get("glass_background_blur", 18)))),
+            glass_background_saturation=max(0, min(100, int(data.get("glass_background_saturation", 72)))),
+            glass_background_darkness=max(0, min(100, int(data.get("glass_background_darkness", 55)))),
+            glass_opacity=max(0, min(100, int(data.get("glass_opacity", 70)))),
             channels=channels,
         )
 
@@ -247,5 +255,9 @@ class AppSettings:
             "wallpaper_path": self.wallpaper_path,
             "wallpaper_blur": self.wallpaper_blur,
             "wallpaper_tint_strength": self.wallpaper_tint_strength,
+            "glass_background_blur": self.glass_background_blur,
+            "glass_background_saturation": self.glass_background_saturation,
+            "glass_background_darkness": self.glass_background_darkness,
+            "glass_opacity": self.glass_opacity,
             "channels": [channel.to_dict() for channel in self.channels],
         }

@@ -42,6 +42,8 @@ from PySide6.QtWidgets import (
     QStackedWidget,
     QVBoxLayout,
     QWidget,
+    QCheckBox,
+    QFileDialog,
 )
 
 
@@ -57,6 +59,16 @@ from .ui.soundboard_dialog import SoundboardDialog
 PACKAGE_ROOT = Path(__file__).resolve().parent
 APP_ICON = PACKAGE_ROOT / "assets/app_icon.png"
 APP_BG = PACKAGE_ROOT / "assets/backgrounds/ksound_hub_wallpaper_4k_blurfill_3840x2160.png"
+CHANNEL_ICON_DIR = PACKAGE_ROOT / "assets/icons/channels"
+CHANNEL_ICON_PATHS = {
+    "all": CHANNEL_ICON_DIR / "all.png",
+    "game": CHANNEL_ICON_DIR / "game.png",
+    "chat": CHANNEL_ICON_DIR / "chat.png",
+    "media": CHANNEL_ICON_DIR / "media.png",
+    "more": CHANNEL_ICON_DIR / "more.png",
+    "micro": CHANNEL_ICON_DIR / "micro.png",
+    "return-mic": CHANNEL_ICON_DIR / "return-mic.png",
+}
 SOUNDBOARD_PATH = CONFIG_DIR / "soundboard.json"
 SETTINGS_PATH = CONFIG_DIR / "settings.json"
 
@@ -838,13 +850,13 @@ class GlassBackendController(QObject):
 
 
 CHANNELS = [
-    ("ALL", "A", ["Arctis Nova Pro", "USB / SPDIF", "System default"], 76, "all"),
-    ("GAME", "G", ["Arctis Nova Pro", "USB / SPDIF", "System default"], 72, "game"),
-    ("CHAT", "C", ["Arctis Nova Pro", "USB / SPDIF", "System default"], 70, "chat"),
-    ("MEDIA", "M", ["USB / SPDIF", "Arctis Nova Pro", "System default"], 64, "media"),
-    ("MORE", "+", ["System default", "Arctis Nova Pro", "USB / SPDIF"], 58, "more"),
-    ("MICRO", "µ", ["RØDE NT-USB", "Arctis Mic", "System default"], 84, "micro"),
-    ("MIC OUT", "R", ["Arctis monitor", "USB / SPDIF", "System default"], 52, "return-mic"),
+    ("ALL", str(CHANNEL_ICON_PATHS["all"]), ["Arctis Nova Pro", "USB / SPDIF", "System default"], 76, "all"),
+    ("GAME", str(CHANNEL_ICON_PATHS["game"]), ["Arctis Nova Pro", "USB / SPDIF", "System default"], 72, "game"),
+    ("CHAT", str(CHANNEL_ICON_PATHS["chat"]), ["Arctis Nova Pro", "USB / SPDIF", "System default"], 70, "chat"),
+    ("MEDIA", str(CHANNEL_ICON_PATHS["media"]), ["USB / SPDIF", "Arctis Nova Pro", "System default"], 64, "media"),
+    ("MORE", str(CHANNEL_ICON_PATHS["more"]), ["System default", "Arctis Nova Pro", "USB / SPDIF"], 58, "more"),
+    ("MICRO", str(CHANNEL_ICON_PATHS["micro"]), ["RØDE NT-USB", "Arctis Mic", "System default"], 84, "micro"),
+    ("MIC OUT", str(CHANNEL_ICON_PATHS["return-mic"]), ["Arctis monitor", "USB / SPDIF", "System default"], 52, "return-mic"),
 ]
 
 
@@ -2094,9 +2106,10 @@ class ChannelCard(QFrame):
         root.setContentsMargins(10, 10, 10, 10)
         root.setSpacing(8)
 
-        icon_label = QLabel(icon)
+        icon_label = QLabel()
         icon_label.setObjectName("channelIcon")
         icon_label.setAlignment(Qt.AlignCenter)
+        self._set_icon(icon_label, icon)
         root.addWidget(icon_label, 0, Qt.AlignHCenter)
 
         name_label = QLabel(name)
@@ -2142,6 +2155,22 @@ class ChannelCard(QFrame):
         self.mute_btn.setCheckable(True)
         self.mute_btn.toggled.connect(self._on_muted_changed)
         root.addWidget(self.mute_btn)
+
+    def _set_icon(self, icon_label: QLabel, icon: str) -> None:
+        icon_path = Path(str(icon or ""))
+        if icon_path.is_file():
+            pixmap = QPixmap(str(icon_path))
+            if not pixmap.isNull():
+                icon_label.setPixmap(pixmap.scaled(42, 42, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                icon_label.setFixedSize(48, 48)
+                return
+        icon_label.setText(str(icon or ""))
+        icon_label.setFixedSize(48, 48)
+
+    def set_meters_visible(self, visible: bool) -> None:
+        visible = bool(visible)
+        self.left_meter.setVisible(visible)
+        self.right_meter.setVisible(visible)
 
     def _set_volume_label(self, value: int) -> None:
         self.value = max(0, min(100, int(value)))
@@ -3802,7 +3831,7 @@ class Drawer(QFrame):
         scroll._update_scroll_margin()
         return scroll
 
-    def _notify_visual(self, key: str, value: int) -> None:
+    def _notify_visual(self, key: str, value) -> None:
         if self._visual_callback is not None:
             self._visual_callback(key, value)
 
@@ -3846,26 +3875,73 @@ class Drawer(QFrame):
         title.setObjectName("sectionTitle")
         root.addWidget(title)
 
+        settings = getattr(self._backend_controller, "settings", None)
+
+        self.show_meters_check = QCheckBox("Show meters")
+        self.show_meters_check.setChecked(bool(getattr(settings, "visualizer_enabled", True)))
+        self.show_meters_check.toggled.connect(lambda checked: self._notify_visual("meters", bool(checked)))
+        root.addWidget(self.show_meters_check)
+
+        self.show_overlay_check = QCheckBox("Show overlay")
+        self.show_overlay_check.setChecked(bool(getattr(settings, "overlay_enabled", False)))
+        self.show_overlay_check.toggled.connect(lambda checked: self._notify_visual("overlay", bool(checked)))
+        root.addWidget(self.show_overlay_check)
+
+        self.background_enabled_check = QCheckBox("Use custom background")
+        self.background_enabled_check.setChecked(bool(getattr(settings, "wallpaper_enabled", False)))
+        self.background_enabled_check.toggled.connect(lambda checked: self._notify_visual("background_enabled", bool(checked)))
+        root.addWidget(self.background_enabled_check)
+
+        bg_row = QHBoxLayout()
+        choose_bg = QPushButton("Change background")
+        choose_bg.setObjectName("padTopButton")
+        choose_bg.clicked.connect(self._choose_background)
+        bg_row.addWidget(choose_bg)
+
+        wallpaper_path = str(getattr(settings, "wallpaper_path", "") or "")
+        self.background_path_label = QLabel(Path(wallpaper_path).name if wallpaper_path else "Default background")
+        self.background_path_label.setObjectName("muted")
+        self.background_path_label.setWordWrap(True)
+        bg_row.addWidget(self.background_path_label, 1)
+        root.addLayout(bg_row)
+
         slider_controls = [
-            ("Background blur", "blur", 18),
-            ("Background saturation", "saturation", 72),
-            ("Background darkness", "darkness", 55),
-            ("Black glass opacity", "glass", 70),
+            ("Background blur", "blur", int(getattr(settings, "glass_background_blur", 18))),
+            ("Background saturation", "saturation", int(getattr(settings, "glass_background_saturation", 72))),
+            ("Background darkness", "darkness", int(getattr(settings, "glass_background_darkness", 55))),
+            ("Black glass opacity", "glass", int(getattr(settings, "glass_opacity", 70))),
         ]
 
         for label, key, value in slider_controls:
             root.addWidget(QLabel(label))
             slider = NoWheelSlider(Qt.Horizontal)
             slider.setRange(0, 100)
-            slider.setValue(value)
+            slider.setValue(max(0, min(100, int(value))))
             slider.setMinimumHeight(34)
             slider.setMaximumHeight(34)
             slider.setTracking(False if key in {"saturation", "blur"} else True)
-            slider.valueChanged.connect(lambda new_value, item_key=key: self._notify_visual(item_key, new_value))
+            slider.valueChanged.connect(lambda new_value, item_key=key: self._notify_visual(item_key, int(new_value)))
             root.addWidget(slider)
 
         root.addStretch(1)
         return self._make_scroll_page(content)
+
+    def _choose_background(self) -> None:
+        path, _selected_filter = QFileDialog.getOpenFileName(
+            self,
+            "Choose background",
+            str(Path.home()),
+            "Images (*.png *.jpg *.jpeg *.webp *.bmp);;All files (*)",
+        )
+        if not path:
+            return
+
+        self.background_path_label.setText(Path(path).name)
+        self.background_enabled_check.blockSignals(True)
+        self.background_enabled_check.setChecked(True)
+        self.background_enabled_check.blockSignals(False)
+        self._notify_visual("background_path", path)
+
 
     def _pads_page(self) -> QWidget:
         content = QWidget()
@@ -3916,6 +3992,7 @@ class PreviewWindow(QMainWindow):
         self._meter_phase = 0.0
         self._settings_sync_mtime_ns = 0
         self.backend_controller = GlassBackendController(self)
+        self._load_visual_settings_from_backend()
         self.backend_controller.channel_state_changed.connect(self._sync_channel_card_from_backend)
 
         self.overlay = OverlayManager(self)
@@ -3943,7 +4020,7 @@ class PreviewWindow(QMainWindow):
         self.background_label.setScaledContents(True)
         self.background_label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         self.background_blur = QGraphicsBlurEffect(self.background_label)
-        self.background_blur.setBlurRadius(18.0)
+        self.background_blur.setBlurRadius(float(getattr(self.backend_controller.settings, "glass_background_blur", 18)))
         self.background_label.setGraphicsEffect(self.background_blur)
 
         self.background_wash = QFrame()
@@ -4031,6 +4108,7 @@ class PreviewWindow(QMainWindow):
             cards_row.addWidget(card)
 
         content_layout.addLayout(cards_row, 1)
+        self._set_meters_visible(bool(getattr(self.backend_controller.settings, "visualizer_enabled", True)))
 
         self.drawer = Drawer(self._apply_visual_setting, self.backend_controller)
         self.drawer.setVisible(False)
@@ -4123,22 +4201,105 @@ class PreviewWindow(QMainWindow):
         self.drawer.setVisible(True)
         self.drawer.show_page(idx - 1)
 
-    def _apply_visual_setting(self, key: str, value: int) -> None:
+    def _save_visual_settings_later(self) -> None:
+        timer = getattr(self.backend_controller, "_save_timer", None)
+        if timer is not None:
+            timer.start()
+
+    def _load_background_source_from_settings(self) -> QPixmap:
+        settings = self.backend_controller.settings
+        if bool(getattr(settings, "wallpaper_enabled", False)):
+            path = Path(str(getattr(settings, "wallpaper_path", "") or "")).expanduser()
+            if path.is_file():
+                pixmap = QPixmap(str(path))
+                if not pixmap.isNull():
+                    return pixmap
+        return QPixmap(str(APP_BG)) if APP_BG.is_file() else QPixmap()
+
+    def _load_visual_settings_from_backend(self) -> None:
+        settings = self.backend_controller.settings
+        self._background_source = self._load_background_source_from_settings()
+        self._background_saturation = max(0.0, min(2.0, float(getattr(settings, "glass_background_saturation", 72)) / 100.0))
+        self._background_darkness = int(40 + max(0, min(100, int(getattr(settings, "glass_background_darkness", 55)))) * 2.0)
+        self._glass_opacity = int(70 + max(0, min(100, int(getattr(settings, "glass_opacity", 70)))) * 1.55)
+
+        if hasattr(self, "background_blur"):
+            self.background_blur.setBlurRadius(float(max(0, min(100, int(getattr(settings, "glass_background_blur", 18))))))
+
+        if hasattr(self, "overlay"):
+            self.overlay.set_enabled(bool(getattr(settings, "overlay_enabled", False)))
+
+        self._set_meters_visible(bool(getattr(settings, "visualizer_enabled", True)))
+
+    def _set_meters_visible(self, visible: bool) -> None:
+        for card in getattr(self, "channel_cards", []):
+            setter = getattr(card, "set_meters_visible", None)
+            if callable(setter):
+                setter(bool(visible))
+
+    def _apply_visual_setting(self, key: str, value) -> None:
+        settings = self.backend_controller.settings
+        key = str(key or "").strip().lower()
+
+        if key == "meters":
+            settings.visualizer_enabled = bool(value)
+            self._set_meters_visible(settings.visualizer_enabled)
+            self._save_visual_settings_later()
+            return
+
+        if key == "overlay":
+            settings.overlay_enabled = bool(value)
+            self.overlay.set_enabled(settings.overlay_enabled)
+            self._save_visual_settings_later()
+            return
+
+        if key == "background_enabled":
+            settings.wallpaper_enabled = bool(value)
+            self._background_source = self._load_background_source_from_settings()
+            self._refresh_background()
+            self._save_visual_settings_later()
+            return
+
+        if key == "background_path":
+            settings.wallpaper_path = str(value or "")
+            settings.wallpaper_enabled = bool(settings.wallpaper_path)
+            self._background_source = self._load_background_source_from_settings()
+            self._refresh_background()
+            self._save_visual_settings_later()
+            return
+
+        try:
+            numeric = max(0, min(100, int(value)))
+        except Exception:
+            return
+
         if key == "blur":
-            self.background_blur.setBlurRadius(float(value))
+            settings.glass_background_blur = numeric
+            self.background_blur.setBlurRadius(float(numeric))
+            self._save_visual_settings_later()
             return
+
         if key == "saturation":
-            self._background_saturation = max(0.0, min(2.0, value / 100.0))
+            settings.glass_background_saturation = numeric
+            self._background_saturation = max(0.0, min(2.0, numeric / 100.0))
             self._apply_visual_style()
+            self._save_visual_settings_later()
             return
+
         if key == "darkness":
-            self._background_darkness = int(40 + value * 2.0)
+            settings.glass_background_darkness = numeric
+            self._background_darkness = int(40 + numeric * 2.0)
             self._apply_visual_style()
+            self._save_visual_settings_later()
             return
+
         if key == "glass":
-            self._glass_opacity = int(70 + value * 1.55)
+            settings.glass_opacity = numeric
+            self._glass_opacity = int(70 + numeric * 1.55)
             self._apply_visual_style()
+            self._save_visual_settings_later()
             return
+
 
     def _apply_visual_style(self) -> None:
         glass = max(0, min(255, self._glass_opacity))
