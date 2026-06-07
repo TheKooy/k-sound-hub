@@ -62,9 +62,9 @@ METER_SOURCE_BY_CHANNEL = {
     "micro": "micro_bus.monitor",
 }
 
-# 1024 / 48000 is a stable EQ/filter-chain latency test for rare random playback pops.
-# It is aligned to 2x the current 512-frame PipeWire quantum.
-EQ_PIPEWIRE_LATENCY = "1024/48000"
+# 768 / 48000 is the current EQ/filter-chain latency test.
+# It is used to check whether rare random playback pops improve.
+EQ_PIPEWIRE_LATENCY = "768/48000"
 
 
 @dataclass
