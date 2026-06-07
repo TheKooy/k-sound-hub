@@ -45,6 +45,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QFileDialog,
     QWidgetAction,
+    QSystemTrayIcon,
 )
 
 
@@ -4000,6 +4001,11 @@ class Drawer(QFrame):
         self.show_overlay_check.toggled.connect(lambda checked: self._notify_visual("overlay", bool(checked)))
         root.addWidget(self.show_overlay_check)
 
+        self.close_to_tray_check = QCheckBox("Close to tray")
+        self.close_to_tray_check.setChecked(bool(getattr(settings, "close_to_tray", True)))
+        self.close_to_tray_check.toggled.connect(lambda checked: self._notify_visual("close_to_tray", bool(checked)))
+        root.addWidget(self.close_to_tray_check)
+
         self.background_enabled_check = QCheckBox("Use custom background")
         self.background_enabled_check.setChecked(bool(getattr(settings, "wallpaper_enabled", False)))
         self.background_enabled_check.toggled.connect(lambda checked: self._notify_visual("background_enabled", bool(checked)))
@@ -4098,6 +4104,9 @@ class PreviewWindow(QMainWindow):
         if APP_ICON.is_file():
             self.setWindowIcon(QIcon(str(APP_ICON)))
 
+        self._allow_real_close = False
+        self.tray_icon: QSystemTrayIcon | None = None
+
         self._background_source = QPixmap(str(APP_BG)) if APP_BG.is_file() else QPixmap()
         self._background_saturation = 0.72
         self._background_darkness = 130
@@ -4111,6 +4120,7 @@ class PreviewWindow(QMainWindow):
         self.overlay = OverlayManager(self)
         self.overlay.set_enabled(bool(getattr(self.backend_controller.settings, "overlay_enabled", False)))
         self.backend_controller.overlay_message_requested.connect(self._show_overlay_message)
+        self._setup_tray_icon()
 
         self.channel_cards: list[ChannelCard] = []
 
@@ -4301,7 +4311,62 @@ class PreviewWindow(QMainWindow):
 
         return super().eventFilter(obj, event)
 
+    def _setup_tray_icon(self) -> None:
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            self.tray_icon = None
+            return
+
+        tray = QSystemTrayIcon(self)
+        if APP_ICON.is_file():
+            tray.setIcon(QIcon(str(APP_ICON)))
+        elif not self.windowIcon().isNull():
+            tray.setIcon(self.windowIcon())
+
+        tray.setToolTip("K-Sounds Hub Glass")
+
+        menu = QMenu(self)
+
+        show_action = menu.addAction("Show K-Sounds Hub Glass")
+        show_action.triggered.connect(self._restore_from_tray)
+
+        quit_action = menu.addAction("Quit")
+        quit_action.triggered.connect(self._quit_from_tray)
+
+        tray.setContextMenu(menu)
+        tray.activated.connect(self._tray_activated)
+        tray.show()
+
+        self.tray_icon = tray
+
+    def _tray_activated(self, reason) -> None:
+        if reason in {QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick}:
+            self._restore_from_tray()
+
+    def _restore_from_tray(self) -> None:
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+    def _quit_from_tray(self) -> None:
+        self._allow_real_close = True
+        self.close()
+
     def closeEvent(self, event) -> None:
+        if (
+            bool(getattr(self.backend_controller.settings, "close_to_tray", True))
+            and not bool(getattr(self, "_allow_real_close", False))
+            and self.tray_icon is not None
+        ):
+            event.ignore()
+            self.hide()
+            return
+
+        try:
+            if self.tray_icon is not None:
+                self.tray_icon.hide()
+        except Exception:
+            pass
+
         try:
             self.overlay.shutdown()
         except Exception:
@@ -4368,6 +4433,11 @@ class PreviewWindow(QMainWindow):
         if key == "overlay":
             settings.overlay_enabled = bool(value)
             self.overlay.set_enabled(settings.overlay_enabled)
+            self._save_visual_settings_later()
+            return
+
+        if key == "close_to_tray":
+            settings.close_to_tray = bool(value)
             self._save_visual_settings_later()
             return
 
@@ -4608,6 +4678,7 @@ QFrame#channelCard[muted="true"]:hover {{
 
 def main() -> int:
     app = QApplication(sys.argv)
+    app.setQuitOnLastWindowClosed(False)
     app.setStyleSheet(STYLE)
     window = PreviewWindow()
     window.show()
