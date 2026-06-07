@@ -2344,8 +2344,10 @@ class EqPanel(QWidget):
         self.rename_button.clicked.connect(self._rename_preset)
         actions.addWidget(self.rename_button)
 
-        self.delete_button = QPushButton("Delete")
+        self.delete_button = QPushButton("🗑")
         self.delete_button.setObjectName("padDeleteButton")
+        self.delete_button.setToolTip("Delete EQ preset")
+        self.delete_button.setFixedWidth(34)
         self.delete_button.clicked.connect(self._delete_preset)
         actions.addWidget(self.delete_button)
 
