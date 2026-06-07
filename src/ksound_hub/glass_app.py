@@ -11,9 +11,11 @@ Backend bindings are added gradually while the stable UI remains a fallback.
 
 import json
 import math
+import secrets
 import socket
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QObject, QPoint, QRect, QRectF, QSize, QTimer, Qt, Signal
@@ -3397,11 +3399,44 @@ class PadsPanel(QWidget):
         if not self._start_android_remote_server_if_needed():
             return
 
+        pin = f"{secrets.randbelow(1_000_000):06d}"
+        expires_at = time.time() + 300
+
+        pairing_path = CONFIG_DIR / "soundboard_pairing.json"
         try:
-            dialog = self._soundboard_playback_dialog()
-            dialog.create_android_pairing()
+            pairing_path.parent.mkdir(parents=True, exist_ok=True)
+            pairing_path.write_text(
+                json.dumps(
+                    {
+                        "pin": pin,
+                        "expires_at": expires_at,
+                        "created_at": time.time(),
+                    },
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            try:
+                pairing_path.chmod(0o600)
+            except Exception:
+                pass
         except Exception as exc:
-            QMessageBox.warning(self, "Pair Android", f"Could not create Android pairing code.\n\n{exc}")
+            QMessageBox.warning(self, "Pair Android", f"Could not write pairing code.\n\n{exc}")
+            return
+
+        QMessageBox.information(
+            self,
+            "Pair Android",
+            (
+                "Android pairing code:\n\n"
+                f"{pin}\n\n"
+                "Expires in 5 minutes.\n\n"
+                "Open the Android K-Sounds Soundboard Remote app, search the PC, "
+                "then enter this code."
+            ),
+        )
+
 
     def _play_pad(self, slot_key: str) -> None:
         if self._edit_mode or self._bulk_delete_mode:
