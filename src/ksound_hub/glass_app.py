@@ -9,6 +9,7 @@ This first Glass app keeps the V21 UI shell and simulated/no-impact actions.
 Real audio/backend bindings should be added gradually.
 """
 
+import json
 import math
 import sys
 from pathlib import Path
@@ -39,9 +40,12 @@ from PySide6.QtWidgets import (
 )
 
 
+from .config import CONFIG_DIR
+
 PACKAGE_ROOT = Path(__file__).resolve().parent
 APP_ICON = PACKAGE_ROOT / "assets/app_icon.png"
 APP_BG = PACKAGE_ROOT / "assets/backgrounds/ksound_hub_wallpaper_4k_blurfill_3840x2160.png"
+SOUNDBOARD_PATH = CONFIG_DIR / "soundboard.json"
 
 CHANNELS = [
     ("ALL", "A", ["Arctis Nova Pro", "USB / SPDIF", "System default"], 76),
@@ -1506,7 +1510,7 @@ class PadsPanel(QWidget):
         self.grid.setVerticalSpacing(6)
         root.addWidget(self.grid_host)
 
-        for name, icon, meta in self.SAMPLE_PADS:
+        for name, icon, meta in self._load_real_soundboard_pads():
             self._add_pad(name, icon, meta)
 
         root.addStretch(1)
