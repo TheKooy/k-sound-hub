@@ -44,6 +44,7 @@ from PySide6.QtWidgets import (
     QWidget,
     QCheckBox,
     QFileDialog,
+    QWidgetAction,
 )
 
 
@@ -1936,46 +1937,74 @@ class SelectButton(QPushButton):
             return
 
         menu = QMenu(self)
+        menu.setObjectName("compactSelectMenu")
+        menu.setStyleSheet("""
+QMenu#compactSelectMenu {
+    background: rgba(0, 0, 0, 235);
+    border: 1px solid rgba(90, 190, 255, 65);
+    border-radius: 0px;
+    padding: 3px;
+}
+QLabel#compactSelectItem {
+    color: rgba(238, 246, 255, 235);
+    background: transparent;
+    padding: 5px 8px;
+}
+QLabel#compactSelectItem:hover {
+    background: rgba(70, 165, 230, 80);
+}
+""")
+
+        metrics = self.fontMetrics()
+        widest = max((metrics.horizontalAdvance(str(item)) for item in self.items), default=self.width())
+        wanted_width = max(self.width(), widest + 22, 118)
+        wanted_width = min(wanted_width, 320)
+
         for item in self.items:
-            action = menu.addAction(item)
+            label = QLabel(str(item))
+            label.setObjectName("compactSelectItem")
+            label.setAlignment(Qt.AlignCenter)
+            label.setFixedWidth(wanted_width - 6)
+            label.setMinimumHeight(29)
+
+            action = QWidgetAction(menu)
+            action.setDefaultWidget(label)
             action.triggered.connect(lambda _checked=False, value=item: self.set_current_text(value))
 
-        font_width = 0
-        metrics = self.fontMetrics()
-        for item in self.items:
-            font_width = max(font_width, metrics.horizontalAdvance(str(item)))
+            label.mouseReleaseEvent = (
+                lambda event, item_action=action: (
+                    item_action.trigger(),
+                    menu.close(),
+                    event.accept(),
+                )
+            )
+            menu.addAction(action)
 
-        wanted_width = max(self.width(), font_width + 44, 150)
-        wanted_width = min(wanted_width, 420)
-        menu.setFixedWidth(max(1, wanted_width))
+        menu.setFixedWidth(wanted_width)
 
-        pos = self.mapToGlobal(self.rect().bottomLeft())
+        button_bottom = self.mapToGlobal(self.rect().bottomLeft())
+        button_top = self.mapToGlobal(self.rect().topLeft())
+        button_center_x = self.mapToGlobal(self.rect().center()).x()
+
+        pos = button_bottom
+        pos.setX(button_center_x - wanted_width // 2)
+
+        estimated_height = max(32, len(self.items) * 31 + 6)
         screen = QApplication.screenAt(pos) or QApplication.primaryScreen()
         if screen is not None:
             available = screen.availableGeometry()
-            if pos.x() + wanted_width > available.right():
-                pos.setX(max(available.left(), available.right() - wanted_width))
+
             if pos.x() < available.left():
                 pos.setX(available.left())
+            if pos.x() + wanted_width > available.right():
+                pos.setX(max(available.left(), available.right() - wanted_width))
 
-            estimated_height = max(32, len(self.items) * 30)
             if pos.y() + estimated_height > available.bottom():
-                pos.setY(max(available.top(), self.mapToGlobal(self.rect().topLeft()).y() - estimated_height))
+                pos.setY(max(available.top(), button_top.y() - estimated_height))
             if pos.y() < available.top():
                 pos.setY(available.top())
 
         menu.exec(pos)
-
-class LevelMeter(QWidget):
-    # Display-only mapping. These constants do not change audio volume.
-    # Raw PipeWire meter values are naturally small, so Glass uses a visual curve
-    # to make low-level movement readable without changing the backend signal.
-    VISUAL_NOISE_FLOOR = 0.0012
-    VISUAL_GAIN = 8.5
-    VISUAL_GAMMA = 0.42
-    PEAK_DECAY = 0.88
-    PEAK_SILENCE_DECAY = 0.70
-    PEAK_SILENCE_FLOOR = 0.006
 
     def __init__(self, level: float = 0.0, parent=None):
         super().__init__(parent)
