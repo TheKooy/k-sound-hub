@@ -1340,10 +1340,12 @@ class AppsPanel(QWidget):
 
 
 
+
 class CenterGlyphButton(QPushButton):
-    def __init__(self, glyph: str, parent=None):
+    def __init__(self, glyph: str, parent=None, y_offset: int = 0):
         super().__init__("", parent)
         self._glyph = glyph
+        self._y_offset = int(y_offset)
         self.setMinimumWidth(0)
 
     def set_glyph(self, glyph: str) -> None:
@@ -1353,11 +1355,23 @@ class CenterGlyphButton(QPushButton):
     def paintEvent(self, event) -> None:
         super().paintEvent(event)
 
+        if not self._glyph:
+            return
+
         painter = QPainter(self)
         painter.setRenderHint(QPainter.TextAntialiasing, True)
         painter.setFont(self.font())
         painter.setPen(self.palette().color(self.foregroundRole()))
-        painter.drawText(self.rect(), Qt.AlignCenter, self._glyph)
+
+        metrics = painter.fontMetrics()
+        bounds = metrics.tightBoundingRect(self._glyph)
+        if bounds.isNull():
+            bounds = metrics.boundingRect(self._glyph)
+
+        x = (self.width() - bounds.width()) / 2.0 - bounds.left()
+        y = (self.height() - bounds.height()) / 2.0 - bounds.top() + self._y_offset
+
+        painter.drawText(int(round(x)), int(round(y)), self._glyph)
 
 class HoverScrollLabel(QLabel):
     SCROLL_GAP = 34
@@ -1664,7 +1678,7 @@ class PadsPanel(QWidget):
         self.edit.toggled.connect(self._set_edit_mode)
         top_layout.addWidget(self.edit)
 
-        add = CenterGlyphButton("+")
+        add = CenterGlyphButton("+", y_offset=-1)
         add.setObjectName("padAddButton")
         add.clicked.connect(self._add_pad)
         top_layout.addWidget(add)
@@ -1950,10 +1964,16 @@ class PadsPanel(QWidget):
         self._stop_bulk_delete()
 
     def _start_bulk_delete(self) -> None:
-        # Bulk delete must not enable Edit mode.
-        # It only enables pad selection.
+        # Bulk delete is a selection mode, but the top bar still needs a clear "Done"
+        # escape button. Do not enable per-pad edit actions here.
         self._bulk_delete_mode = True
         self.bulk_delete.setChecked(True)
+
+        self.edit.blockSignals(True)
+        self.edit.setChecked(True)
+        self.edit.blockSignals(False)
+        self.edit.setText("Done")
+
         self.emoji_overlay.hide()
 
         for card in self.pad_cards:
@@ -1966,6 +1986,12 @@ class PadsPanel(QWidget):
 
         for card in getattr(self, "pad_cards", []):
             card.set_bulk_select_enabled(False)
+
+        if hasattr(self, "edit"):
+            self.edit.blockSignals(True)
+            self.edit.setChecked(bool(self._edit_mode))
+            self.edit.blockSignals(False)
+            self.edit.setText("Done" if self._edit_mode else "Edit")
 
 
 class DetachedPadsWindow(QMainWindow):
