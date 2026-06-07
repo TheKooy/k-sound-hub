@@ -62,9 +62,9 @@ METER_SOURCE_BY_CHANNEL = {
     "micro": "micro_bus.monitor",
 }
 
-# 768 / 48000 is a light stability test for rare random playback pops.
-# It keeps added latency modest compared with 1024/48000.
-EQ_PIPEWIRE_LATENCY = "768/48000"
+# 1024 / 48000 is a stable EQ/filter-chain latency test for rare random playback pops.
+# It is aligned to 2x the current 512-frame PipeWire quantum.
+EQ_PIPEWIRE_LATENCY = "1024/48000"
 
 
 @dataclass
