@@ -1851,6 +1851,53 @@ class NoWheelSlider(QSlider):
 
 
 
+    def _value_from_position(self, pos) -> int:
+        minimum = int(self.minimum())
+        maximum = int(self.maximum())
+        span = max(1, maximum - minimum)
+
+        if self.orientation() == Qt.Horizontal:
+            usable = max(1, self.width() - 1)
+            ratio = max(0.0, min(1.0, float(pos.x()) / float(usable)))
+        else:
+            usable = max(1, self.height() - 1)
+            ratio = 1.0 - max(0.0, min(1.0, float(pos.y()) / float(usable)))
+
+        return minimum + int(round(ratio * span))
+
+    def _apply_pointer_value(self, event) -> None:
+        value = self._value_from_position(event.position().toPoint())
+        self.setSliderDown(True)
+        if self.value() != value:
+            self.setValue(value)
+        try:
+            self.sliderMoved.emit(value)
+        except Exception:
+            pass
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton:
+            self._apply_pointer_value(event)
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:
+        if self.isSliderDown() and event.buttons() & Qt.LeftButton:
+            self._apply_pointer_value(event)
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton and self.isSliderDown():
+            self._apply_pointer_value(event)
+            self.setSliderDown(False)
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+
 class SelectButton(QPushButton):
     def __init__(self, items: list[str], current: str | None = None, on_change=None, parent=None):
         super().__init__(parent)
@@ -1887,12 +1934,37 @@ class SelectButton(QPushButton):
     def _open_menu(self) -> None:
         if not self.items:
             return
+
         menu = QMenu(self)
-        menu.setFixedWidth(max(1, self.width()))
         for item in self.items:
             action = menu.addAction(item)
             action.triggered.connect(lambda _checked=False, value=item: self.set_current_text(value))
-        menu.exec(self.mapToGlobal(self.rect().bottomLeft()))
+
+        font_width = 0
+        metrics = self.fontMetrics()
+        for item in self.items:
+            font_width = max(font_width, metrics.horizontalAdvance(str(item)))
+
+        wanted_width = max(self.width(), font_width + 44, 150)
+        wanted_width = min(wanted_width, 420)
+        menu.setFixedWidth(max(1, wanted_width))
+
+        pos = self.mapToGlobal(self.rect().bottomLeft())
+        screen = QApplication.screenAt(pos) or QApplication.primaryScreen()
+        if screen is not None:
+            available = screen.availableGeometry()
+            if pos.x() + wanted_width > available.right():
+                pos.setX(max(available.left(), available.right() - wanted_width))
+            if pos.x() < available.left():
+                pos.setX(available.left())
+
+            estimated_height = max(32, len(self.items) * 30)
+            if pos.y() + estimated_height > available.bottom():
+                pos.setY(max(available.top(), self.mapToGlobal(self.rect().topLeft()).y() - estimated_height))
+            if pos.y() < available.top():
+                pos.setY(available.top())
+
+        menu.exec(pos)
 
 class LevelMeter(QWidget):
     # Display-only mapping. These constants do not change audio volume.
@@ -3919,7 +3991,7 @@ class Drawer(QFrame):
             slider.setValue(max(0, min(100, int(value))))
             slider.setMinimumHeight(34)
             slider.setMaximumHeight(34)
-            slider.setTracking(False if key in {"saturation", "blur"} else True)
+            slider.setTracking(True)
             slider.valueChanged.connect(lambda new_value, item_key=key: self._notify_visual(item_key, int(new_value)))
             root.addWidget(slider)
 
@@ -4005,6 +4077,11 @@ class PreviewWindow(QMainWindow):
         self._background_refresh_timer.setSingleShot(True)
         self._background_refresh_timer.setInterval(80)
         self._background_refresh_timer.timeout.connect(self._refresh_background_now)
+
+        self._visual_style_timer = QTimer(self)
+        self._visual_style_timer.setSingleShot(True)
+        self._visual_style_timer.setInterval(24)
+        self._visual_style_timer.timeout.connect(self._apply_visual_style)
 
         central = QWidget()
         central.setObjectName("root")
@@ -4282,24 +4359,31 @@ class PreviewWindow(QMainWindow):
         if key == "saturation":
             settings.glass_background_saturation = numeric
             self._background_saturation = max(0.0, min(2.0, numeric / 100.0))
-            self._apply_visual_style()
+            self._request_visual_style_update()
             self._save_visual_settings_later()
             return
 
         if key == "darkness":
             settings.glass_background_darkness = numeric
             self._background_darkness = int(40 + numeric * 2.0)
-            self._apply_visual_style()
+            self._request_visual_style_update()
             self._save_visual_settings_later()
             return
 
         if key == "glass":
             settings.glass_opacity = numeric
             self._glass_opacity = int(70 + numeric * 1.55)
-            self._apply_visual_style()
+            self._request_visual_style_update()
             self._save_visual_settings_later()
             return
 
+
+    def _request_visual_style_update(self) -> None:
+        timer = getattr(self, "_visual_style_timer", None)
+        if timer is not None:
+            timer.start()
+        else:
+            self._apply_visual_style()
 
     def _apply_visual_style(self) -> None:
         glass = max(0, min(255, self._glass_opacity))
@@ -4342,8 +4426,13 @@ QFrame#channelCard[muted="true"]:hover {{
 }}
 """
         app = QApplication.instance()
-        if app is not None:
-            app.setStyleSheet(STYLE + dynamic_style)
+        if app is not None and app.styleSheet() != STYLE:
+            # Keep the static stylesheet application-wide, but avoid rebuilding
+            # the whole app stylesheet for every visual slider tick.
+            app.setStyleSheet(STYLE)
+
+        # Dynamic glass/background colors only need to affect this window tree.
+        self.setStyleSheet(dynamic_style)
 
     def _sync_channel_cards_from_settings(self, force: bool = False) -> None:
         # Legacy fallback only; intentionally not scheduled.
