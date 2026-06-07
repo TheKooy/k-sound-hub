@@ -1364,26 +1364,66 @@ class SelectButton(QPushButton):
         menu.exec(self.mapToGlobal(self.rect().bottomLeft()))
 
 class LevelMeter(QWidget):
+    # Display-only mapping. These constants do not change audio volume.
+    # Raw PipeWire meter values are naturally small, so Glass uses a visual curve
+    # to make low-level movement readable without changing the backend signal.
+    VISUAL_NOISE_FLOOR = 0.0012
+    VISUAL_GAIN = 8.5
+    VISUAL_GAMMA = 0.42
+    PEAK_DECAY = 0.88
+    PEAK_SILENCE_DECAY = 0.70
+    PEAK_SILENCE_FLOOR = 0.006
+
     def __init__(self, level: float = 0.0, parent=None):
         super().__init__(parent)
-        self.current = max(0.0, min(1.0, float(level)))
+        self.current = self._visual_level(level)
         self.target = self.current
         self.peak = self.current
         self.setFixedWidth(10)
         self.setMinimumHeight(124)
         self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
 
+    def _visual_level(self, level: float) -> float:
+        try:
+            raw = float(level)
+        except Exception:
+            raw = 0.0
+
+        raw = max(0.0, min(1.0, raw))
+        if raw <= self.VISUAL_NOISE_FLOOR:
+            return 0.0
+
+        normalized = (raw - self.VISUAL_NOISE_FLOOR) / max(0.000001, 1.0 - self.VISUAL_NOISE_FLOOR)
+        boosted = max(0.0, min(1.0, normalized * self.VISUAL_GAIN))
+        return max(0.0, min(1.0, boosted ** self.VISUAL_GAMMA))
+
     def set_level(self, level: float) -> None:
-        self.target = max(0.0, min(1.0, float(level)))
+        self.target = self._visual_level(level)
         if self.target > self.peak:
             self.peak = self.target
 
+        if self.target <= 0.0 and self.current < self.PEAK_SILENCE_FLOOR and self.peak < 0.04:
+            self.peak = 0.0
+
     def tick(self) -> None:
         if self.target > self.current:
-            self.current = self.current * 0.32 + self.target * 0.68
+            # Fast attack: visible immediately when a signal appears.
+            self.current = self.current * 0.22 + self.target * 0.78
         else:
-            self.current = self.current * 0.88 + self.target * 0.12
-        self.peak = max(self.current, self.peak * 0.965)
+            # Faster release than before so dead channels visually settle.
+            self.current = self.current * 0.78 + self.target * 0.22
+
+        if self.target <= 0.0 and self.current < self.PEAK_SILENCE_FLOOR:
+            self.current = 0.0
+
+        if self.target <= 0.0 and self.current <= 0.0:
+            self.peak *= self.PEAK_SILENCE_DECAY
+        else:
+            self.peak = max(self.current, self.peak * self.PEAK_DECAY)
+
+        if self.target <= 0.0 and self.current < self.PEAK_SILENCE_FLOOR and self.peak < self.PEAK_SILENCE_FLOOR:
+            self.peak = 0.0
+
         self.update()
 
     def paintEvent(self, event) -> None:
@@ -1394,8 +1434,7 @@ class LevelMeter(QWidget):
         gap = 2.0
         rect = QRectF(0.5, 0.5, self.width() - 1.0, self.height() - 1.0)
         segment_h = max(2.0, (rect.height() - gap * (segments - 1)) / segments)
-        active = int(round(self.current * segments))
-        peak_index = max(0, min(segments - 1, int(round(self.peak * segments)) - 1))
+        active = int(math.ceil(self.current * segments)) if self.current > 0.0 else 0
 
         for i in range(segments):
             y = rect.bottom() - (i + 1) * segment_h - i * gap
@@ -1415,10 +1454,19 @@ class LevelMeter(QWidget):
             painter.setBrush(color)
             painter.drawRoundedRect(seg, 1.8, 1.8)
 
-        peak_y = rect.bottom() - (peak_index + 1) * segment_h - peak_index * gap
+        if self.peak <= self.PEAK_SILENCE_FLOOR and self.current <= self.PEAK_SILENCE_FLOOR:
+            # True silence: draw the peak marker at the physical bottom, not one segment up.
+            peak_y = rect.bottom() - 1.5
+            peak_color = QColor(150, 180, 200, 120)
+        else:
+            peak_index = max(0, min(segments - 1, int(math.ceil(self.peak * segments)) - 1))
+            peak_y = rect.bottom() - (peak_index + 1) * segment_h - peak_index * gap
+            peak_color = QColor(225, 250, 255, 220)
+
         painter.setPen(Qt.NoPen)
-        painter.setBrush(QColor(225, 250, 255, 220))
+        painter.setBrush(peak_color)
         painter.drawRoundedRect(QRectF(rect.left() - 1.0, peak_y, rect.width() + 2.0, 2.0), 1.0, 1.0)
+
 
 
 class TitleBar(QFrame):
