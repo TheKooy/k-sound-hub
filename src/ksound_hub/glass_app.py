@@ -12,6 +12,7 @@ Backend bindings are added gradually while the stable UI remains a fallback.
 import json
 import math
 import socket
+import subprocess
 import sys
 from pathlib import Path
 
@@ -3120,7 +3121,7 @@ class PadsPanel(QWidget):
         self.stop_all_button.clicked.connect(self._stop_all_sounds)
         top_layout.addWidget(self.stop_all_button)
 
-        connect = QPushButton("Connect")
+        connect = QPushButton("Pair Android")
         connect.setObjectName("padTopButton")
         connect.setCheckable(True)
         connect.toggled.connect(lambda checked: connect.setText("Connected" if checked else "Connect"))
@@ -3357,6 +3358,50 @@ class PadsPanel(QWidget):
             dialog.hide()
             self._soundboard_dialog = dialog
         return dialog
+
+    def _remote_server_reachable(self) -> bool:
+        try:
+            with socket.create_connection(("127.0.0.1", 8765), timeout=0.25):
+                return True
+        except Exception:
+            return False
+
+    def _start_android_remote_server_if_needed(self) -> bool:
+        if self._remote_server_reachable():
+            return True
+
+        repo_root = Path(__file__).resolve().parents[2]
+        remote_script = repo_root / "tools" / "soundboard_remote" / "ksound_soundboard_web.py"
+        if not remote_script.is_file():
+            QMessageBox.warning(self, "Pair Android", f"Remote server script not found.\n\n{remote_script}")
+            return False
+
+        log_path = CONFIG_DIR / "soundboard-web.log"
+        try:
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            log_file = log_path.open("ab")
+            subprocess.Popen(
+                [sys.executable, str(remote_script)],
+                cwd=str(repo_root),
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, "Pair Android", f"Could not start Android remote server.\n\n{exc}")
+            return False
+
+        return True
+
+    def _pair_android_remote(self) -> None:
+        if not self._start_android_remote_server_if_needed():
+            return
+
+        try:
+            dialog = self._soundboard_playback_dialog()
+            dialog.create_android_pairing()
+        except Exception as exc:
+            QMessageBox.warning(self, "Pair Android", f"Could not create Android pairing code.\n\n{exc}")
 
     def _play_pad(self, slot_key: str) -> None:
         if self._edit_mode or self._bulk_delete_mode:
