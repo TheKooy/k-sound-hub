@@ -3125,8 +3125,8 @@ class PadsPanel(QWidget):
 
         connect = QPushButton("Pair Android")
         connect.setObjectName("padTopButton")
-        connect.setCheckable(True)
-        connect.toggled.connect(lambda checked: connect.setText("Connected" if checked else "Connect"))
+        connect.setToolTip("Show Android pairing code")
+        connect.clicked.connect(self._pair_android_remote)
         top_layout.addWidget(connect)
 
         if self._show_detach:
