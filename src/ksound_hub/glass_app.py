@@ -49,6 +49,7 @@ PACKAGE_ROOT = Path(__file__).resolve().parent
 APP_ICON = PACKAGE_ROOT / "assets/app_icon.png"
 APP_BG = PACKAGE_ROOT / "assets/backgrounds/ksound_hub_wallpaper_4k_blurfill_3840x2160.png"
 SOUNDBOARD_PATH = CONFIG_DIR / "soundboard.json"
+SETTINGS_PATH = CONFIG_DIR / "settings.json"
 
 
 def _send_ksh_ipc_payload(payload: dict) -> bool:
@@ -59,6 +60,38 @@ def _send_ksh_ipc_payload(payload: dict) -> bool:
         return True
     except Exception:
         return False
+
+
+def _read_saved_mixer_channel_state() -> dict[str, tuple[int, bool]]:
+    if not SETTINGS_PATH.is_file():
+        return {}
+
+    try:
+        data = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+    channels = data.get("channels") if isinstance(data, dict) else None
+    if not isinstance(channels, list):
+        return {}
+
+    state: dict[str, tuple[int, bool]] = {}
+    for channel in channels:
+        if not isinstance(channel, dict):
+            continue
+
+        key = str(channel.get("key") or "").strip()
+        if not key:
+            continue
+
+        try:
+            volume = max(0, min(100, int(channel.get("volume", 0))))
+        except Exception:
+            volume = 0
+
+        state[key] = (volume, bool(channel.get("muted", False)))
+
+    return state
 
 
 CHANNELS = [
@@ -663,6 +696,36 @@ QFrame#emojiPalette {
     border-radius: 14px;
 }
 
+
+QPushButton#padStopAllButton {
+    min-width: 34px;
+    max-width: 34px;
+    min-height: 30px;
+    max-height: 30px;
+    padding: 0px;
+    border-radius: 10px;
+    border: 1px solid rgba(255, 125, 135, 130);
+    background: rgba(205, 38, 58, 180);
+    color: rgba(255, 238, 241, 245);
+    font-size: 14px;
+    font-weight: 950;
+}
+
+QPushButton#padStopAllButton:hover {
+    background: rgba(235, 56, 78, 215);
+    border: 1px solid rgba(255, 168, 176, 180);
+}
+
+QPushButton#padStopAllButton:pressed {
+    background: rgba(255, 76, 98, 235);
+    border: 1px solid rgba(255, 205, 212, 220);
+}
+
+QPushButton#padStopAllButton:disabled {
+    background: rgba(118, 30, 42, 135);
+    color: rgba(255, 226, 231, 130);
+    border: 1px solid rgba(255, 125, 135, 70);
+}
 
 QPushButton#padBulkDeleteButton {
     min-width: 32px;
@@ -1305,6 +1368,25 @@ class ChannelCard(QFrame):
         if not ok:
             self.setToolTip("K-Sounds real app IPC is not reachable.")
 
+    def sync_from_saved_state(self, *, volume: int | None = None, muted: bool | None = None) -> None:
+        self._syncing_controls = True
+        try:
+            if volume is not None:
+                value = max(0, min(100, int(volume)))
+                self.slider.blockSignals(True)
+                self.slider.setValue(value)
+                self.slider.blockSignals(False)
+                self._set_volume_label(value)
+
+            if muted is not None:
+                checked = bool(muted)
+                self.mute_btn.blockSignals(True)
+                self.mute_btn.setChecked(checked)
+                self.mute_btn.blockSignals(False)
+                self._apply_muted_style(checked)
+        finally:
+            self._syncing_controls = False
+
     def set_meter_levels(self, left: float, right: float) -> None:
         self.left_meter.set_level(left)
         self.right_meter.set_level(right)
@@ -1741,6 +1823,12 @@ class PadsPanel(QWidget):
         top_layout.setContentsMargins(7, 7, 7, 7)
         top_layout.setSpacing(6)
 
+        self.stop_all_button = CenterGlyphButton("■", y_offset=-1)
+        self.stop_all_button.setObjectName("padStopAllButton")
+        self.stop_all_button.setToolTip("Stop all sounds")
+        self.stop_all_button.clicked.connect(self._stop_all_sounds)
+        top_layout.addWidget(self.stop_all_button)
+
         connect = QPushButton("Connect")
         connect.setObjectName("padTopButton")
         connect.setCheckable(True)
@@ -1945,6 +2033,31 @@ class PadsPanel(QWidget):
 
         return [("No soundboard file", "🎧", "soundboard.json missing", "")]
 
+
+    def _stop_all_sounds(self) -> None:
+        button = getattr(self, "stop_all_button", None)
+        if button is not None:
+            button.setEnabled(False)
+            QTimer.singleShot(180, lambda b=button: b.setEnabled(True))
+
+        local_stopped = False
+
+        dialog = self._soundboard_dialog
+        if dialog is not None:
+            try:
+                dialog.stop_all()
+                local_stopped = True
+            except Exception:
+                pass
+
+        remote_sent = _send_ksh_ipc_payload({"command": "soundboard-stop-all"})
+
+        if not local_stopped and not remote_sent:
+            QMessageBox.warning(
+                self,
+                "Soundboard playback",
+                "No active Glass soundboard player was found, and the real app IPC is not reachable.",
+            )
 
     def _soundboard_playback_dialog(self) -> SoundboardDialog:
         dialog = self._soundboard_dialog
@@ -2509,6 +2622,7 @@ class PreviewWindow(QMainWindow):
         self._background_darkness = 130
         self._glass_opacity = 178
         self._meter_phase = 0.0
+        self._settings_sync_mtime_ns = 0
         self.channel_cards: list[ChannelCard] = []
 
         self._background_refresh_timer = QTimer(self)
@@ -2622,6 +2736,12 @@ class PreviewWindow(QMainWindow):
         self._apply_visual_style()
         self._refresh_background()
         self._start_meter_simulation()
+
+        self._settings_sync_timer = QTimer(self)
+        self._settings_sync_timer.setInterval(200)
+        self._settings_sync_timer.timeout.connect(self._sync_channel_cards_from_settings)
+        self._sync_channel_cards_from_settings(force=True)
+        self._settings_sync_timer.start()
 
     def _install_resize_event_filter(self) -> None:
         app = QApplication.instance()
@@ -2747,6 +2867,27 @@ QFrame#channelCard[muted="true"]:hover {{
         app = QApplication.instance()
         if app is not None:
             app.setStyleSheet(STYLE + dynamic_style)
+
+    def _sync_channel_cards_from_settings(self, force: bool = False) -> None:
+        try:
+            mtime_ns = SETTINGS_PATH.stat().st_mtime_ns
+        except Exception:
+            return
+
+        if not force and mtime_ns == self._settings_sync_mtime_ns:
+            return
+
+        self._settings_sync_mtime_ns = mtime_ns
+        states = _read_saved_mixer_channel_state()
+        if not states:
+            return
+
+        for card in self.channel_cards:
+            key = str(getattr(card, "channel_key", "") or "").strip()
+            if not key or key not in states:
+                continue
+            volume, muted = states[key]
+            card.sync_from_saved_state(volume=volume, muted=muted)
 
     def _send_channel_volume(self, channel_key: str, value: int) -> bool:
         return _send_ksh_ipc_payload(
