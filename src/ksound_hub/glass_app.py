@@ -1568,6 +1568,102 @@ class PadsPanel(QWidget):
             self._active_emoji_card.set_emoji(emoji)
         self.emoji_overlay.hide()
 
+
+    def _read_soundboard_slots(self) -> list[dict]:
+        if not SOUNDBOARD_PATH.is_file():
+            return []
+
+        try:
+            data = json.loads(SOUNDBOARD_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            return []
+
+        if isinstance(data, dict):
+            raw_slots = data.get("slots")
+            if raw_slots is None:
+                raw_slots = data.get("pads")
+        elif isinstance(data, list):
+            raw_slots = data
+        else:
+            raw_slots = []
+
+        if not isinstance(raw_slots, list):
+            return []
+
+        return [slot for slot in raw_slots if isinstance(slot, dict)]
+
+    def _icon_for_soundboard_slot(self, slot: dict, path_text: str) -> str:
+        explicit = str(slot.get("emoji") or slot.get("icon") or "").strip()
+        if explicit:
+            return explicit
+
+        output_channel = str(slot.get("output_channel") or "media").strip().lower()
+        if output_channel in {"micro", "micro_bus"}:
+            return "🎤"
+        if output_channel in {"retour", "return-mic", "mic_out"}:
+            return "🎙"
+        if output_channel == "chat":
+            return "💬"
+        if output_channel == "game":
+            return "🎮"
+
+        suffix = Path(path_text).suffix.lower() if path_text else ""
+        if suffix in {".mp3", ".wav", ".ogg", ".flac", ".m4a"}:
+            return "🎵"
+
+        return "🎧"
+
+    def _format_soundboard_route(self, value: str) -> str:
+        key = str(value or "media").strip().lower()
+        names = {
+            "all": "ALL",
+            "game": "GAME",
+            "media": "MEDIA",
+            "chat": "CHAT",
+            "more": "MORE",
+            "retour": "MIC OUT",
+            "return-mic": "MIC OUT",
+            "mic_out": "MIC OUT",
+            "micro": "MICRO",
+            "micro_bus": "MICRO",
+        }
+        return names.get(key, key.upper() if key else "MEDIA")
+
+    def _load_real_soundboard_pads(self) -> list[tuple[str, str, str]]:
+        pads: list[tuple[str, str, str]] = []
+
+        for index, slot in enumerate(self._read_soundboard_slots(), start=1):
+            path_text = str(slot.get("path") or "").strip()
+            label = str(slot.get("label") or "").strip()
+
+            if not path_text and not label:
+                continue
+
+            if not label or label.upper() in {"SOUND", "EMPTY"}:
+                label = Path(path_text).stem if path_text else f"Pad {index}"
+
+            route = self._format_soundboard_route(str(slot.get("output_channel") or "media"))
+            icon = self._icon_for_soundboard_slot(slot, path_text)
+
+            if path_text:
+                sound_path = Path(path_text).expanduser()
+                filename = sound_path.name or "sound"
+                status = route if sound_path.exists() else "missing"
+                meta = f"{status} · {filename}"
+            else:
+                meta = route
+
+            pads.append((label, icon, meta))
+
+        if pads:
+            return pads
+
+        if SOUNDBOARD_PATH.is_file():
+            return [("No saved sounds", "🎧", "soundboard.json empty")]
+
+        return [("No soundboard file", "🎧", "soundboard.json missing")]
+
+
     def _detach(self) -> None:
         if self._detach_callback is not None:
             self._detach_callback()
