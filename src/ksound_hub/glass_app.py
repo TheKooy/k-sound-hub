@@ -122,6 +122,13 @@ GLASS_CHANNEL_OVERLAY_META = {
 }
 
 
+GLASS_METER_INPUT_SCALE = {
+    # MICRO tends to look too hot after the global visual meter boost.
+    # This is display-only; it does not change the exported mic volume.
+    "micro": 0.28,
+}
+
+
 class GlassBackendController(QObject):
     channel_state_changed = Signal(str, int, bool)
     overlay_message_requested = Signal(str, bool)
@@ -333,8 +340,8 @@ class GlassBackendController(QObject):
 CHANNELS = [
     ("ALL", "A", ["Arctis Nova Pro", "USB / SPDIF", "System default"], 76, "all"),
     ("GAME", "G", ["Arctis Nova Pro", "USB / SPDIF", "System default"], 72, "game"),
-    ("MEDIA", "M", ["USB / SPDIF", "Arctis Nova Pro", "System default"], 64, "media"),
     ("CHAT", "C", ["Arctis Nova Pro", "USB / SPDIF", "System default"], 70, "chat"),
+    ("MEDIA", "M", ["USB / SPDIF", "Arctis Nova Pro", "System default"], 64, "media"),
     ("MORE", "+", ["System default", "Arctis Nova Pro", "USB / SPDIF"], 58, "more"),
     ("MICRO", "µ", ["RØDE NT-USB", "Arctis Mic", "System default"], 84, "micro"),
     ("MIC OUT", "R", ["Arctis monitor", "USB / SPDIF", "System default"], 52, "return-mic"),
@@ -1441,7 +1448,9 @@ class LevelMeter(QWidget):
             seg = QRectF(rect.left(), y, rect.width(), segment_h)
 
             if i < active:
-                if i >= int(segments * 0.84):
+                if i >= segments - 1:
+                    color = QColor(255, 72, 92, 225)
+                elif i >= int(segments * 0.84):
                     color = QColor(255, 178, 70, 205)
                 elif i >= int(segments * 0.68):
                     color = QColor(90, 235, 145, 190)
@@ -3240,6 +3249,10 @@ QFrame#channelCard[muted="true"]:hover {{
                 continue
 
             left, right = self.backend_controller.meter_levels(key)
+            scale = float(GLASS_METER_INPUT_SCALE.get(key, 1.0))
+            if scale != 1.0:
+                left = max(0.0, min(1.0, float(left) * scale))
+                right = max(0.0, min(1.0, float(right) * scale))
             card.set_meter_levels(left, right)
             card.tick_meters()
 
