@@ -2737,11 +2737,10 @@ class PreviewWindow(QMainWindow):
         self._refresh_background()
         self._start_meter_simulation()
 
-        self._settings_sync_timer = QTimer(self)
-        self._settings_sync_timer.setInterval(200)
-        self._settings_sync_timer.timeout.connect(self._sync_channel_cards_from_settings)
-        self._sync_channel_cards_from_settings(force=True)
-        self._settings_sync_timer.start()
+        # Glass is the future K-Sounds frontend, not a companion window.
+        # Do not poll the old/stable UI settings file to drive live controls:
+        # it adds latency and makes the transition architecture wrong.
+        self._settings_sync_timer = None
 
     def _install_resize_event_filter(self) -> None:
         app = QApplication.instance()
@@ -2869,6 +2868,8 @@ QFrame#channelCard[muted="true"]:hover {{
             app.setStyleSheet(STYLE + dynamic_style)
 
     def _sync_channel_cards_from_settings(self, force: bool = False) -> None:
+        # Legacy fallback only; intentionally not scheduled.
+        # Glass should update from its own frontend/controller state.
         try:
             mtime_ns = SETTINGS_PATH.stat().st_mtime_ns
         except Exception:
