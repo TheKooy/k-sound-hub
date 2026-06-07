@@ -810,6 +810,18 @@ QLabel#detachedBgLabel {
     color: rgba(215, 232, 246, 170);
     font-size: 10px;
 }
+
+
+/* Glass real soundboard pad text clamp */
+QLabel#soundPadName {
+    min-height: 17px;
+    max-height: 17px;
+}
+
+QLabel#soundPadMeta {
+    min-height: 13px;
+    max-height: 13px;
+}
 """
 
 
@@ -1271,6 +1283,94 @@ class AppsPanel(QWidget):
 
 
 
+
+class HoverScrollLabel(QLabel):
+    SCROLL_GAP = 34
+    SCROLL_STEP = 2
+
+    def __init__(self, text: str = "", parent=None):
+        super().__init__(parent)
+        self._full_text = ""
+        self._offset = 0
+        self._scrolling = False
+
+        self._timer = QTimer(self)
+        self._timer.setInterval(35)
+        self._timer.timeout.connect(self._tick_scroll)
+
+        self.setWordWrap(False)
+        self.setMinimumWidth(0)
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+
+        self.setText(text)
+
+    def setText(self, text: str) -> None:
+        self._full_text = str(text or "")
+        self._offset = 0
+        self.setToolTip(self._full_text)
+        self.update()
+
+    def text(self) -> str:
+        return self._full_text
+
+    def _needs_scroll(self) -> bool:
+        width = max(8, self.contentsRect().width() - 2)
+        return self.fontMetrics().horizontalAdvance(self._full_text) > width
+
+    def enterEvent(self, event) -> None:
+        super().enterEvent(event)
+        self._scrolling = self._needs_scroll()
+        self._offset = 0
+        if self._scrolling:
+            self._timer.start()
+        self.update()
+
+    def leaveEvent(self, event) -> None:
+        super().leaveEvent(event)
+        self._timer.stop()
+        self._scrolling = False
+        self._offset = 0
+        self.update()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if self._scrolling and not self._needs_scroll():
+            self._timer.stop()
+            self._scrolling = False
+            self._offset = 0
+        self.update()
+
+    def _tick_scroll(self) -> None:
+        text_width = self.fontMetrics().horizontalAdvance(self._full_text)
+        limit = max(1, text_width + self.SCROLL_GAP)
+        self._offset = (self._offset + self.SCROLL_STEP) % limit
+        self.update()
+
+    def paintEvent(self, event) -> None:
+        if not self._full_text:
+            return
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.TextAntialiasing, True)
+        painter.setFont(self.font())
+        painter.setPen(self.palette().color(self.foregroundRole()))
+
+        rect = self.contentsRect()
+        metrics = self.fontMetrics()
+
+        if not self._scrolling or not self._needs_scroll():
+            width = max(8, rect.width() - 2)
+            elided = metrics.elidedText(self._full_text, Qt.ElideRight, width)
+            painter.drawText(rect, self.alignment() | Qt.TextSingleLine, elided)
+            return
+
+        text_width = metrics.horizontalAdvance(self._full_text)
+        baseline = rect.y() + (rect.height() + metrics.ascent() - metrics.descent()) // 2
+        x = rect.x() - self._offset
+
+        painter.drawText(x, baseline, self._full_text)
+        painter.drawText(x + text_width + self.SCROLL_GAP, baseline, self._full_text)
+
 class SoundPadCard(QFrame):
     def __init__(self, name: str, icon: str, meta: str, emoji_callback=None, delete_callback=None):
         super().__init__()
@@ -1296,10 +1396,10 @@ class SoundPadCard(QFrame):
         self.icon_button.clicked.connect(self._request_emoji_palette)
         root.addWidget(self.icon_button, 0, Qt.AlignHCenter)
 
-        self.name_label = QLabel(name)
+        self.name_label = HoverScrollLabel(name)
         self.name_label.setObjectName("soundPadName")
         self.name_label.setAlignment(Qt.AlignCenter)
-        self.name_label.setWordWrap(True)
+        self.name_label.setFixedHeight(17)
         self.name_label.mouseDoubleClickEvent = self._start_rename
         root.addWidget(self.name_label)
 
@@ -1310,9 +1410,10 @@ class SoundPadCard(QFrame):
         self.name_editor.editingFinished.connect(self._finish_rename)
         root.addWidget(self.name_editor)
 
-        meta_label = QLabel(meta)
+        meta_label = HoverScrollLabel(meta)
         meta_label.setObjectName("soundPadMeta")
         meta_label.setAlignment(Qt.AlignCenter)
+        meta_label.setFixedHeight(13)
         root.addWidget(meta_label)
 
         self.actions = QFrame()
