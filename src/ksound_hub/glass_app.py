@@ -9,6 +9,7 @@ Glass is being migrated into the real K-Sounds frontend.
 Backend bindings are added gradually while the stable UI remains a fallback.
 """
 
+import hashlib
 import json
 import math
 import secrets
@@ -1733,6 +1734,74 @@ QScrollBar#padsGridScrollbar::sub-page:vertical {
 
 
 
+
+STYLE += """
+/* Glass pad emoji + darkness slider only */
+QPushButton#soundPadEmoji {
+    min-width: 34px;
+    max-width: 34px;
+    min-height: 34px;
+    max-height: 34px;
+    background: rgba(0, 0, 0, 225);
+    border: none;
+    border-radius: 17px;
+    padding: 0px;
+    font-size: 20px;
+}
+
+QPushButton#soundPadEmoji:hover {
+    background: rgba(34, 78, 108, 160);
+    border-radius: 17px;
+}
+
+QFrame#emojiPalette {
+    background: rgba(0, 0, 0, 225);
+    border: 1px solid rgba(95, 190, 255, 55);
+    border-radius: 18px;
+}
+
+QPushButton#emojiChoice {
+    border-radius: 10px;
+    background: rgba(18, 36, 54, 135);
+}
+
+QPushButton#emojiChoice:hover {
+    border-radius: 10px;
+    background: rgba(50, 120, 170, 175);
+}
+
+QFrame#padBgDarknessControls {
+    background: rgba(0, 0, 0, 105);
+    border: none;
+    border-radius: 12px;
+}
+
+QSlider#padBgDarknessSlider::groove:horizontal {
+    min-height: 6px;
+    max-height: 6px;
+    border-radius: 3px;
+    background: rgba(0, 0, 0, 155);
+}
+
+QSlider#padBgDarknessSlider::handle:horizontal {
+    width: 16px;
+    height: 16px;
+    margin: -6px 0px;
+    border-radius: 8px;
+    background: rgba(110, 215, 255, 230);
+}
+
+QSlider#padBgDarknessSlider::sub-page:horizontal {
+    border-radius: 3px;
+    background: rgba(92, 204, 255, 145);
+}
+
+QSlider#padBgDarknessSlider::add-page:horizontal {
+    border-radius: 3px;
+    background: rgba(12, 24, 36, 150);
+}
+"""
+
 class AdaptiveScrollArea(QScrollArea):
     RIGHT_MARGIN_WITH_SCROLL = 10
 
@@ -3038,6 +3107,8 @@ class HoverScrollLabel(QLabel):
 
 
 class SoundPadCard(QFrame):
+    PAD_BG_DARKNESS = 62
+
     def __init__(
         self,
         name: str,
@@ -3098,6 +3169,7 @@ class SoundPadCard(QFrame):
         self.meta_label.setAlignment(Qt.AlignCenter)
         self.meta_label.setFixedHeight(13)
         root.addWidget(self.meta_label)
+        self.meta_label.setVisible(False)
 
         self.actions = QFrame()
         self.actions.setObjectName("soundPadActions")
@@ -3161,14 +3233,67 @@ class SoundPadCard(QFrame):
     def set_meta(self, meta: str) -> None:
         self.meta_label.setText(str(meta or ""))
 
+    def set_pad_background_darkness(self, value: int) -> None:
+        try:
+            numeric = int(value)
+        except Exception:
+            numeric = self.PAD_BG_DARKNESS
+        self._pad_bg_darkness = max(0, min(100, numeric))
+        if getattr(self, "_background_path", ""):
+            self._apply_background_style()
+
     def set_background_path(self, path: str) -> None:
         self._background_path = str(path or "").strip()
-        bg_path = Path(self._background_path).expanduser() if self._background_path else None
-        if bg_path is None or not bg_path.is_file():
+        if not hasattr(self, "_pad_bg_darkness"):
+            self._pad_bg_darkness = self.PAD_BG_DARKNESS
+        self._apply_background_style()
+
+    def _darkened_background_path(self, bg_path: Path) -> str:
+        darkness = max(0, min(100, int(getattr(self, "_pad_bg_darkness", self.PAD_BG_DARKNESS))))
+        if darkness <= 0:
+            return str(bg_path)
+
+        try:
+            stat = bg_path.stat()
+            key = hashlib.sha256(f"{bg_path}|{stat.st_mtime_ns}|{darkness}".encode("utf-8", "ignore")).hexdigest()[:24]
+            cache_dir = CONFIG_DIR / "pad-bg-cache"
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            cached = cache_dir / f"{key}.png"
+            if cached.is_file():
+                return str(cached)
+
+            source = QPixmap(str(bg_path))
+            if source.isNull():
+                return str(bg_path)
+
+            size = QSize(640, 640)
+            scaled = source.scaled(size, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+            result = QPixmap(size)
+            result.fill(Qt.transparent)
+
+            painter = QPainter(result)
+            x = (size.width() - scaled.width()) // 2
+            y = (size.height() - scaled.height()) // 2
+            painter.drawPixmap(x, y, scaled)
+            alpha = int(max(0, min(215, darkness * 2.1)))
+            painter.setOpacity(alpha / 255.0)
+            painter.fillRect(result.rect(), Qt.GlobalColor.black)
+            painter.end()
+
+            if result.save(str(cached), "PNG"):
+                return str(cached)
+        except Exception:
+            return str(bg_path)
+
+        return str(bg_path)
+
+    def _apply_background_style(self) -> None:
+        bg_path = Path(getattr(self, "_background_path", "") or "").expanduser()
+        if not bg_path.is_file():
             self.setStyleSheet("")
             return
 
-        url = _qss_url(str(bg_path))
+        url = _qss_url(self._darkened_background_path(bg_path))
         self.setStyleSheet(f"""
 QFrame#soundPadCard {{
     border-image: url("{url}") 0 0 0 0 stretch stretch;
@@ -3176,13 +3301,17 @@ QFrame#soundPadCard {{
 }}
 QFrame#soundPadCard QLabel#soundPadName,
 QFrame#soundPadCard QLabel#soundPadMeta {{
-    background: rgba(0, 0, 0, 150);
+    background: rgba(0, 0, 0, 178);
     border-radius: 8px;
     padding: 2px 6px;
 }}
 QFrame#soundPadCard QPushButton#soundPadEmoji {{
-    background: rgba(0, 0, 0, 210);
-    border-radius: 16px;
+    min-width: 34px;
+    max-width: 34px;
+    min-height: 34px;
+    max-height: 34px;
+    background: rgba(0, 0, 0, 230);
+    border-radius: 17px;
 }}
 """)
 
@@ -3195,19 +3324,21 @@ QFrame#soundPadCard QPushButton#soundPadEmoji {{
             self._sound_callback(self)
 
     def set_bulk_select_enabled(self, enabled: bool) -> None:
-        self._bulk_select_enabled = enabled
+        self._bulk_select_enabled = bool(enabled)
 
         if enabled:
-            # Bulk delete is a selection mode, not edit mode.
-            # Hide per-pad edit actions while selecting pads to delete.
             self.actions.setVisible(False)
             self.setProperty("edit", "false")
             self.setMinimumHeight(70)
+            if hasattr(self, "meta_label"):
+                self.meta_label.setVisible(False)
         else:
             self.set_bulk_selected(False)
             self.actions.setVisible(self._edit_enabled)
             self.setProperty("edit", "true" if self._edit_enabled else "false")
             self.setMinimumHeight(100 if self._edit_enabled else 70)
+            if hasattr(self, "meta_label"):
+                self.meta_label.setVisible(bool(self._edit_enabled))
 
         self.style().unpolish(self)
         self.style().polish(self)
@@ -3257,14 +3388,24 @@ QFrame#soundPadCard QPushButton#soundPadEmoji {{
         self.name_label.setVisible(True)
 
     def set_edit_mode(self, enabled: bool) -> None:
+        enabled = bool(enabled)
+        if self._edit_enabled == enabled and self.actions.isVisible() == enabled:
+            return
+
         self._edit_enabled = enabled
         self.setProperty("edit", "true" if enabled else "false")
         self.actions.setVisible(enabled)
         self.setMinimumHeight(100 if enabled else 70)
+
+        if hasattr(self, "meta_label"):
+            self.meta_label.setVisible(enabled)
+
         if not enabled:
             self.name_editor.setVisible(False)
             self.name_label.setVisible(True)
-            self.set_bulk_select_enabled(False)
+            if self._bulk_select_enabled:
+                self.set_bulk_select_enabled(False)
+
         self.style().unpolish(self)
         self.style().polish(self)
         self.update()
@@ -3293,6 +3434,96 @@ class PadsPanel(QWidget):
         ("Drop", "💥", "00:03"),
     ]
 
+    def _read_pad_bg_darkness_setting(self) -> int:
+        settings_path = CONFIG_DIR / "settings.json"
+        try:
+            if settings_path.is_file():
+                data = json.loads(settings_path.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    return max(0, min(100, int(data.get("glass_pad_bg_darkness", 62))))
+        except Exception:
+            pass
+        return 62
+
+    def _save_pad_bg_darkness_setting(self, value: int) -> None:
+        settings_path = CONFIG_DIR / "settings.json"
+        try:
+            data = {}
+            if settings_path.is_file():
+                loaded = json.loads(settings_path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    data = loaded
+            data["glass_pad_bg_darkness"] = int(max(0, min(100, value)))
+            settings_path.parent.mkdir(parents=True, exist_ok=True)
+            settings_path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        except Exception:
+            pass
+
+    def _set_pad_bg_darkness(self, value: int, persist: bool = True) -> None:
+        try:
+            numeric = int(value)
+        except Exception:
+            numeric = 62
+        self._pad_bg_darkness = max(0, min(100, numeric))
+        if persist:
+            self._save_pad_bg_darkness_setting(self._pad_bg_darkness)
+
+        host = getattr(self, "grid_host", None)
+        scroll = getattr(self, "grid_scroll", None)
+        if host is not None:
+            host.setUpdatesEnabled(False)
+        if scroll is not None:
+            scroll.setUpdatesEnabled(False)
+        try:
+            for card in getattr(self, "pad_cards", []):
+                setter = getattr(card, "set_pad_background_darkness", None)
+                if callable(setter):
+                    setter(self._pad_bg_darkness)
+        finally:
+            if host is not None:
+                host.setUpdatesEnabled(True)
+            if scroll is not None:
+                scroll.setUpdatesEnabled(True)
+
+    def _queue_pad_bg_darkness(self, value: int) -> None:
+        self._pending_pad_bg_darkness = int(value)
+        self._pad_bg_darkness_timer.start()
+
+    def _apply_queued_pad_bg_darkness(self) -> None:
+        self._set_pad_bg_darkness(int(getattr(self, "_pending_pad_bg_darkness", self._pad_bg_darkness)))
+
+    def _apply_responsive_card_heights(self) -> None:
+        if bool(getattr(self, "_show_detach", True)):
+            return
+        if not hasattr(self, "grid_scroll") or not hasattr(self, "grid"):
+            return
+
+        columns = max(1, int(getattr(self, "_columns", 1)))
+        viewport_width = max(1, self.grid_scroll.viewport().width())
+        spacing = max(0, int(self.grid.horizontalSpacing()))
+        card_width = max(72, (viewport_width - spacing * max(0, columns - 1)) // columns)
+        target_height = max(116, min(176, int(card_width * 0.92)))
+
+        for card in getattr(self, "pad_cards", []):
+            if card.minimumHeight() != target_height:
+                card.setMinimumHeight(target_height)
+
+    def _update_responsive_columns(self) -> None:
+        if not hasattr(self, "grid_scroll"):
+            return
+
+        if bool(getattr(self, "_show_detach", True)):
+            return
+
+        width = max(1, self.grid_scroll.viewport().width())
+        columns = max(1, min(9, width // 145))
+
+        if columns != self._columns:
+            self._columns = columns
+            self._reflow_grid()
+        else:
+            self._apply_responsive_card_heights()
+
     def __init__(self, detach_callback=None, columns: int = 2, show_detach: bool = True):
         super().__init__()
         self._detach_callback = detach_callback
@@ -3303,6 +3534,12 @@ class PadsPanel(QWidget):
         self._active_emoji_card: SoundPadCard | None = None
         self._soundboard_dialog: SoundboardDialog | None = None
         self.pad_cards: list[SoundPadCard] = []
+        self._pad_bg_darkness = self._read_pad_bg_darkness_setting()
+        self._pending_pad_bg_darkness = self._pad_bg_darkness
+        self._pad_bg_darkness_timer = QTimer(self)
+        self._pad_bg_darkness_timer.setSingleShot(True)
+        self._pad_bg_darkness_timer.setInterval(120)
+        self._pad_bg_darkness_timer.timeout.connect(self._apply_queued_pad_bg_darkness)
 
         app = QApplication.instance()
         if app is not None:
@@ -3357,6 +3594,26 @@ class PadsPanel(QWidget):
         top_layout.addStretch(1)
         root.addWidget(top_bar)
 
+        pad_dark_row = QFrame()
+        pad_dark_row.setObjectName("padBgDarknessControls")
+        pad_dark_layout = QHBoxLayout(pad_dark_row)
+        pad_dark_layout.setContentsMargins(9, 5, 9, 5)
+        pad_dark_layout.setSpacing(8)
+
+        pad_dark_label = QLabel("Pad BG darkness")
+        pad_dark_label.setObjectName("detachedBgLabel")
+        pad_dark_layout.addWidget(pad_dark_label)
+
+        self.pad_bg_darkness_slider = NoWheelSlider(Qt.Horizontal)
+        self.pad_bg_darkness_slider.setObjectName("padBgDarknessSlider")
+        self.pad_bg_darkness_slider.setRange(0, 100)
+        self.pad_bg_darkness_slider.setValue(int(self._pad_bg_darkness))
+        self.pad_bg_darkness_slider.setMinimumHeight(24)
+        self.pad_bg_darkness_slider.valueChanged.connect(lambda value: self._queue_pad_bg_darkness(int(value)))
+        pad_dark_layout.addWidget(self.pad_bg_darkness_slider, 1)
+
+        root.addWidget(pad_dark_row)
+
         self.grid_scroll = AdaptiveScrollArea()
         self.grid_scroll.setObjectName("padsGridScroll")
         self.grid_scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -3393,6 +3650,8 @@ class PadsPanel(QWidget):
             palette_layout.addWidget(button, index // 8, index % 8)
 
         self.emoji_overlay.hide()
+        self._set_pad_bg_darkness(self._pad_bg_darkness, persist=False)
+        QTimer.singleShot(0, self._update_responsive_columns)
 
     def eventFilter(self, obj, event) -> bool:
         if event.type() == QEvent.MouseButtonPress and hasattr(self, "emoji_overlay") and self.emoji_overlay.isVisible():
@@ -3410,6 +3669,7 @@ class PadsPanel(QWidget):
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
+        self._update_responsive_columns()
         self._position_emoji_overlay()
 
     def _position_emoji_overlay(self) -> None:
@@ -3796,8 +4056,16 @@ class PadsPanel(QWidget):
             self.emoji_overlay.hide()
             self._stop_bulk_delete()
 
-        for card in self.pad_cards:
-            card.set_edit_mode(enabled)
+        self.grid_host.setUpdatesEnabled(False)
+        self.grid_scroll.setUpdatesEnabled(False)
+        try:
+            for card in self.pad_cards:
+                card.set_edit_mode(enabled)
+        finally:
+            self.grid_host.setUpdatesEnabled(True)
+            self.grid_scroll.setUpdatesEnabled(True)
+
+        QTimer.singleShot(0, self._update_responsive_columns)
 
     def _add_pad(self, name: str | None = None, icon: str = "🎧", meta: str = "new", slot_key: str = "", background_path: str = "") -> None:
         if name is None or isinstance(name, bool):
@@ -3819,6 +4087,8 @@ class PadsPanel(QWidget):
             background_callback=self._choose_pad_background,
             sound_callback=self._choose_pad_sound,
         )
+        if hasattr(card, "set_pad_background_darkness"):
+            card.set_pad_background_darkness(self._pad_bg_darkness)
         if background_path:
             card.set_background_path(background_path)
         card.set_edit_mode(self._edit_mode)
@@ -3836,6 +4106,8 @@ class PadsPanel(QWidget):
         for col in range(self._columns):
             self.grid.setColumnMinimumWidth(col, 0)
             self.grid.setColumnStretch(col, 1)
+
+        self._apply_responsive_card_heights()
 
     def _remove_card(self, card: SoundPadCard) -> None:
         if card not in self.pad_cards:
