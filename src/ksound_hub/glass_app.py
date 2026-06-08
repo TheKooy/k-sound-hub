@@ -1228,6 +1228,32 @@ class GlassBackendController(QObject):
                 "sink_input_properties=media.name=K-Sound-Hub-Soundboard-To-Micro",
             )
 
+    def _return_mic_volume_state(self) -> tuple[int, bool]:
+        channel = self._find_channel("return-mic")
+        if channel is None:
+            return 100, False
+
+        try:
+            volume = int(getattr(channel, "volume", 100))
+        except Exception:
+            volume = 100
+
+        volume = max(0, min(180, volume))
+        muted = bool(getattr(channel, "muted", False))
+        return volume, muted
+
+    def _apply_return_mic_input_route_volume(self) -> None:
+        # The MIC OUT source selector recreates this Pulse loopback:
+        # selected input source -> retour.
+        # Pulse/PipeWire gives the new sink-input 100% by default, so force it
+        # back to the visible MIC OUT slider state immediately.
+        volume, muted = self._return_mic_volume_state()
+        mute_flag = "1" if muted else "0"
+
+        for stream_id in self._sink_inputs_by_media_name("K-Sound-Hub-Return-Mic-Micro"):
+            self._pactl("set-sink-input-volume", stream_id, f"{volume}%")
+            self._pactl("set-sink-input-mute", stream_id, mute_flag)
+
     def _load_return_mic_micro_loopback(self, enabled: bool) -> None:
         # Return Mic selector owns ONLY: selected input source -> retour.
         self._unload_modules_matching(
@@ -1256,6 +1282,9 @@ class GlassBackendController(QObject):
                 "channels=2",
                 "sink_input_properties=media.name=K-Sound-Hub-Return-Mic-Micro",
             )
+
+            time.sleep(0.08)
+            self._apply_return_mic_input_route_volume()
 
     def _sync_legacy_linked_channels_off(self) -> None:
         # Prevent the older channel engine from re-creating mixed routes.
@@ -1540,6 +1569,9 @@ class GlassBackendController(QObject):
         self._write_settings_document(data)
 
         self._load_return_mic_micro_loopback(bool(target))
+        self._apply_return_mic_input_route_volume()
+        QTimer.singleShot(120, self._apply_return_mic_input_route_volume)
+
         self.status_changed.emit(f"MIC OUT source → {selected or 'Off'}")
         return True
 
@@ -1565,7 +1597,11 @@ class GlassBackendController(QObject):
         data["glass_return_mic_source"] = source or "micro"
         data["glass_return_mic_micro_enabled"] = True
         self._write_settings_document(data)
+
         self._load_return_mic_micro_loopback(True)
+        self._apply_return_mic_input_route_volume()
+        QTimer.singleShot(120, self._apply_return_mic_input_route_volume)
+
         self.status_changed.emit(f"MIC OUT source → {source or 'micro'}")
         return True
 
@@ -1769,6 +1805,10 @@ class GlassBackendController(QObject):
                     fast_apply(self.settings, key)
                 else:
                     self.audio_engine.apply_channel(self.settings, key)
+
+                if key == "return-mic":
+                    self._apply_return_mic_input_route_volume()
+                    QTimer.singleShot(120, self._apply_return_mic_input_route_volume)
             except Exception as exc:
                 self.status_changed.emit(f"Volume apply error on {key} — {exc}")
 
@@ -1779,6 +1819,10 @@ class GlassBackendController(QObject):
         for key in keys:
             try:
                 self.audio_engine.apply_channel(self.settings, key)
+
+                if key == "return-mic":
+                    self._apply_return_mic_input_route_volume()
+                    QTimer.singleShot(120, self._apply_return_mic_input_route_volume)
             except Exception as exc:
                 self.status_changed.emit(f"Channel apply error on {key} — {exc}")
 
