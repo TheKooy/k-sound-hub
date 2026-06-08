@@ -11,6 +11,7 @@ Backend bindings are added gradually while the stable UI remains a fallback.
 
 import hashlib
 import json
+import shlex
 import re
 import math
 import secrets
@@ -197,6 +198,7 @@ class GlassBackendController(QObject):
         try:
             self.audio_engine.apply_settings(self.settings)
             self._reapply_saved_app_routes()
+            self.apply_glass_runtime_routes()
             self.status_changed.emit(self.audio_engine.status_text())
         except Exception as exc:
             self.status_changed.emit(f"Audio backend startup error — {exc}")
@@ -1108,6 +1110,11 @@ class GlassBackendController(QObject):
         flush()
         return ids
 
+    def _unmute_soundboard_output_streams(self) -> None:
+        for stream_id in self._sink_inputs_by_media_name("K-Sound-Hub-Soundboard-To-Output"):
+            self._pactl("set-sink-input-mute", stream_id, "0")
+            self._pactl("set-sink-input-volume", stream_id, "100%")
+
     def _load_soundboard_output_loopback(self, output_key: str) -> None:
         sink = {
             "all": "all",
@@ -1118,28 +1125,11 @@ class GlassBackendController(QObject):
             "return-mic": "retour",
         }.get(self._normalize_soundboard_output_key(output_key), "media")
 
-        media_name = "K-Sound-Hub-Soundboard-To-Output"
-
-        existing_inputs = self._sink_inputs_by_media_name(media_name)
-        for stream_id in existing_inputs:
-            self._pactl("set-sink-input-mute", stream_id, "1")
-            self._pactl("set-sink-input-volume", stream_id, "0%")
-
-        if existing_inputs:
-            time.sleep(0.05)
-
-        # Stable route: reload only the soundboard listening/output loopback.
-        # Do not touch Soundboard -> MICRO and do not touch Return Mic.
         self._unload_modules_matching(
             lambda line: (
                 "module-loopback" in line.lower()
                 and "source=soundboard.monitor" in line.lower()
                 and "sink=micro_bus" not in line.lower()
-                and (
-                    "k-sound-hub-soundboard-to-output" in line.lower()
-                    or "k-sounds hub mic output monitor monitor soundboard" in line.lower()
-                    or any(f"sink={old}" in line.lower() for old in ["all", "game", "chat", "media", "more", "retour"])
-                )
             )
         )
 
@@ -1152,20 +1142,13 @@ class GlassBackendController(QObject):
             "source_dont_move=true",
             "sink_dont_move=true",
             "channels=2",
-            f"sink_input_properties=media.name={media_name}",
+            "sink_input_properties=media.name=K-Sound-Hub-Soundboard-To-Output",
         )
+
+        time.sleep(0.08)
+        self._unmute_soundboard_output_streams()
 
     def _load_soundboard_micro_loopback(self, enabled: bool) -> None:
-        exists = any(
-            "module-loopback" in line.lower()
-            and "source=soundboard.monitor" in line.lower()
-            and "sink=micro_bus" in line.lower()
-            for line in self._pulse_modules()
-        )
-
-        if enabled and exists:
-            return
-
         self._unload_modules_matching(
             lambda line: (
                 "module-loopback" in line.lower()
@@ -1317,9 +1300,11 @@ class GlassBackendController(QObject):
         self.normalize_channel_playback_routes()
 
     def _soundboard_route_state(self) -> dict[str, bool]:
+        data = self._read_soundboard_document()
+        output = self._normalize_soundboard_output_key(str(data.get("output_channel") or "media"))
         return {
-            "monitor_to_mic_out": self._soundboard_output_config() == "return-mic",
-            "send_to_micro": self._soundboard_send_to_micro_config(),
+            "send_to_micro": bool(data.get("send_to_micro", False)),
+            "monitor_to_mic_out": output == "return-mic",
         }
 
     def _set_soundboard_route_state(self, route_key: str, enabled: bool) -> bool:
@@ -1526,6 +1511,14 @@ class GlassBackendController(QObject):
         self.status_changed.emit(f"MIC OUT source → {source or 'micro'}")
         return True
 
+    def set_soundboard_micro_enabled(self, enabled: bool) -> bool:
+        data = self._read_soundboard_document()
+        data["send_to_micro"] = bool(enabled)
+        self._write_soundboard_document(data)
+        self._load_soundboard_micro_loopback(bool(enabled))
+        self.status_changed.emit(f"Soundboard MICRO → {bool(enabled)}")
+        return True
+
     def soundboard_output_channel(self) -> str:
         return self._soundboard_output_config()
 
@@ -1535,9 +1528,6 @@ class GlassBackendController(QObject):
         data = self._read_soundboard_document()
         data["output_channel"] = wanted
         data["monitor_to_mic_out"] = wanted == "return-mic"
-        for slot in data.get("slots", []):
-            if isinstance(slot, dict):
-                slot["output_channel"] = wanted
         self._write_soundboard_document(data)
 
         self._sync_legacy_linked_channels_off()
@@ -3537,6 +3527,7 @@ class PermanentRouteCard(QFrame):
         super().__init__()
         self.setObjectName("appsRouteCard")
         self.setMinimumHeight(66)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(9, 8, 9, 8)
@@ -3582,19 +3573,24 @@ class PermanentRouteCard(QFrame):
             root.addLayout(select_row)
 
         if checks:
-            checks_row = QHBoxLayout()
-            checks_row.setContentsMargins(0, 0, 0, 0)
-            checks_row.setSpacing(8)
+            checks_grid = QGridLayout()
+            checks_grid.setContentsMargins(0, 0, 0, 0)
+            checks_grid.setHorizontalSpacing(10)
+            checks_grid.setVerticalSpacing(6)
 
-            for label, checked, callback in checks:
+            for index, (label, checked, callback) in enumerate(checks):
                 box = QCheckBox(label)
                 box.setObjectName("routeCheck")
+                box.setMinimumWidth(82)
+                box.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
                 box.setChecked(bool(checked))
                 box.toggled.connect(lambda value, cb=callback: cb(bool(value)) if cb is not None else None)
-                checks_row.addWidget(box)
+                checks_grid.addWidget(box, index // 2, index % 2)
 
-            checks_row.addStretch(1)
-            root.addLayout(checks_row)
+            self.setMinimumHeight(max(self.minimumHeight(), 132 if len(checks) > 2 else 78))
+            root.addLayout(checks_grid)
+
+
 
 class AppsPanel(QWidget):
     def __init__(self, backend_controller=None):
@@ -3733,8 +3729,8 @@ class AppsPanel(QWidget):
     def _set_soundboard_to_micro(self, enabled: bool) -> None:
         if self.backend_controller is None:
             return
-        self.backend_controller._set_soundboard_route_state("send_to_micro", bool(enabled))
-        self._build_permanent_routes()
+        self.backend_controller.set_soundboard_micro_enabled(bool(enabled))
+        QTimer.singleShot(80, self._build_permanent_routes)
 
     def _set_return_mic_source(self, label: str) -> None:
         if self.backend_controller is None:
@@ -5205,21 +5201,92 @@ class PadsPanel(QWidget):
         )
 
 
+    def _slot_for_key(self, slot_key: str) -> dict | None:
+        key = str(slot_key or "").strip()
+        if not key:
+            return None
+
+        data = self._read_soundboard_document()
+        slots = data.get("slots", [])
+        if not isinstance(slots, list):
+            return None
+
+        for index, slot in enumerate(slots):
+            if not isinstance(slot, dict):
+                continue
+            candidates = {
+                str(slot.get("id") or "").strip(),
+                str(slot.get("label") or "").strip(),
+                str(index + 1),
+            }
+            if key in candidates:
+                return slot
+        return None
+
+    def _play_slot_to_soundboard_bus(self, slot: dict) -> bool:
+        path = Path(str(slot.get("path") or "")).expanduser()
+        if not path.is_file():
+            return False
+
+        try:
+            root = self._read_soundboard_document()
+            global_volume = max(0, min(150, int(root.get("global_volume", 100) or 100)))
+        except Exception:
+            global_volume = 100
+
+        try:
+            slot_volume = max(0, min(150, int(slot.get("volume", 100) or 100)))
+        except Exception:
+            slot_volume = 100
+
+        try:
+            auto_gain = max(0.05, min(1.5, float(slot.get("auto_gain", 1.0) or 1.0)))
+        except Exception:
+            auto_gain = 1.0
+
+        try:
+            trim_db = max(-24.0, min(24.0, float(slot.get("trim_db", 0.0) or 0.0)))
+        except Exception:
+            trim_db = 0.0
+
+        gain = (global_volume / 100.0) * (slot_volume / 100.0) * auto_gain * (10.0 ** (trim_db / 20.0))
+        gain = max(0.0, min(3.0, gain))
+
+        cmd = (
+            "ffmpeg -v error -nostdin -i "
+            + shlex.quote(str(path))
+            + f" -filter:a volume={gain:.4f} "
+            + " -f f32le -ac 2 -ar 48000 pipe:1 | "
+            + "pacat --playback --device=soundboard --raw --format=float32le --rate=48000 --channels=2 "
+            + "--latency-msec=60 --process-time-msec=20 "
+            + "--property=media.name=K-Sounds-Hub-Soundboard-Player"
+        )
+
+        subprocess.Popen(
+            ["bash", "-lc", cmd],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        return True
+
     def _play_pad(self, slot_key: str) -> None:
         if self._edit_mode or self._bulk_delete_mode:
             return
 
-        key = str(slot_key or "").strip()
-        if not key:
-            return
-
         try:
-            dialog = self._soundboard_playback_dialog()
-            # Keep Glass read-only, but refresh the hidden playback engine from
-            # the current soundboard.json so changes made in the real app apply.
-            dialog.slots = dialog._load_slots()
-            if not dialog.play_slot_by_key(key):
-                QMessageBox.warning(self, "Soundboard playback", "This sound could not be found.")
+            controller = getattr(self.window(), "backend_controller", None)
+            if controller is not None:
+                controller._load_soundboard_output_loopback(controller.soundboard_output_channel())
+                controller._load_soundboard_micro_loopback(controller._soundboard_send_to_micro_config())
+
+            slot = self._slot_for_key(slot_key)
+            if not slot or not self._play_slot_to_soundboard_bus(slot):
+                QMessageBox.warning(self, "Soundboard playback", "This sound could not be found or could not be played.")
+
+            if controller is not None:
+                QTimer.singleShot(120, controller._unmute_soundboard_output_streams)
         except Exception as exc:
             QMessageBox.warning(self, "Soundboard playback", f"Could not play this sound.\n\n{exc}")
 
