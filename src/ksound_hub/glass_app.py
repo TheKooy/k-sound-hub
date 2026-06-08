@@ -1297,6 +1297,20 @@ class GlassBackendController(QObject):
             self._pactl("set-sink-input-volume", stream_id, f"{volume}%")
             self._pactl("set-sink-input-mute", stream_id, mute_flag)
 
+    def _apply_return_mic_visible_volume(self) -> None:
+        # MIC OUT has two relevant runtime pieces:
+        # 1) selected input source -> retour
+        # 2) retour EQ playback -> physical output, controlled by the normal engine
+        #
+        # The first one is a Pulse loopback recreated on source/micro changes.
+        # Pulse restores it at 100%, so force it back to the visible MIC OUT slider.
+        volume, muted = self._return_mic_volume_state()
+        mute_flag = "1" if muted else "0"
+
+        for stream_id in self._sink_inputs_by_media_name("K-Sound-Hub-Return-Mic-Micro"):
+            self._pactl("set-sink-input-volume", stream_id, f"{volume}%")
+            self._pactl("set-sink-input-mute", stream_id, mute_flag)
+
     def _apply_return_mic_input_route_volume(self) -> None:
         # The MIC OUT source selector recreates this Pulse loopback:
         # selected input source -> retour.
