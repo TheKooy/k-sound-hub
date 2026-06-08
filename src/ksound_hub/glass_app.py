@@ -6146,6 +6146,77 @@ class PreviewWindow(QMainWindow):
     resize_margin = 9
 
 
+    def changeEvent(self, event) -> None:
+        # Minimize must remain a normal window minimize.
+        # It must not quit, hide to tray, or immediately force the window visible again.
+        try:
+            super().changeEvent(event)
+        except Exception:
+            pass
+
+        try:
+            if event.type() == QEvent.WindowStateChange and self.isMinimized():
+                return
+        except Exception:
+            pass
+
+    def _close_to_tray_enabled(self) -> bool:
+        try:
+            backend = getattr(self, "backend_controller", None)
+            settings = getattr(backend, "settings", None)
+            if settings is not None:
+                return bool(getattr(settings, "close_to_tray", False))
+        except Exception:
+            pass
+
+        try:
+            path = Path.home() / ".config" / "k-sounds-hub" / "settings.json"
+            if path.is_file():
+                data = json.loads(path.read_text(encoding="utf-8"))
+                return bool(data.get("close_to_tray", False))
+        except Exception:
+            pass
+
+        return False
+
+    def _sync_tray_visibility(self) -> None:
+        try:
+            tray = getattr(self, "tray_icon", None)
+            if tray is None:
+                return
+            if self._close_to_tray_enabled():
+                tray.show()
+            else:
+                tray.hide()
+        except Exception:
+            pass
+
+    def _shutdown_for_real_close(self) -> None:
+        try:
+            tray = getattr(self, "tray_icon", None)
+            if tray is not None:
+                tray.hide()
+        except Exception:
+            pass
+
+        try:
+            overlay = getattr(self, "overlay", None)
+            if overlay is not None:
+                shutdown = getattr(overlay, "shutdown", None)
+                if callable(shutdown):
+                    shutdown()
+                else:
+                    overlay.close()
+        except Exception:
+            pass
+
+        try:
+            backend = getattr(self, "backend_controller", None)
+            if backend is not None:
+                backend.shutdown()
+        except Exception:
+            pass
+
     def _force_visible_front(self) -> None:
         try:
             self.setWindowState(self.windowState() & ~Qt.WindowMinimized)
@@ -6197,6 +6268,8 @@ class PreviewWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("K-Sounds Hub Glass")
+        # KSH_TRAY_VISIBILITY_SYNC
+        QTimer.singleShot(500, self._sync_tray_visibility)
         # KSH_SINGLE_INSTANCE_FOCUS: wrapper touches ~/.cache/k-sounds-hub/glass.activate to refocus this window.
         QTimer.singleShot(0, self._setup_external_activation)
         QTimer.singleShot(0, self._force_visible_front)
@@ -6480,34 +6553,22 @@ class PreviewWindow(QMainWindow):
             QTimer.singleShot(0, app.quit)
 
     def closeEvent(self, event) -> None:
-        # Closing Glass must really quit. No hidden/tray-only instance.
-        try:
-            self._allow_real_close = True
-        except Exception:
-            pass
+        # Close-to-tray policy:
+        # - enabled: close button hides the window and keeps Glass alive.
+        # - disabled: close button quits Glass for real.
+        if self._close_to_tray_enabled():
+            try:
+                self.hide()
+                tray = getattr(self, "tray_icon", None)
+                if tray is not None:
+                    tray.show()
+            except Exception:
+                pass
+            event.ignore()
+            return
 
         try:
-            tray = getattr(self, "tray_icon", None)
-            if tray is not None:
-                tray.hide()
-        except Exception:
-            pass
-
-        try:
-            overlay = getattr(self, "overlay", None)
-            if overlay is not None:
-                shutdown = getattr(overlay, "shutdown", None)
-                if callable(shutdown):
-                    shutdown()
-                else:
-                    overlay.close()
-        except Exception:
-            pass
-
-        try:
-            backend = getattr(self, "backend_controller", None)
-            if backend is not None:
-                backend.shutdown()
+            self._shutdown_for_real_close()
         except Exception:
             pass
 
