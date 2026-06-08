@@ -901,11 +901,14 @@ class GlassBackendController(QObject):
 
     def _soundboard_output_config(self) -> str:
         data = self._read_soundboard_document()
-        output = self._normalize_soundboard_output_key(data.get("output_channel") or "")
-        if output:
-            return output
+
+        raw = str(data.get("output_channel") or "").strip()
+        if raw:
+            return self._normalize_soundboard_output_key(raw)
+
         if bool(data.get("monitor_to_mic_out")):
             return "return-mic"
+
         return "media"
 
     def _soundboard_send_to_micro_config(self) -> bool:
@@ -942,6 +945,38 @@ class GlassBackendController(QObject):
 
         self._write_settings_document(data)
 
+    def _sink_inputs_by_media_name(self, media_name: str) -> list[str]:
+        result = self._pactl("list", "sink-inputs")
+        if result.returncode != 0:
+            return []
+
+        wanted = str(media_name or "").strip()
+        ids: list[str] = []
+        current_id: str | None = None
+        current_lines: list[str] = []
+
+        def flush() -> None:
+            nonlocal current_id, current_lines
+            if current_id is not None:
+                block = "\n".join(current_lines)
+                if f'media.name = "{wanted}"' in block or f"media.name = {wanted}" in block:
+                    ids.append(current_id)
+            current_id = None
+            current_lines = []
+
+        for raw in result.stdout.splitlines():
+            line = raw.rstrip()
+            m = re.match(r"Sink Input #(\d+)", line)
+            if m:
+                flush()
+                current_id = m.group(1)
+                current_lines = [line]
+            elif current_id is not None:
+                current_lines.append(line)
+
+        flush()
+        return ids
+
     def _load_soundboard_output_loopback(self, output_key: str) -> None:
         sink = {
             "all": "all",
@@ -952,7 +987,18 @@ class GlassBackendController(QObject):
             "return-mic": "retour",
         }.get(self._normalize_soundboard_output_key(output_key), "media")
 
-        # Output selector owns ONLY the listening/output route, never MICRO.
+        media_name = "K-Sound-Hub-Soundboard-To-Output"
+        existing = self._sink_inputs_by_media_name(media_name)
+
+        if existing:
+            keep = existing[0]
+            # Smooth route change: move the existing loopback stream instead of unloading/reloading it.
+            self._pactl("move-sink-input", keep, sink)
+            for duplicate in existing[1:]:
+                self._pactl("kill-sink-input", duplicate)
+            return
+
+        # First creation / legacy cleanup only.
         self._unload_modules_matching(
             lambda line: (
                 "module-loopback" in line
@@ -975,7 +1021,7 @@ class GlassBackendController(QObject):
             "source_dont_move=true",
             "sink_dont_move=true",
             "channels=2",
-            "sink_input_properties=media.name=K-Sound-Hub-Soundboard-To-Output",
+            f"sink_input_properties=media.name={media_name}",
         )
 
     def _load_soundboard_micro_loopback(self, enabled: bool) -> None:
@@ -1349,6 +1395,13 @@ PHYSICAL_OUTPUT_TARGETS = [
 PHYSICAL_OUTPUT_BY_LABEL = dict(PHYSICAL_OUTPUT_TARGETS)
 PHYSICAL_OUTPUT_LABEL_BY_SINK = {sink: label for label, sink in PHYSICAL_OUTPUT_TARGETS}
 PHYSICAL_OUTPUT_LABELS = [label for label, _sink in PHYSICAL_OUTPUT_TARGETS]
+
+PHYSICAL_INPUT_TARGETS = [
+    ("RØDE NT-USB", "easyeffects_source"),
+    ("Arctis Mic", "alsa_input.usb-SteelSeries_Arctis_Nova_Pro_Wireless-00.mono-fallback"),
+]
+PHYSICAL_INPUT_BY_LABEL = dict(PHYSICAL_INPUT_TARGETS)
+PHYSICAL_INPUT_LABEL_BY_SOURCE = {source: label for label, source in PHYSICAL_INPUT_TARGETS}
 
 CHANNELS = [
     ("ALL", str(CHANNEL_ICON_PATHS["all"]), ["Arctis Nova Pro", "USB / SPDIF"], 76, "all"),
@@ -2821,11 +2874,14 @@ class ChannelCard(QFrame):
         channel_key: str = "",
         volume_callback=None,
         mute_callback=None,
+        device_callback=None,
+        current_device: str | None = None,
     ):
         super().__init__()
         self.channel_key = str(channel_key or "").strip()
         self._volume_callback = volume_callback
         self._mute_callback = mute_callback
+        self._device_callback = device_callback
         self._syncing_controls = False
         self.value = int(value)
         self.setObjectName("channelCard")
@@ -2849,7 +2905,7 @@ class ChannelCard(QFrame):
         name_label.setAlignment(Qt.AlignCenter)
         root.addWidget(name_label)
 
-        device_combo = SelectButton(devices, devices[0])
+        device_combo = SelectButton(devices, current_device or (devices[0] if devices else ""), self._device_changed)
         device_combo.setMinimumWidth(0)
         device_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         root.addWidget(device_combo)
@@ -2933,6 +2989,12 @@ class ChannelCard(QFrame):
         ok = bool(self._mute_callback(self.channel_key, bool(checked)))
         if not ok:
             self.setToolTip("K-Sounds real app IPC is not reachable.")
+
+    def _device_changed(self, label: str) -> None:
+        if getattr(self, "_syncing_controls", False):
+            return
+        if self._device_callback is not None:
+            self._device_callback(self.channel_key, str(label or "").strip())
 
     def sync_from_saved_state(self, *, volume: int | None = None, muted: bool | None = None) -> None:
         self._syncing_controls = True
@@ -3330,13 +3392,30 @@ class AppsPanel(QWidget):
         ]
         haystack = " ".join(str(value or "").lower() for value in values)
 
+        internal_tokens = [
+            "ksh_keepalive",
+            "ksh_mic_physical",
+            "k-sound-hub-soundboard-to-output",
+            "k-sound-hub-soundboard-to-micro",
+            "k-sound-hub-return-mic-micro",
+            "k-sounds hub mic output monitor",
+            "k-sound hub all eq",
+            "k-sound hub game eq",
+            "k-sound hub chat eq",
+            "k-sound hub media eq",
+            "k-sound hub more eq",
+            "k-sound hub return-mic eq",
+            "k-sound-hub-soundboard",
+            "k-sounds hub soundboard",
+        ]
+
+        if any(token in haystack for token in internal_tokens):
+            return True
         if sink_name == "soundboard":
             return True
-        if "k-sound-hub-soundboard" in haystack:
-            return True
-        if "k-sounds hub soundboard" in haystack:
-            return True
         if "soundboard" in haystack and any(token in haystack for token in ("pacat", "python", "k-sounds", "k-sound")):
+            return True
+        if "return-mic-micro" in haystack:
             return True
         return False
 
@@ -5523,6 +5602,8 @@ class PreviewWindow(QMainWindow):
                 channel_key,
                 volume_callback=self._send_channel_volume,
                 mute_callback=self._set_channel_muted,
+                device_callback=self._set_channel_device,
+                current_device=self._channel_device_label(channel_key, devices),
             )
             card.sync_from_saved_state(volume=value, muted=muted)
             self.channel_cards.append(card)
@@ -5871,6 +5952,28 @@ QFrame#channelCard[muted="true"]:hover {{
     def _show_overlay_message(self, text: str, muted_active: bool = False) -> None:
         self.overlay.set_enabled(bool(getattr(self.backend_controller.settings, "overlay_enabled", False)))
         self.overlay.show_message(str(text or ""), muted_active=bool(muted_active))
+
+    def _channel_device_label(self, channel_key: str, fallback_devices: list[str]) -> str:
+        target = self.backend_controller.channel_primary_target(channel_key)
+        if target in PHYSICAL_OUTPUT_LABEL_BY_SINK:
+            return PHYSICAL_OUTPUT_LABEL_BY_SINK[target]
+        if target in PHYSICAL_INPUT_LABEL_BY_SOURCE:
+            return PHYSICAL_INPUT_LABEL_BY_SOURCE[target]
+        return fallback_devices[0] if fallback_devices else ""
+
+    def _set_channel_device(self, channel_key: str, label: str) -> None:
+        key = str(channel_key or "").strip()
+        name = str(label or "").strip()
+
+        target = PHYSICAL_OUTPUT_BY_LABEL.get(name)
+        if target is None and key == "micro":
+            target = PHYSICAL_INPUT_BY_LABEL.get(name)
+
+        if not target:
+            self.backend_controller.status_changed.emit(f"Unsupported device route: {key} → {name}")
+            return
+
+        self.backend_controller.set_channel_primary_target(key, target)
 
     def _channel_state_for_card(self, channel_key: str, fallback_value: int) -> tuple[int, bool]:
         state = self.backend_controller.channel_state(channel_key)
