@@ -6423,21 +6423,43 @@ class PreviewWindow(QMainWindow):
             QTimer.singleShot(0, app.quit)
 
     def closeEvent(self, event) -> None:
+        # Stabilization policy: closing Glass must really quit.
+        # No hidden/tray-only instance while Glass is being debugged.
         try:
-            if self.tray_icon is not None:
-                self.tray_icon.hide()
+            self._allow_real_close = True
         except Exception:
             pass
 
         try:
-            self.overlay.shutdown()
+            tray = getattr(self, "tray_icon", None)
+            if tray is not None:
+                tray.hide()
         except Exception:
             pass
+
         try:
-            self.backend_controller.shutdown()
+            overlay = getattr(self, "overlay", None)
+            if overlay is not None:
+                shutdown = getattr(overlay, "shutdown", None)
+                if callable(shutdown):
+                    shutdown()
+                else:
+                    overlay.close()
         except Exception:
             pass
-        super().closeEvent(event)
+
+        try:
+            backend = getattr(self, "backend_controller", None)
+            if backend is not None:
+                backend.shutdown()
+        except Exception:
+            pass
+
+        event.accept()
+
+        app = QApplication.instance()
+        if app is not None:
+            QTimer.singleShot(0, app.quit)
 
     def _on_nav_clicked(self, idx: int) -> None:
         if idx == 0:
