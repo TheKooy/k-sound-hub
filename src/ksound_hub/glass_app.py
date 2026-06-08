@@ -21,7 +21,7 @@ import sys
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QObject, QPoint, QRect, QRectF, QSize, QTimer, Qt, Signal
+from PySide6.QtCore import QFileSystemWatcher, QEvent, QObject, QPoint, QRect, QRectF, QSize, QTimer, Qt, Signal
 from PySide6.QtGui import QColor, QIcon, QImage, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -6145,6 +6145,43 @@ class Drawer(QFrame):
 class PreviewWindow(QMainWindow):
     resize_margin = 9
 
+
+    def _force_visible_front(self) -> None:
+        try:
+            self.setWindowState(self.windowState() & ~Qt.WindowMinimized)
+        except Exception:
+            pass
+        try:
+            self.show()
+            self.raise_()
+            self.activateWindow()
+        except Exception:
+            pass
+
+    def _glass_activation_file(self):
+        return Path.home() / ".cache" / "k-sounds-hub" / "glass.activate"
+
+    def _setup_external_activation(self) -> None:
+        try:
+            path = self._glass_activation_file()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.touch(exist_ok=True)
+            self._activation_watcher = QFileSystemWatcher([str(path)], self)
+            self._activation_watcher.fileChanged.connect(self._handle_external_activation)
+        except Exception:
+            pass
+
+    def _handle_external_activation(self, path: str = "") -> None:
+        try:
+            activate_path = self._glass_activation_file()
+            activate_path.touch(exist_ok=True)
+            watcher = getattr(self, "_activation_watcher", None)
+            if watcher is not None and str(activate_path) not in watcher.files():
+                watcher.addPath(str(activate_path))
+        except Exception:
+            pass
+        self._force_visible_front()
+
     def _force_visible_front(self) -> None:
         try:
             self.setWindowState(self.windowState() & ~Qt.WindowMinimized)
@@ -6160,6 +6197,10 @@ class PreviewWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("K-Sounds Hub Glass")
+        # KSH_SINGLE_INSTANCE_FOCUS: wrapper touches ~/.cache/k-sounds-hub/glass.activate to refocus this window.
+        QTimer.singleShot(0, self._setup_external_activation)
+        QTimer.singleShot(0, self._force_visible_front)
+        QTimer.singleShot(250, self._force_visible_front)
         # KSH_FORCE_VISIBLE_START: never launch as invisible/tray-only while Glass is being stabilized.
         QTimer.singleShot(0, self._force_visible_front)
         QTimer.singleShot(250, self._force_visible_front)
