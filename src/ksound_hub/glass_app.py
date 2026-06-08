@@ -72,6 +72,10 @@ CHANNEL_ICON_PATHS = {
     "return-mic": CHANNEL_ICON_DIR / "return-mic.png",
 }
 SOUNDBOARD_PATH = CONFIG_DIR / "soundboard.json"
+
+def _qss_url(path: str) -> str:
+    return str(path or "").replace("\\", "/").replace('"', '\\"')
+
 SETTINGS_PATH = CONFIG_DIR / "settings.json"
 
 
@@ -3043,6 +3047,9 @@ class SoundPadCard(QFrame):
         delete_callback=None,
         play_callback=None,
         slot_key: str = "",
+        background_path: str = "",
+        background_callback=None,
+        sound_callback=None,
     ):
         super().__init__()
         self._edit_enabled = False
@@ -3051,7 +3058,10 @@ class SoundPadCard(QFrame):
         self._emoji_callback = emoji_callback
         self._delete_callback = delete_callback
         self._play_callback = play_callback
+        self._background_callback = background_callback
+        self._sound_callback = sound_callback
         self._slot_key = str(slot_key or "").strip()
+        self._background_path = str(background_path or "").strip()
 
         self.setObjectName("soundPadCard")
         self.setProperty("edit", "false")
@@ -3083,11 +3093,11 @@ class SoundPadCard(QFrame):
         self.name_editor.editingFinished.connect(self._finish_rename)
         root.addWidget(self.name_editor)
 
-        meta_label = HoverScrollLabel(meta)
-        meta_label.setObjectName("soundPadMeta")
-        meta_label.setAlignment(Qt.AlignCenter)
-        meta_label.setFixedHeight(13)
-        root.addWidget(meta_label)
+        self.meta_label = HoverScrollLabel(meta)
+        self.meta_label.setObjectName("soundPadMeta")
+        self.meta_label.setAlignment(Qt.AlignCenter)
+        self.meta_label.setFixedHeight(13)
+        root.addWidget(self.meta_label)
 
         self.actions = QFrame()
         self.actions.setObjectName("soundPadActions")
@@ -3099,11 +3109,13 @@ class SoundPadCard(QFrame):
         bg_button = QPushButton("🖼")
         bg_button.setObjectName("padIconButton")
         bg_button.setToolTip("Edit background")
+        bg_button.clicked.connect(self._request_background)
         actions_layout.addWidget(bg_button)
 
         sound_button = QPushButton("🎵")
         sound_button.setObjectName("padIconButton")
         sound_button.setToolTip("Edit sound")
+        sound_button.clicked.connect(self._request_sound)
         actions_layout.addWidget(sound_button)
 
         delete_button = CenterGlyphButton("🗑")
@@ -3134,6 +3146,53 @@ class SoundPadCard(QFrame):
 
     def set_emoji(self, emoji: str) -> None:
         self.icon_button.setText(emoji)
+
+    def slot_key(self) -> str:
+        return self._slot_key
+
+    def set_slot_key(self, slot_key: str) -> None:
+        self._slot_key = str(slot_key or "").strip()
+
+    def set_display_name(self, name: str) -> None:
+        clean = str(name or "").strip() or "Unnamed"
+        self.name_label.setText(clean)
+        self.name_editor.setText(clean)
+
+    def set_meta(self, meta: str) -> None:
+        self.meta_label.setText(str(meta or ""))
+
+    def set_background_path(self, path: str) -> None:
+        self._background_path = str(path or "").strip()
+        bg_path = Path(self._background_path).expanduser() if self._background_path else None
+        if bg_path is None or not bg_path.is_file():
+            self.setStyleSheet("")
+            return
+
+        url = _qss_url(str(bg_path))
+        self.setStyleSheet(f"""
+QFrame#soundPadCard {{
+    border-image: url("{url}") 0 0 0 0 stretch stretch;
+    border-radius: 16px;
+}}
+QFrame#soundPadCard QLabel#soundPadName,
+QFrame#soundPadCard QLabel#soundPadMeta {{
+    background: rgba(0, 0, 0, 150);
+    border-radius: 8px;
+    padding: 2px 6px;
+}}
+QFrame#soundPadCard QPushButton#soundPadEmoji {{
+    background: rgba(0, 0, 0, 210);
+    border-radius: 16px;
+}}
+""")
+
+    def _request_background(self) -> None:
+        if self._edit_enabled and self._background_callback is not None:
+            self._background_callback(self)
+
+    def _request_sound(self) -> None:
+        if self._edit_enabled and self._sound_callback is not None:
+            self._sound_callback(self)
 
     def set_bulk_select_enabled(self, enabled: bool) -> None:
         self._bulk_select_enabled = enabled
@@ -3178,7 +3237,6 @@ class SoundPadCard(QFrame):
 
     def _request_emoji_palette(self) -> None:
         if not self._edit_enabled:
-            self._request_play()
             return
         if self._emoji_callback is not None:
             self._emoji_callback(self)
@@ -3318,8 +3376,8 @@ class PadsPanel(QWidget):
         self.grid_scroll._schedule_margin_update()
         root.addWidget(self.grid_scroll, 1)
 
-        for name, icon, meta, slot_key in self._load_real_soundboard_pads():
-            self._add_pad(name, icon, meta, slot_key=slot_key)
+        for name, icon, meta, slot_key, background_path in self._load_real_soundboard_pads():
+            self._add_pad(name, icon, meta, slot_key=slot_key, background_path=background_path)
 
         self.emoji_overlay = QFrame(self)
         self.emoji_overlay.setObjectName("emojiPalette")
@@ -3372,6 +3430,7 @@ class PadsPanel(QWidget):
     def _choose_emoji(self, emoji: str) -> None:
         if self._active_emoji_card is not None:
             self._active_emoji_card.set_emoji(emoji)
+            self._persist_card_emoji(self._active_emoji_card, emoji)
         self.emoji_overlay.hide()
 
 
@@ -3435,7 +3494,7 @@ class PadsPanel(QWidget):
         }
         return names.get(key, key.upper() if key else "MEDIA")
 
-    def _load_real_soundboard_pads(self) -> list[tuple[str, str, str, str]]:
+    def _load_real_soundboard_pads(self) -> list[tuple[str, str, str, str, str]]:
         pads: list[tuple[str, str, str, str]] = []
 
         for index, slot in enumerate(self._read_soundboard_slots(), start=1):
@@ -3451,6 +3510,7 @@ class PadsPanel(QWidget):
             route = self._format_soundboard_route(str(slot.get("output_channel") or "media"))
             icon = self._icon_for_soundboard_slot(slot, path_text)
             slot_key = str(slot.get("id") or "").strip() or str(index)
+            background_path = str(slot.get("background_path") or "").strip()
 
             if path_text:
                 sound_path = Path(path_text).expanduser()
@@ -3460,15 +3520,15 @@ class PadsPanel(QWidget):
             else:
                 meta = route
 
-            pads.append((label, icon, meta, slot_key))
+            pads.append((label, icon, meta, slot_key, background_path))
 
         if pads:
             return pads
 
         if SOUNDBOARD_PATH.is_file():
-            return [("No saved sounds", "🎧", "soundboard.json empty", "")]
+            return [("No saved sounds", "🎧", "soundboard.json empty", "", "")]
 
-        return [("No soundboard file", "🎧", "soundboard.json missing", "")]
+        return [("No soundboard file", "🎧", "soundboard.json missing", "", "")]
 
 
     def _stop_all_sounds(self) -> None:
@@ -3599,6 +3659,127 @@ class PadsPanel(QWidget):
         except Exception as exc:
             QMessageBox.warning(self, "Soundboard playback", f"Could not play this sound.\n\n{exc}")
 
+    def _read_soundboard_document(self) -> dict:
+        if not SOUNDBOARD_PATH.is_file():
+            return {"slots": []}
+        try:
+            data = json.loads(SOUNDBOARD_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            return {"slots": []}
+        if isinstance(data, list):
+            return {"slots": data}
+        if isinstance(data, dict):
+            if not isinstance(data.get("slots"), list):
+                data["slots"] = []
+            return data
+        return {"slots": []}
+
+    def _write_soundboard_document(self, data: dict) -> None:
+        SOUNDBOARD_PATH.parent.mkdir(parents=True, exist_ok=True)
+        SOUNDBOARD_PATH.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+    def _slot_index_for_card(self, slots: list, card: SoundPadCard) -> int | None:
+        key = card.slot_key()
+        if key:
+            for index, slot in enumerate(slots):
+                if isinstance(slot, dict) and str(slot.get("id") or "").strip() == key:
+                    return index
+            if key.isdigit():
+                index = int(key) - 1
+                if 0 <= index < len(slots):
+                    return index
+        return None
+
+    def _ensure_slot_for_card(self, card: SoundPadCard) -> tuple[dict, list, int]:
+        data = self._read_soundboard_document()
+        slots = data.setdefault("slots", [])
+        index = self._slot_index_for_card(slots, card)
+
+        if index is None:
+            slot = {
+                "id": f"glass-{int(time.time() * 1000)}",
+                "label": card.display_name() if not card.display_name().startswith("New pad") else "New sound",
+                "path": "",
+                "background_path": "",
+                "volume": 80,
+                "shortcut": "",
+                "output_channel": "media",
+                "send_to_micro": False,
+                "auto_gain": 1.0,
+                "analyzed_path": "",
+                "trim_db": 0.0,
+            }
+            slots.append(slot)
+            index = len(slots) - 1
+            card.set_slot_key(str(slot["id"]))
+
+        return data, slots, index
+
+    def _refresh_soundboard_after_edit(self) -> None:
+        dialog = self._soundboard_dialog
+        if dialog is not None:
+            try:
+                dialog.slots = dialog._load_slots()
+            except Exception:
+                pass
+
+    def _persist_card_emoji(self, card: SoundPadCard, emoji: str) -> None:
+        data, slots, index = self._ensure_slot_for_card(card)
+        slot = slots[index]
+        slot["emoji"] = str(emoji or "").strip()
+        slot["icon"] = str(emoji or "").strip()
+        self._write_soundboard_document(data)
+        self._refresh_soundboard_after_edit()
+
+    def _choose_pad_sound(self, card: SoundPadCard) -> None:
+        data, slots, index = self._ensure_slot_for_card(card)
+        slot = slots[index]
+        current = str(slot.get("path") or "").strip()
+        start_dir = str(Path(current).expanduser().parent) if current else str(Path.home())
+
+        chosen, _ = QFileDialog.getOpenFileName(
+            self,
+            "Choose pad sound",
+            start_dir,
+            "Audio files (*.mp3 *.wav *.ogg *.flac *.m4a);;All files (*)",
+        )
+        if not chosen:
+            return
+
+        sound_path = Path(chosen).expanduser()
+        slot["path"] = str(sound_path)
+
+        old_label = str(slot.get("label") or "").strip()
+        if not old_label or old_label.upper() in {"SOUND", "EMPTY"} or old_label.startswith("New pad") or old_label == "New sound":
+            slot["label"] = sound_path.stem
+            card.set_display_name(sound_path.stem)
+
+        route = self._format_soundboard_route(str(slot.get("output_channel") or "media"))
+        card.set_meta(f"{route} · {sound_path.name}")
+        self._write_soundboard_document(data)
+        self._refresh_soundboard_after_edit()
+
+    def _choose_pad_background(self, card: SoundPadCard) -> None:
+        data, slots, index = self._ensure_slot_for_card(card)
+        slot = slots[index]
+        current = str(slot.get("background_path") or "").strip()
+        start_dir = str(Path(current).expanduser().parent) if current else str(Path.home())
+
+        chosen, _ = QFileDialog.getOpenFileName(
+            self,
+            "Choose pad background",
+            start_dir,
+            "Images (*.png *.jpg *.jpeg *.webp *.bmp);;All files (*)",
+        )
+        if not chosen:
+            return
+
+        bg_path = str(Path(chosen).expanduser())
+        slot["background_path"] = bg_path
+        card.set_background_path(bg_path)
+        self._write_soundboard_document(data)
+        self._refresh_soundboard_after_edit()
+
     def _detach(self) -> None:
         if self._detach_callback is not None:
             self._detach_callback()
@@ -3618,12 +3799,13 @@ class PadsPanel(QWidget):
         for card in self.pad_cards:
             card.set_edit_mode(enabled)
 
-    def _add_pad(self, name: str | None = None, icon: str = "🎧", meta: str = "new", slot_key: str = "") -> None:
+    def _add_pad(self, name: str | None = None, icon: str = "🎧", meta: str = "new", slot_key: str = "", background_path: str = "") -> None:
         if name is None or isinstance(name, bool):
             name = f"New pad {len(self.pad_cards) + 1}"
             icon = "+"
             meta = "empty"
             slot_key = ""
+            background_path = ""
 
         card = SoundPadCard(
             name,
@@ -3633,7 +3815,12 @@ class PadsPanel(QWidget):
             delete_callback=self._confirm_delete_card,
             play_callback=self._play_pad,
             slot_key=slot_key,
+            background_path=background_path,
+            background_callback=self._choose_pad_background,
+            sound_callback=self._choose_pad_sound,
         )
+        if background_path:
+            card.set_background_path(background_path)
         card.set_edit_mode(self._edit_mode)
         card.set_bulk_select_enabled(self._bulk_delete_mode)
         self.pad_cards.append(card)
