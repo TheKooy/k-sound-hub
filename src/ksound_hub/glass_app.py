@@ -1802,6 +1802,47 @@ QSlider#padBgDarknessSlider::add-page:horizontal {
 }
 """
 
+
+STYLE += """
+/* Glass soundboard volume slider */
+QFrame#soundboardVolumeControls {
+    background: rgba(0, 0, 0, 105);
+    border: none;
+    border-radius: 12px;
+}
+
+QLabel#soundboardVolumeLabel {
+    color: rgba(215, 232, 246, 175);
+    font-size: 10px;
+    font-weight: 720;
+}
+
+QSlider#soundboardVolumeSlider::groove:horizontal {
+    min-height: 6px;
+    max-height: 6px;
+    border-radius: 3px;
+    background: rgba(0, 0, 0, 155);
+}
+
+QSlider#soundboardVolumeSlider::handle:horizontal {
+    width: 16px;
+    height: 16px;
+    margin: -6px 0px;
+    border-radius: 8px;
+    background: rgba(110, 215, 255, 230);
+}
+
+QSlider#soundboardVolumeSlider::sub-page:horizontal {
+    border-radius: 3px;
+    background: rgba(92, 204, 255, 145);
+}
+
+QSlider#soundboardVolumeSlider::add-page:horizontal {
+    border-radius: 3px;
+    background: rgba(12, 24, 36, 150);
+}
+"""
+
 class AdaptiveScrollArea(QScrollArea):
     RIGHT_MARGIN_WITH_SCROLL = 10
 
@@ -3132,6 +3173,7 @@ class SoundPadCard(QFrame):
         self._background_callback = background_callback
         self._sound_callback = sound_callback
         self._slot_key = str(slot_key or "").strip()
+        self._always_show_meta = False
         self._background_path = str(background_path or "").strip()
 
         self.setObjectName("soundPadCard")
@@ -3232,6 +3274,11 @@ class SoundPadCard(QFrame):
 
     def set_meta(self, meta: str) -> None:
         self.meta_label.setText(str(meta or ""))
+
+    def set_always_show_meta(self, enabled: bool) -> None:
+        self._always_show_meta = bool(enabled)
+        if hasattr(self, "meta_label"):
+            self.meta_label.setVisible(bool(self._edit_enabled or self._always_show_meta))
 
     def set_pad_background_darkness(self, value: int) -> None:
         try:
@@ -3338,7 +3385,7 @@ QFrame#soundPadCard QPushButton#soundPadEmoji {{
             self.setProperty("edit", "true" if self._edit_enabled else "false")
             self.setMinimumHeight(100 if self._edit_enabled else 70)
             if hasattr(self, "meta_label"):
-                self.meta_label.setVisible(bool(self._edit_enabled))
+                self.meta_label.setVisible(bool(self._edit_enabled or getattr(self, "_always_show_meta", False)))
 
         self.style().unpolish(self)
         self.style().polish(self)
@@ -3398,7 +3445,7 @@ QFrame#soundPadCard QPushButton#soundPadEmoji {{
         self.setMinimumHeight(100 if enabled else 70)
 
         if hasattr(self, "meta_label"):
-            self.meta_label.setVisible(enabled)
+            self.meta_label.setVisible(bool(enabled or getattr(self, "_always_show_meta", False)))
 
         if not enabled:
             self.name_editor.setVisible(False)
@@ -3524,6 +3571,69 @@ class PadsPanel(QWidget):
         else:
             self._apply_responsive_card_heights()
 
+    def _read_soundboard_volume_setting(self) -> int:
+        try:
+            if SOUNDBOARD_PATH.is_file():
+                data = json.loads(SOUNDBOARD_PATH.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    return max(0, min(100, int(data.get("global_volume", 100))))
+        except Exception:
+            pass
+        return 100
+
+    def _save_soundboard_volume_setting(self, value: int) -> None:
+        numeric = int(max(0, min(100, value)))
+        try:
+            if SOUNDBOARD_PATH.is_file():
+                loaded = json.loads(SOUNDBOARD_PATH.read_text(encoding="utf-8"))
+            else:
+                loaded = {"slots": []}
+
+            if isinstance(loaded, list):
+                data = {"slots": loaded}
+            elif isinstance(loaded, dict):
+                data = loaded
+            else:
+                data = {"slots": []}
+
+            if not isinstance(data.get("slots"), list):
+                data["slots"] = []
+
+            data["global_volume"] = numeric
+            SOUNDBOARD_PATH.parent.mkdir(parents=True, exist_ok=True)
+            SOUNDBOARD_PATH.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        except Exception:
+            pass
+
+    def _set_soundboard_volume(self, value: int, persist: bool = True) -> None:
+        try:
+            numeric = int(value)
+        except Exception:
+            numeric = 100
+        self._soundboard_volume = max(0, min(100, numeric))
+
+        if persist:
+            self._save_soundboard_volume_setting(self._soundboard_volume)
+
+        dialog = getattr(self, "_soundboard_dialog", None)
+        if dialog is not None:
+            try:
+                if hasattr(dialog, "global_volume"):
+                    dialog.global_volume = self._soundboard_volume
+                if hasattr(dialog, "_global_volume"):
+                    dialog._global_volume = self._soundboard_volume
+                if hasattr(dialog, "slots"):
+                    dialog.slots = dialog._load_slots()
+            except Exception:
+                pass
+
+    def _queue_soundboard_volume(self, value: int) -> None:
+        self._pending_soundboard_volume = int(value)
+        self._soundboard_volume_timer.start()
+
+    def _apply_queued_soundboard_volume(self) -> None:
+        self._set_soundboard_volume(int(getattr(self, "_pending_soundboard_volume", self._soundboard_volume)))
+
     def __init__(self, detach_callback=None, columns: int = 2, show_detach: bool = True):
         super().__init__()
         self._detach_callback = detach_callback
@@ -3534,6 +3644,12 @@ class PadsPanel(QWidget):
         self._active_emoji_card: SoundPadCard | None = None
         self._soundboard_dialog: SoundboardDialog | None = None
         self.pad_cards: list[SoundPadCard] = []
+        self._soundboard_volume = self._read_soundboard_volume_setting()
+        self._pending_soundboard_volume = self._soundboard_volume
+        self._soundboard_volume_timer = QTimer(self)
+        self._soundboard_volume_timer.setSingleShot(True)
+        self._soundboard_volume_timer.setInterval(120)
+        self._soundboard_volume_timer.timeout.connect(self._apply_queued_soundboard_volume)
         self._pad_bg_darkness = self._read_pad_bg_darkness_setting()
         self._pending_pad_bg_darkness = self._pad_bg_darkness
         self._pad_bg_darkness_timer = QTimer(self)
@@ -3632,6 +3748,26 @@ class PadsPanel(QWidget):
         self.grid_scroll.setWidget(self.grid_host)
         self.grid_scroll._schedule_margin_update()
         root.addWidget(self.grid_scroll, 1)
+
+        volume_row = QFrame()
+        volume_row.setObjectName("soundboardVolumeControls")
+        volume_layout = QHBoxLayout(volume_row)
+        volume_layout.setContentsMargins(9, 5, 9, 5)
+        volume_layout.setSpacing(8)
+
+        volume_label = QLabel("Soundboard volume")
+        volume_label.setObjectName("soundboardVolumeLabel")
+        volume_layout.addWidget(volume_label)
+
+        self.soundboard_volume_slider = NoWheelSlider(Qt.Horizontal)
+        self.soundboard_volume_slider.setObjectName("soundboardVolumeSlider")
+        self.soundboard_volume_slider.setRange(0, 100)
+        self.soundboard_volume_slider.setValue(int(self._soundboard_volume))
+        self.soundboard_volume_slider.setMinimumHeight(24)
+        self.soundboard_volume_slider.valueChanged.connect(lambda value: self._queue_soundboard_volume(int(value)))
+        volume_layout.addWidget(self.soundboard_volume_slider, 1)
+
+        root.addWidget(volume_row)
 
         for name, icon, meta, slot_key, background_path in self._load_real_soundboard_pads():
             self._add_pad(name, icon, meta, slot_key=slot_key, background_path=background_path)
@@ -4087,6 +4223,8 @@ class PadsPanel(QWidget):
             background_callback=self._choose_pad_background,
             sound_callback=self._choose_pad_sound,
         )
+        if hasattr(card, "set_always_show_meta"):
+            card.set_always_show_meta(not bool(self._show_detach))
         if hasattr(card, "set_pad_background_darkness"):
             card.set_pad_background_darkness(self._pad_bg_darkness)
         if background_path:
