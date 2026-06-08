@@ -1269,6 +1269,19 @@ class GlassBackendController(QObject):
                 "sink_input_properties=media.name=K-Sound-Hub-Soundboard-To-Micro",
             )
 
+    def _return_mic_source_config(self) -> str:
+        data = self._read_settings_document()
+        # Off must be really Off. Do not infer from old glass_return_mic_micro_enabled.
+        return str(data.get("glass_return_mic_source") or "").strip()
+
+    def return_mic_source_label(self) -> str:
+        source = self._return_mic_source_config()
+        if not source:
+            return "Off"
+        if source == "micro":
+            return "MICRO"
+        return self.label_for_target(source, input_device=True) or "Off"
+
     def _return_mic_volume_state(self) -> tuple[int, bool]:
         channel = self._find_channel("return-mic")
         if channel is None:
@@ -1284,12 +1297,6 @@ class GlassBackendController(QObject):
         return volume, muted
 
     def _apply_return_mic_visible_volume(self) -> None:
-        # MIC OUT has two relevant runtime pieces:
-        # 1) selected input source -> retour
-        # 2) retour EQ playback -> physical output, controlled by the normal engine
-        #
-        # The first one is a Pulse loopback recreated on source/micro changes.
-        # Pulse restores it at 100%, so force it back to the visible MIC OUT slider.
         volume, muted = self._return_mic_volume_state()
         mute_flag = "1" if muted else "0"
 
@@ -1297,63 +1304,99 @@ class GlassBackendController(QObject):
             self._pactl("set-sink-input-volume", stream_id, f"{volume}%")
             self._pactl("set-sink-input-mute", stream_id, mute_flag)
 
-    def _apply_return_mic_visible_volume(self) -> None:
-        # MIC OUT has two relevant runtime pieces:
-        # 1) selected input source -> retour
-        # 2) retour EQ playback -> physical output, controlled by the normal engine
-        #
-        # The first one is a Pulse loopback recreated on source/micro changes.
-        # Pulse restores it at 100%, so force it back to the visible MIC OUT slider.
-        volume, muted = self._return_mic_volume_state()
-        mute_flag = "1" if muted else "0"
-
-        for stream_id in self._sink_inputs_by_media_name("K-Sound-Hub-Return-Mic-Micro"):
-            self._pactl("set-sink-input-volume", stream_id, f"{volume}%")
-            self._pactl("set-sink-input-mute", stream_id, mute_flag)
-
-    def _apply_return_mic_input_route_volume(self) -> None:
-        # The MIC OUT source selector recreates this Pulse loopback:
-        # selected input source -> retour.
-        # Pulse/PipeWire gives the new sink-input 100% by default, so force it
-        # back to the visible MIC OUT slider state immediately.
-        volume, muted = self._return_mic_volume_state()
-        mute_flag = "1" if muted else "0"
-
-        for stream_id in self._sink_inputs_by_media_name("K-Sound-Hub-Return-Mic-Micro"):
-            self._pactl("set-sink-input-volume", stream_id, f"{volume}%")
-            self._pactl("set-sink-input-mute", stream_id, mute_flag)
-
-    def _load_return_mic_micro_loopback(self, enabled: bool) -> None:
-        # Return Mic selector owns ONLY: selected input source -> retour.
+    def _unload_return_mic_source_loopbacks(self) -> None:
+        # Remove Return-Mic source-monitor loopbacks only.
+        # Keep Soundboard -> MIC OUT untouched: source=soundboard.monitor -> retour.
         self._unload_modules_matching(
             lambda line: (
-                "module-loopback" in line
-                and "sink=retour" in line
+                "module-loopback" in line.lower()
+                and "sink=retour" in line.lower()
+                and "source=soundboard.monitor" not in line.lower()
                 and (
-                    "K-Sound-Hub-Return-Mic-Micro" in line
-                    or "source=easyeffects_source" in line
-                    or "source=micro " in line
-                    or "source=micro\t" in line
+                    "k-sound-hub-return-mic-micro" in line.lower()
+                    or "source=micro" in line.lower()
+                    or "source=easyeffects_source" in line.lower()
+                    or "source=alsa_input" in line.lower()
                 )
             )
         )
 
-        source = self._return_mic_source_config() if enabled else ""
-        if source:
-            self._pactl(
-                "load-module",
-                "module-loopback",
-                f"source={source}",
-                "sink=retour",
-                "latency_msec=20",
-                "source_dont_move=true",
-                "sink_dont_move=true",
-                "channels=2",
-                "sink_input_properties=media.name=K-Sound-Hub-Return-Mic-Micro",
-            )
+    def _load_return_mic_micro_loopback(self, enabled: bool) -> None:
+        self._unload_return_mic_source_loopbacks()
 
-            time.sleep(0.06)
-            self._apply_return_mic_visible_volume()
+        source = self._return_mic_source_config() if enabled else ""
+        if not source:
+            return
+
+        self._pactl(
+            "load-module",
+            "module-loopback",
+            f"source={source}",
+            "sink=retour",
+            "latency_msec=20",
+            "source_dont_move=true",
+            "sink_dont_move=true",
+            "channels=2",
+            "sink_input_properties=media.name=K-Sound-Hub-Return-Mic-Micro",
+        )
+
+        time.sleep(0.06)
+        self._apply_return_mic_visible_volume()
+
+    def set_return_mic_source_label(self, label: str) -> bool:
+        selected = str(label or "").strip()
+
+        if not selected or selected.lower() == "off":
+            target = ""
+        elif selected.upper() == "MICRO":
+            target = "micro"
+        else:
+            target = self.resolve_input_label(selected)
+
+        data = self._read_settings_document()
+        data["glass_return_mic_source"] = target
+        data["glass_return_mic_micro_enabled"] = bool(target)
+        self._write_settings_document(data)
+
+        self._load_return_mic_micro_loopback(bool(target))
+        self._apply_return_mic_visible_volume()
+        QTimer.singleShot(120, self._apply_return_mic_visible_volume)
+
+        self.status_changed.emit(f"MIC OUT source → {selected or 'Off'}")
+        return True
+
+    def return_mic_route_state(self) -> dict[str, bool]:
+        enabled = bool(self._return_mic_source_config())
+        return {
+            "micro": enabled,
+            "micro-final": enabled,
+        }
+
+    def set_return_mic_source_state(self, source_key: str, enabled: bool) -> bool:
+        source = str(source_key or "").strip()
+        if source == "micro-final":
+            source = "micro"
+
+        if not enabled:
+            data = self._read_settings_document()
+            data["glass_return_mic_source"] = ""
+            data["glass_return_mic_micro_enabled"] = False
+            self._write_settings_document(data)
+            self._load_return_mic_micro_loopback(False)
+            self.status_changed.emit("MIC OUT source → Off")
+            return True
+
+        data = self._read_settings_document()
+        data["glass_return_mic_source"] = source
+        data["glass_return_mic_micro_enabled"] = bool(source)
+        self._write_settings_document(data)
+
+        self._load_return_mic_micro_loopback(bool(source))
+        self._apply_return_mic_visible_volume()
+        QTimer.singleShot(120, self._apply_return_mic_visible_volume)
+
+        self.status_changed.emit(f"MIC OUT source → {source or 'Off'}")
+        return True
 
     def _sync_legacy_linked_channels_off(self) -> None:
         # Prevent the older channel engine from re-creating mixed routes.
@@ -1611,72 +1654,6 @@ class GlassBackendController(QObject):
         if channel is None:
             return ""
         return str(getattr(channel, "primary_target", "") or "").strip()
-
-    def _return_mic_source_config(self) -> str:
-        data = self._read_settings_document()
-        source = str(data.get("glass_return_mic_source") or "").strip()
-        if source:
-            return source
-
-        if bool(data.get("glass_return_mic_micro_enabled")):
-            return "micro"
-
-        return ""
-
-    def return_mic_source_label(self) -> str:
-        source = self._return_mic_source_config()
-        if not source:
-            return "Off"
-        return self.label_for_target(source, input_device=True) or "Off"
-
-    def set_return_mic_source_label(self, label: str) -> bool:
-        selected = str(label or "").strip()
-        if not selected or selected.lower() == "off":
-            target = ""
-        else:
-            target = self.resolve_input_label(selected)
-
-        data = self._read_settings_document()
-        data["glass_return_mic_source"] = target
-        data["glass_return_mic_micro_enabled"] = bool(target)
-        self._write_settings_document(data)
-
-        self._load_return_mic_micro_loopback(bool(target))
-        self._apply_return_mic_visible_volume()
-        QTimer.singleShot(120, self._apply_return_mic_visible_volume)
-
-        self.status_changed.emit(f"MIC OUT source → {selected or 'Off'}")
-        return True
-
-    def return_mic_route_state(self) -> dict[str, bool]:
-        enabled = bool(self._return_mic_source_config())
-        return {
-            "micro": enabled,
-            "micro-final": enabled,
-        }
-
-    def set_return_mic_source_state(self, source_key: str, enabled: bool) -> bool:
-        source = str(source_key or "").strip()
-        if not enabled:
-            data = self._read_settings_document()
-            data["glass_return_mic_source"] = ""
-            data["glass_return_mic_micro_enabled"] = False
-            self._write_settings_document(data)
-            self._load_return_mic_micro_loopback(False)
-            self.status_changed.emit("MIC OUT source → Off")
-            return True
-
-        data = self._read_settings_document()
-        data["glass_return_mic_source"] = source or "micro"
-        data["glass_return_mic_micro_enabled"] = True
-        self._write_settings_document(data)
-
-        self._load_return_mic_micro_loopback(True)
-        self._apply_return_mic_visible_volume()
-        QTimer.singleShot(120, self._apply_return_mic_visible_volume)
-
-        self.status_changed.emit(f"MIC OUT source → {source or 'micro'}")
-        return True
 
     def set_soundboard_micro_enabled(self, enabled: bool) -> bool:
         data = self._read_soundboard_document()
