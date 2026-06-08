@@ -6243,9 +6243,6 @@ class PreviewWindow(QMainWindow):
             pass
 
     def closeEvent(self, event) -> None:
-        # Window policy:
-        # - Close-to-tray ON: close button hides the window and keeps Glass alive.
-        # - Close-to-tray OFF: close button quits Glass for real.
         if self._close_to_tray_enabled():
             try:
                 self.hide()
@@ -6265,8 +6262,7 @@ class PreviewWindow(QMainWindow):
             QTimer.singleShot(0, app.quit)
 
     def changeEvent(self, event) -> None:
-        # Minimize is normal minimize. It must not hide to tray or force the
-        # window back to the front.
+        # Normal minimize: never force-show the window here.
         try:
             super().changeEvent(event)
         except Exception:
@@ -6278,60 +6274,11 @@ class PreviewWindow(QMainWindow):
         except Exception:
             pass
 
-    def _set_tray_visible_for_state(self) -> None:
-        try:
-            tray = getattr(self, "tray_icon", None)
-            if tray is not None:
-                tray.setVisible(self._close_to_tray_enabled())
-        except Exception:
-            pass
-
-    def _focus_existing_window(self) -> None:
-        try:
-            if self.isMinimized():
-                self.showNormal()
-            else:
-                self.show()
-        except Exception:
-            pass
-
-        try:
-            self.raise_()
-            self.activateWindow()
-        except Exception:
-            pass
-
-    def _shutdown_window_runtime(self) -> None:
-        try:
-            tray = getattr(self, "tray_icon", None)
-            if tray is not None:
-                tray.hide()
-        except Exception:
-            pass
-
-        try:
-            overlay = getattr(self, "overlay", None)
-            if overlay is not None:
-                shutdown = getattr(overlay, "shutdown", None)
-                if callable(shutdown):
-                    shutdown()
-                else:
-                    overlay.close()
-        except Exception:
-            pass
-
-        try:
-            backend = getattr(self, "backend_controller", None)
-            if backend is not None:
-                backend.shutdown()
-        except Exception:
-            pass
-
     def __init__(self):
         super().__init__()
         self.setWindowTitle("K-Sounds Hub Glass")
-        # KSH_WINDOW_POLICY_CLEAN
-        QTimer.singleShot(0, self._focus_existing_window)
+        # KSH_WINDOW_POLICY_DEDUPED
+        QTimer.singleShot(0, self._setup_external_activation)
         QTimer.singleShot(300, self._set_tray_visible_for_state)
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Window)
         self.resize(1320, 560)
