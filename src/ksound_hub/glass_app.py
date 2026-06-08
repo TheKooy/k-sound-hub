@@ -11,6 +11,7 @@ Backend bindings are added gradually while the stable UI remains a fallback.
 
 import hashlib
 import json
+import re
 import math
 import secrets
 import socket
