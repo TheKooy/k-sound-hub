@@ -662,6 +662,79 @@ class GlassBackendController(QObject):
 
         return True
 
+    def set_channel_primary_target(self, channel_key: str, target_sink: str) -> bool:
+        channel = self._find_channel(channel_key)
+        if channel is None:
+            return False
+
+        channel.primary_target = str(target_sink or "").strip()
+        try:
+            self.audio_engine.apply_channel(self.settings, channel.key)
+        except Exception as exc:
+            self.status_changed.emit(f"Target route error — {exc}")
+            return False
+
+        self._save_timer.start()
+        label = PHYSICAL_OUTPUT_LABEL_BY_SINK.get(channel.primary_target, channel.primary_target or "auto")
+        self.status_changed.emit(f"{GLASS_CHANNEL_OVERLAY_META.get(channel.key, ('', channel.key.upper()))[1]} output → {label}")
+        return True
+
+    def channel_primary_target(self, channel_key: str) -> str:
+        channel = self._find_channel(channel_key)
+        if channel is None:
+            return ""
+        return str(getattr(channel, "primary_target", "") or "").strip()
+
+    def return_mic_route_state(self) -> dict[str, bool]:
+        channel = self._find_channel("return-mic")
+        linked = {
+            str(key).strip().lower()
+            for key in (getattr(channel, "linked_channels", []) if channel is not None else [])
+            if str(key).strip()
+        }
+        return {
+            "soundboard": "soundboard" in linked,
+            "micro-final": "micro-final" in linked or "micro" in linked,
+        }
+
+    def set_return_mic_source_state(self, source_key: str, enabled: bool) -> bool:
+        source = str(source_key or "").strip().lower()
+        if source == "micro":
+            source = "micro-final"
+        if source not in {"soundboard", "micro-final"}:
+            return False
+
+        channel = self._find_channel("return-mic")
+        if channel is None:
+            return False
+
+        linked = [
+            str(key).strip().lower()
+            for key in getattr(channel, "linked_channels", []) or []
+            if str(key).strip()
+        ]
+
+        before = list(linked)
+        if enabled:
+            if source not in linked:
+                linked.append(source)
+        else:
+            linked = [key for key in linked if key != source]
+
+        channel.linked_channels = linked
+
+        if linked != before:
+            try:
+                self.audio_engine.apply_channel(self.settings, "return-mic")
+            except Exception as exc:
+                self.status_changed.emit(f"MIC OUT source route error — {exc}")
+                return False
+            self._save_timer.start()
+            label = "MICRO" if source == "micro-final" else "Soundboard"
+            self.status_changed.emit(f"MIC OUT source {label}: {bool(enabled)}")
+
+        return True
+
     def _ensure_android_soundboard_dialog(self) -> SoundboardDialog:
         dialog = self._android_soundboard_dialog
         if dialog is None:
@@ -856,16 +929,25 @@ class GlassBackendController(QObject):
             self.status_changed.emit(f"Settings save error — {exc}")
 
 
-CHANNELS = [
-    ("ALL", str(CHANNEL_ICON_PATHS["all"]), ["Arctis Nova Pro", "USB / SPDIF", "System default"], 76, "all"),
-    ("GAME", str(CHANNEL_ICON_PATHS["game"]), ["Arctis Nova Pro", "USB / SPDIF", "System default"], 72, "game"),
-    ("CHAT", str(CHANNEL_ICON_PATHS["chat"]), ["Arctis Nova Pro", "USB / SPDIF", "System default"], 70, "chat"),
-    ("MEDIA", str(CHANNEL_ICON_PATHS["media"]), ["USB / SPDIF", "Arctis Nova Pro", "System default"], 64, "media"),
-    ("MORE", str(CHANNEL_ICON_PATHS["more"]), ["System default", "Arctis Nova Pro", "USB / SPDIF"], 58, "more"),
-    ("MICRO", str(CHANNEL_ICON_PATHS["micro"]), ["RØDE NT-USB", "Arctis Mic", "System default"], 84, "micro"),
-    ("MIC OUT", str(CHANNEL_ICON_PATHS["return-mic"]), ["Arctis monitor", "USB / SPDIF", "System default"], 52, "return-mic"),
+PHYSICAL_OUTPUT_TARGETS = [
+    ("Arctis Nova Pro", "alsa_output.usb-SteelSeries_Arctis_Nova_Pro_Wireless-00.analog-stereo"),
+    ("USB / SPDIF", "alsa_output.usb-Generic_USB_Audio-00.HiFi__SPDIF__sink"),
+    ("USB Speakers", "alsa_output.usb-Generic_USB_Audio-00.HiFi__Speaker__sink"),
+    ("USB Headphones", "alsa_output.usb-Generic_USB_Audio-00.HiFi__Headphones__sink"),
 ]
+PHYSICAL_OUTPUT_BY_LABEL = dict(PHYSICAL_OUTPUT_TARGETS)
+PHYSICAL_OUTPUT_LABEL_BY_SINK = {sink: label for label, sink in PHYSICAL_OUTPUT_TARGETS}
+PHYSICAL_OUTPUT_LABELS = [label for label, _sink in PHYSICAL_OUTPUT_TARGETS]
 
+CHANNELS = [
+    ("ALL", str(CHANNEL_ICON_PATHS["all"]), ["Arctis Nova Pro", "USB / SPDIF"], 76, "all"),
+    ("GAME", str(CHANNEL_ICON_PATHS["game"]), ["Arctis Nova Pro", "USB / SPDIF"], 72, "game"),
+    ("CHAT", str(CHANNEL_ICON_PATHS["chat"]), ["Arctis Nova Pro", "USB / SPDIF"], 70, "chat"),
+    ("MEDIA", str(CHANNEL_ICON_PATHS["media"]), ["USB / SPDIF", "Arctis Nova Pro"], 64, "media"),
+    ("MORE", str(CHANNEL_ICON_PATHS["more"]), ["Arctis Nova Pro", "USB / SPDIF"], 58, "more"),
+    ("MICRO", str(CHANNEL_ICON_PATHS["micro"]), ["RØDE NT-USB", "Arctis Mic"], 84, "micro"),
+    ("MIC OUT", str(CHANNEL_ICON_PATHS["return-mic"]), PHYSICAL_OUTPUT_LABELS, 52, "return-mic"),
+]
 
 APP_ROUTE_CHANNELS = [
     ("ALL", "all"),
@@ -2600,6 +2682,81 @@ class AppRouteCard(QFrame):
         self.select.setEnabled(True)
 
 
+
+class PermanentRouteCard(QFrame):
+    def __init__(
+        self,
+        icon: str,
+        title: str,
+        meta: str,
+        *,
+        checks: list[tuple[str, bool, object]] | None = None,
+        select_items: list[str] | None = None,
+        select_current: str | None = None,
+        select_callback=None,
+    ):
+        super().__init__()
+        self.setObjectName("appsRouteCard")
+        self.setMinimumHeight(66)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(9, 8, 9, 8)
+        root.setSpacing(7)
+
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(8)
+
+        icon_label = QLabel(icon)
+        icon_label.setObjectName("appRouteIcon")
+        icon_label.setAlignment(Qt.AlignCenter)
+        header.addWidget(icon_label)
+
+        text_col = QVBoxLayout()
+        text_col.setContentsMargins(0, 0, 0, 0)
+        text_col.setSpacing(2)
+
+        name_label = QLabel(title)
+        name_label.setObjectName("appRouteName")
+        text_col.addWidget(name_label)
+
+        meta_label = QLabel(meta)
+        meta_label.setObjectName("appRouteMeta")
+        meta_label.setWordWrap(True)
+        text_col.addWidget(meta_label)
+
+        header.addLayout(text_col, 1)
+        root.addLayout(header)
+
+        if select_items:
+            select_row = QHBoxLayout()
+            select_row.setContentsMargins(0, 0, 0, 0)
+            select_row.setSpacing(8)
+
+            label = QLabel("Output")
+            label.setObjectName("appRouteMeta")
+            select_row.addWidget(label)
+
+            self.select = SelectButton(select_items, select_current or select_items[0], select_callback)
+            self.select.setMinimumWidth(150)
+            select_row.addWidget(self.select, 1)
+            root.addLayout(select_row)
+
+        if checks:
+            checks_row = QHBoxLayout()
+            checks_row.setContentsMargins(0, 0, 0, 0)
+            checks_row.setSpacing(8)
+
+            for label, checked, callback in checks:
+                box = QCheckBox(label)
+                box.setObjectName("routeCheck")
+                box.setChecked(bool(checked))
+                box.toggled.connect(lambda value, cb=callback: cb(bool(value)) if cb is not None else None)
+                checks_row.addWidget(box)
+
+            checks_row.addStretch(1)
+            root.addLayout(checks_row)
+
 class AppsPanel(QWidget):
     def __init__(self, backend_controller=None):
         super().__init__()
@@ -2627,6 +2784,14 @@ class AppsPanel(QWidget):
 
         root.addLayout(top)
 
+        self.permanent_host = QWidget()
+        self.permanent_layout = QVBoxLayout(self.permanent_host)
+        self.permanent_layout.setContentsMargins(0, 0, 0, 0)
+        self.permanent_layout.setSpacing(9)
+        root.addWidget(self.permanent_host)
+
+        self._build_permanent_routes()
+
         self.streams_host = QWidget()
         self.streams_layout = QVBoxLayout(self.streams_host)
         self.streams_layout.setContentsMargins(0, 0, 0, 0)
@@ -2641,6 +2806,75 @@ class AppsPanel(QWidget):
         self.refresh_timer.start()
 
         self.refresh_streams(force=True)
+
+    def _clear_permanent_routes(self) -> None:
+        while self.permanent_layout.count():
+            item = self.permanent_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+    def _build_permanent_routes(self) -> None:
+        self._clear_permanent_routes()
+
+        if self.backend_controller is None:
+            self.permanent_layout.addWidget(PermanentRouteCard("⚠", "Internal routes", "Backend not connected yet"))
+            return
+
+        soundboard_state = self.backend_controller._soundboard_route_state()
+        return_state = self.backend_controller.return_mic_route_state()
+
+        self.permanent_layout.addWidget(
+            PermanentRouteCard(
+                "🎛",
+                "Soundboard",
+                "Permanent soundboard bus. Choose where it is injected.",
+                checks=[
+                    ("MIC OUT", bool(soundboard_state.get("monitor_to_mic_out")), self._set_soundboard_to_mic_out),
+                    ("MICRO", bool(soundboard_state.get("send_to_micro")), self._set_soundboard_to_micro),
+                ],
+            )
+        )
+
+        current_sink = self.backend_controller.channel_primary_target("return-mic")
+        current_label = PHYSICAL_OUTPUT_LABEL_BY_SINK.get(current_sink, PHYSICAL_OUTPUT_LABELS[0])
+
+        self.permanent_layout.addWidget(
+            PermanentRouteCard(
+                "🎧",
+                "MIC OUT / Return Mic",
+                "Permanent return channel. Pick the physical output and choose whether your mic is included.",
+                select_items=PHYSICAL_OUTPUT_LABELS,
+                select_current=current_label,
+                select_callback=self._set_return_mic_output,
+                checks=[
+                    ("Include MICRO", bool(return_state.get("micro-final")), self._set_return_mic_micro_source),
+                ],
+            )
+        )
+
+    def _set_soundboard_to_mic_out(self, enabled: bool) -> None:
+        if self.backend_controller is None:
+            return
+        self.backend_controller._set_soundboard_route_state("monitor_to_mic_out", bool(enabled))
+
+    def _set_soundboard_to_micro(self, enabled: bool) -> None:
+        if self.backend_controller is None:
+            return
+        self.backend_controller._set_soundboard_route_state("send_to_micro", bool(enabled))
+
+    def _set_return_mic_micro_source(self, enabled: bool) -> None:
+        if self.backend_controller is None:
+            return
+        self.backend_controller.set_return_mic_source_state("micro-final", bool(enabled))
+
+    def _set_return_mic_output(self, label: str) -> None:
+        if self.backend_controller is None:
+            return
+        sink = PHYSICAL_OUTPUT_BY_LABEL.get(str(label or "").strip())
+        if not sink:
+            return
+        self.backend_controller.set_channel_primary_target("return-mic", sink)
 
     def _clear_streams(self) -> None:
         while self.streams_layout.count():
@@ -4931,8 +5165,9 @@ class PreviewWindow(QMainWindow):
 
         tray.setContextMenu(menu)
         tray.activated.connect(self._tray_activated)
-        tray.show()
 
+        # Keep KDE clean: while the window is open, the taskbar icon is enough.
+        tray.hide()
         self.tray_icon = tray
 
     def _tray_activated(self, reason) -> None:
@@ -4940,13 +5175,25 @@ class PreviewWindow(QMainWindow):
             self._restore_from_tray()
 
     def _restore_from_tray(self) -> None:
+        if self.tray_icon is not None:
+            self.tray_icon.hide()
         self.show()
+        self.showNormal()
         self.raise_()
         self.activateWindow()
 
     def _quit_from_tray(self) -> None:
         self._allow_real_close = True
+        if self.tray_icon is not None:
+            try:
+                self.tray_icon.hide()
+            except Exception:
+                pass
         self.close()
+        app = QApplication.instance()
+        if app is not None:
+            QTimer.singleShot(0, app.quit)
+            QTimer.singleShot(150, app.quit)
 
     def closeEvent(self, event) -> None:
         if (
@@ -4956,6 +5203,10 @@ class PreviewWindow(QMainWindow):
         ):
             event.ignore()
             self.hide()
+            try:
+                self.tray_icon.show()
+            except Exception:
+                pass
             return
 
         try:
