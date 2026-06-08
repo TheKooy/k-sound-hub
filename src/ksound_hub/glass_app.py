@@ -1,4 +1,6 @@
 from __future__ import annotations
+import signal
+import os
 
 """
 Experimental K-Sounds Hub Glass UI.
@@ -196,6 +198,7 @@ class GlassBackendController(QObject):
 
     def apply_startup_settings(self) -> None:
         try:
+            self._ensure_glass_virtual_audio_buses()
             self.audio_engine.apply_settings(self.settings)
             self._reapply_saved_app_routes()
             self.apply_glass_runtime_routes()
@@ -1090,6 +1093,146 @@ class GlassBackendController(QObject):
             except Exception:
                 pass
 
+    def _ensure_null_sink(self, sink_name: str, description: str) -> bool:
+        name = str(sink_name or "").strip()
+        label = str(description or name).strip()
+        if not name:
+            return False
+        if self._sink_exists(name):
+            return True
+
+        self._pactl(
+            "load-module",
+            "module-null-sink",
+            f"sink_name={name}",
+            f"sink_properties=device.description={label}",
+            "channels=2",
+            "rate=48000",
+        )
+        time.sleep(0.04)
+        return self._sink_exists(name)
+
+    def _ensure_micro_endpoint(self) -> bool:
+        if not self._ensure_null_sink("micro_bus", "🎤MICRO-BUS"):
+            return False
+
+        if not self._source_exists("micro"):
+            self._pactl(
+                "load-module",
+                "module-remap-source",
+                "master=micro_bus.monitor",
+                "source_name=micro",
+                "source_properties=device.description=🎤MICRO",
+            )
+            time.sleep(0.04)
+
+        return self._source_exists("micro")
+
+    def _ensure_glass_virtual_audio_buses(self) -> bool:
+        # Glass is the frontend/runtime owner now. Do not rely on the old stable
+        # UI or an external keepalive to create these logical channel sinks.
+        wanted = (
+            ("all", "🌍ALL"),
+            ("game", "🎮GAME"),
+            ("chat", "💬CHAT"),
+            ("media", "🎵MEDIA"),
+            ("more", "🔊MORE"),
+            ("retour", "🎧MIC OUT"),
+        )
+
+        ok = True
+        for sink_name, description in wanted:
+            if not self._ensure_null_sink(sink_name, description):
+                ok = False
+
+        if not self._ensure_micro_endpoint():
+            ok = False
+
+        if not ok:
+            self.status_changed.emit("Glass virtual audio buses incomplete — routing may be unsafe")
+        return ok
+
+    def _sink_exists(self, sink_name: str) -> bool:
+        wanted = str(sink_name or "").strip()
+        if not wanted:
+            return False
+        result = self._pactl("list", "short", "sinks")
+        if result.returncode != 0:
+            return False
+        for line in result.stdout.splitlines():
+            parts = line.split()
+            if len(parts) >= 2 and parts[1] == wanted:
+                return True
+        return False
+
+    def _source_exists(self, source_name: str) -> bool:
+        wanted = str(source_name or "").strip()
+        if not wanted:
+            return False
+        result = self._pactl("list", "short", "sources")
+        if result.returncode != 0:
+            return False
+        for line in result.stdout.splitlines():
+            parts = line.split()
+            if len(parts) >= 2 and parts[1] == wanted:
+                return True
+        return False
+
+    def _unload_soundboard_monitor_loopbacks(self) -> None:
+        self._unload_modules_matching(
+            lambda line: (
+                "module-loopback" in line.lower()
+                and "source=soundboard.monitor" in line.lower()
+            )
+        )
+
+    def _unload_rigid_soundboard_output_loopbacks(self) -> None:
+        # Old route instances were loaded with sink_dont_move=true, which makes
+        # pactl move-sink-input fail and forces unload/reload on every output
+        # switch. Remove only that old Soundboard-To-Output route; keep MICRO.
+        self._unload_modules_matching(
+            lambda line: (
+                "module-loopback" in line.lower()
+                and "source=soundboard.monitor" in line.lower()
+                and "sink=micro_bus" not in line.lower()
+                and "sink_dont_move=true" in line.lower()
+            )
+        )
+
+    def _ensure_soundboard_bus(self) -> bool:
+        # Glass plays every pad into the private soundboard sink, then routes
+        # soundboard.monitor to MEDIA / MIC OUT / MICRO. If the private bus is
+        # missing, a loopback that says source=soundboard.monitor can become a
+        # stale or wrong live route. Repair the bus before accepting any route.
+        if self._sink_exists("soundboard") and self._source_exists("soundboard.monitor"):
+            return True
+
+        self._unload_soundboard_monitor_loopbacks()
+
+        if self._sink_exists("soundboard") and not self._source_exists("soundboard.monitor"):
+            self._unload_modules_matching(
+                lambda line: (
+                    "module-null-sink" in line.lower()
+                    and "sink_name=soundboard" in line.lower()
+                )
+            )
+
+        if not self._sink_exists("soundboard"):
+            self._pactl(
+                "load-module",
+                "module-null-sink",
+                "sink_name=soundboard",
+                "sink_properties=device.description=🎛SOUNDBOARD media.name=K-Sound-Hub-Soundboard-Bus",
+                "channels=2",
+                "rate=48000",
+            )
+            time.sleep(0.05)
+
+        ok = self._sink_exists("soundboard") and self._source_exists("soundboard.monitor")
+        if not ok:
+            self.status_changed.emit("Soundboard bus missing — cannot route Soundboard output safely")
+        return ok
+
     def _soundboard_output_config(self) -> str:
         data = self._read_soundboard_document()
 
@@ -1168,10 +1311,80 @@ class GlassBackendController(QObject):
         flush()
         return ids
 
+    def _sink_input_sink_names_by_media_name(self, media_name: str) -> list[str]:
+        wanted = str(media_name or "").strip()
+        if not wanted:
+            return []
+
+        sink_names_by_index: dict[str, str] = {}
+        sinks = self._pactl("list", "short", "sinks")
+        if sinks.returncode == 0:
+            for line in sinks.stdout.splitlines():
+                parts = line.split()
+                if len(parts) >= 2 and parts[0].isdigit():
+                    sink_names_by_index[parts[0]] = parts[1]
+
+        result = self._pactl("list", "sink-inputs")
+        if result.returncode != 0:
+            return []
+
+        names: list[str] = []
+        current_sink_index: str | None = None
+        current_lines: list[str] = []
+
+        def flush() -> None:
+            nonlocal current_sink_index, current_lines
+            if current_sink_index is None:
+                current_lines = []
+                return
+            block = "\n".join(current_lines)
+            if f'media.name = "{wanted}"' in block or f"media.name = {wanted}" in block:
+                names.append(sink_names_by_index.get(current_sink_index, current_sink_index))
+            current_sink_index = None
+            current_lines = []
+
+        for raw in result.stdout.splitlines():
+            line = raw.rstrip()
+            if re.match(r"Sink Input #(\d+)", line):
+                flush()
+                current_sink_index = None
+                current_lines = [line]
+                continue
+
+            if not current_lines:
+                continue
+
+            stripped = line.strip()
+            if stripped.startswith("Sink:"):
+                current_sink_index = stripped.split(":", 1)[1].strip()
+            current_lines.append(line)
+
+        flush()
+        return names
+
     def _unmute_soundboard_output_streams(self) -> None:
         for stream_id in self._sink_inputs_by_media_name("K-Sound-Hub-Soundboard-To-Output"):
             self._pactl("set-sink-input-mute", stream_id, "0")
             self._pactl("set-sink-input-volume", stream_id, "100%")
+
+    def _move_soundboard_output_streams(self, sink: str) -> bool:
+        target = str(sink or "").strip()
+        if not target or not self._sink_exists(target):
+            return False
+
+        stream_ids = self._sink_inputs_by_media_name("K-Sound-Hub-Soundboard-To-Output")
+        if not stream_ids:
+            return False
+
+        moved = False
+        for stream_id in stream_ids:
+            result = self._pactl("move-sink-input", stream_id, target)
+            if result.returncode == 0:
+                moved = True
+
+        if moved:
+            self._unmute_soundboard_output_streams()
+        return moved
 
     def _soundboard_output_sink_for_key(self, output_key: str) -> str:
         return {
@@ -1184,31 +1397,102 @@ class GlassBackendController(QObject):
         }.get(self._normalize_soundboard_output_key(output_key), "media")
 
     def _soundboard_output_loopback_ok(self, output_key: str) -> bool:
+        if not self._sink_exists("soundboard") or not self._source_exists("soundboard.monitor"):
+            return False
+
         sink = self._soundboard_output_sink_for_key(output_key)
+        if not self._sink_exists(sink):
+            return False
+
+        matching_ids: list[str] = []
         for line in self._pulse_modules():
+            parts = line.split("\t", 2)
+            module_id = parts[0].strip() if parts else ""
             low = line.lower()
-            if (
-                "module-loopback" in low
-                and "source=soundboard.monitor" in low
-                and f"sink={sink}" in low
-                and "sink=micro_bus" not in low
-            ):
-                return True
-        return False
+            if not ("module-loopback" in low and "source=soundboard.monitor" in low):
+                continue
+            if "sink=micro_bus" in low:
+                continue
+            if f"sink={sink}" in low:
+                if module_id.isdigit():
+                    matching_ids.append(module_id)
+            elif module_id.isdigit():
+                self._pactl("unload-module", module_id)
+
+        for module_id in matching_ids[:-1]:
+            self._pactl("unload-module", module_id)
+
+        if len(matching_ids) != 1:
+            return False
+
+        actual_sinks = self._sink_input_sink_names_by_media_name("K-Sound-Hub-Soundboard-To-Output")
+        if actual_sinks and (sink not in actual_sinks or any(name != sink for name in actual_sinks)):
+            # PipeWire-pulse can keep a loopback module with args sink=<logical>
+            # while its stream has fallen back to the default physical sink if
+            # the logical sink was missing at load time. Treat that as stale.
+            for module_id in matching_ids:
+                self._pactl("unload-module", module_id)
+            return False
+
+        return True
 
     def _soundboard_micro_loopback_ok(self) -> bool:
+        if not self._sink_exists("soundboard") or not self._source_exists("soundboard.monitor"):
+            return False
+        if not self._sink_exists("micro_bus"):
+            return False
+
+        matching_ids: list[str] = []
         for line in self._pulse_modules():
+            parts = line.split("\t", 2)
+            module_id = parts[0].strip() if parts else ""
             low = line.lower()
             if (
                 "module-loopback" in low
                 and "source=soundboard.monitor" in low
                 and "sink=micro_bus" in low
+                and module_id.isdigit()
             ):
-                return True
-        return False
+                matching_ids.append(module_id)
+
+        for module_id in matching_ids[:-1]:
+            self._pactl("unload-module", module_id)
+
+        if len(matching_ids) != 1:
+            return False
+
+        actual_sinks = self._sink_input_sink_names_by_media_name("K-Sound-Hub-Soundboard-To-Micro")
+        if actual_sinks and ("micro_bus" not in actual_sinks or any(name != "micro_bus" for name in actual_sinks)):
+            for module_id in matching_ids:
+                self._pactl("unload-module", module_id)
+            return False
+
+        return True
 
     def _load_soundboard_output_loopback(self, output_key: str) -> None:
+        self._ensure_glass_virtual_audio_buses()
+        if not self._ensure_soundboard_bus():
+            return
+
         sink = self._soundboard_output_sink_for_key(output_key)
+        if not self._sink_exists(sink):
+            self._unload_modules_matching(
+                lambda line: (
+                    "module-loopback" in line.lower()
+                    and "source=soundboard.monitor" in line.lower()
+                    and "sink=micro_bus" not in line.lower()
+                )
+            )
+            self.status_changed.emit(f"Soundboard output sink missing — {sink}")
+            return
+
+        self._unload_rigid_soundboard_output_loopbacks()
+
+        # Prefer moving the existing Soundboard-To-Output loopback stream. This
+        # avoids destroying/recreating the loopback on every output switch, which
+        # produces audible pops/crackles even when no pad is playing.
+        if self._move_soundboard_output_streams(sink):
+            return
 
         # Critical for pads latency: if the correct listening route already
         # exists, do NOT unload/reload it before each sound.
@@ -1231,7 +1515,6 @@ class GlassBackendController(QObject):
             f"sink={sink}",
             "latency_msec=20",
             "source_dont_move=true",
-            "sink_dont_move=true",
             "channels=2",
             "sink_input_properties=media.name=K-Sound-Hub-Soundboard-To-Output",
         )
@@ -1240,6 +1523,11 @@ class GlassBackendController(QObject):
         self._unmute_soundboard_output_streams()
 
     def _load_soundboard_micro_loopback(self, enabled: bool) -> None:
+        if enabled:
+            self._ensure_glass_virtual_audio_buses()
+            if not self._ensure_soundboard_bus():
+                return
+
         exists = self._soundboard_micro_loopback_ok()
 
         # Critical for pads latency: do not reload the MICRO route on every pad.
@@ -1492,6 +1780,7 @@ class GlassBackendController(QObject):
 
     def apply_glass_runtime_routes(self) -> None:
         self._sync_legacy_linked_channels_off()
+        self._ensure_glass_virtual_audio_buses()
         self._load_soundboard_output_loopback(self._soundboard_output_config())
         self._load_soundboard_micro_loopback(self._soundboard_send_to_micro_config())
         self._load_return_mic_micro_loopback(bool(self._return_mic_source_config()))
@@ -1563,7 +1852,7 @@ class GlassBackendController(QObject):
     def _move_channel_playback_to_target(self, channel_key: str, target_sink: str) -> None:
         key = str(channel_key or "").strip().lower()
         target = str(target_sink or "").strip()
-        if not key or not target or key == "micro":
+        if not key or key == "micro":
             return
 
         label = {
@@ -1591,7 +1880,8 @@ class GlassBackendController(QObject):
         for stream_id in numeric_ids[:-1]:
             self._pactl("kill-sink-input", str(stream_id))
 
-        self._pactl("move-sink-input", keep, target)
+        if target:
+            self._pactl("move-sink-input", keep, target)
 
     def _persist_channel_primary_target(self, channel_key: str, target: str) -> None:
         data = self._read_settings_document()
@@ -1612,8 +1902,7 @@ class GlassBackendController(QObject):
             if channel is None:
                 continue
             target = str(getattr(channel, "primary_target", "") or "").strip()
-            if target:
-                self._move_channel_playback_to_target(key, target)
+            self._move_channel_playback_to_target(key, target)
 
     def set_channel_primary_target(self, channel_key: str, target_sink: str) -> bool:
         key = str(channel_key or "").strip()
@@ -4975,18 +5264,6 @@ class PadsPanel(QWidget):
         if persist:
             self._save_soundboard_volume_setting(self._soundboard_volume)
 
-        dialog = getattr(self, "_soundboard_dialog", None)
-        if dialog is not None:
-            try:
-                if hasattr(dialog, "global_volume"):
-                    dialog.global_volume = self._soundboard_volume
-                if hasattr(dialog, "_global_volume"):
-                    dialog._global_volume = self._soundboard_volume
-                if hasattr(dialog, "slots"):
-                    dialog.slots = dialog._load_slots()
-            except Exception:
-                pass
-
     def _queue_soundboard_volume(self, value: int) -> None:
         self._pending_soundboard_volume = int(value)
         self._soundboard_volume_timer.start()
@@ -5002,7 +5279,7 @@ class PadsPanel(QWidget):
         self._edit_mode = False
         self._bulk_delete_mode = False
         self._active_emoji_card: SoundPadCard | None = None
-        self._soundboard_dialog: SoundboardDialog | None = None
+        self._soundboard_bus_player_processes: list[subprocess.Popen] = []
         self.pad_cards: list[SoundPadCard] = []
         self._soundboard_volume = self._read_soundboard_volume_setting()
         self._pending_soundboard_volume = self._soundboard_volume
@@ -5287,38 +5564,123 @@ class PadsPanel(QWidget):
         return [("No soundboard file", "🎧", "soundboard.json missing", "", "")]
 
 
+    def _cleanup_soundboard_bus_players(self) -> None:
+        active: list[subprocess.Popen] = []
+        for proc in list(getattr(self, "_soundboard_bus_player_processes", [])):
+            try:
+                if proc.poll() is None:
+                    active.append(proc)
+            except Exception:
+                pass
+        self._soundboard_bus_player_processes = active
+
+    def _terminate_soundboard_bus_proc(self, proc: subprocess.Popen) -> bool:
+        try:
+            if proc.poll() is not None:
+                return False
+        except Exception:
+            return False
+
+        stopped = False
+        try:
+            try:
+                os.killpg(proc.pid, signal.SIGTERM)
+            except Exception:
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+
+            try:
+                proc.wait(timeout=0.25)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except Exception:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                try:
+                    proc.wait(timeout=0.25)
+                except Exception:
+                    pass
+            stopped = True
+        except Exception:
+            pass
+        return stopped
+
+    def _soundboard_player_sink_input_ids(self) -> list[str]:
+        result = subprocess.run(
+            ["pactl", "list", "sink-inputs"],
+            capture_output=True,
+            text=True,
+            timeout=1.2,
+        )
+        if result.returncode != 0:
+            return []
+
+        ids: list[str] = []
+        current_id = ""
+        current_lines: list[str] = []
+
+        def flush() -> None:
+            nonlocal current_id, current_lines
+            if not current_id:
+                current_lines = []
+                return
+            block = "\n".join(current_lines)
+            if 'media.name = "K-Sounds-Hub-Soundboard-Player"' in block:
+                ids.append(current_id)
+            current_id = ""
+            current_lines = []
+
+        for raw in result.stdout.splitlines():
+            line = raw.rstrip()
+            match = re.match(r"Sink Input #(\d+)", line)
+            if match:
+                flush()
+                current_id = match.group(1)
+                current_lines = [line]
+                continue
+            if current_id:
+                current_lines.append(line)
+
+        flush()
+        return ids
+
+    def _kill_soundboard_bus_players(self) -> int:
+        # The Glass pads player uses a fire-and-forget bash ffmpeg|pacat pipeline.
+        # Track and stop its process group directly; pactl media-name cleanup is
+        # kept as a fallback for older/external players.
+        stopped = 0
+
+        for proc in list(getattr(self, "_soundboard_bus_player_processes", [])):
+            if self._terminate_soundboard_bus_proc(proc):
+                stopped += 1
+        self._soundboard_bus_player_processes = []
+
+        for stream_id in self._soundboard_player_sink_input_ids():
+            try:
+                result = subprocess.run(
+                    ["pactl", "kill-sink-input", str(stream_id)],
+                    capture_output=True,
+                    text=True,
+                    timeout=0.8,
+                )
+                if result.returncode == 0:
+                    stopped += 1
+            except Exception:
+                pass
+        return stopped
+
     def _stop_all_sounds(self) -> None:
         button = getattr(self, "stop_all_button", None)
         if button is not None:
             button.setEnabled(False)
             QTimer.singleShot(180, lambda b=button: b.setEnabled(True))
 
-        local_stopped = False
-
-        dialog = self._soundboard_dialog
-        if dialog is not None:
-            try:
-                dialog.stop_all()
-                local_stopped = True
-            except Exception:
-                pass
-
-        remote_sent = _send_ksh_ipc_payload({"command": "soundboard-stop-all"})
-
-        if not local_stopped and not remote_sent:
-            QMessageBox.warning(
-                self,
-                "Soundboard playback",
-                "No active Glass soundboard player was found, and the real app IPC is not reachable.",
-            )
-
-    def _soundboard_playback_dialog(self) -> SoundboardDialog:
-        dialog = self._soundboard_dialog
-        if dialog is None:
-            dialog = SoundboardDialog(self)
-            dialog.hide()
-            self._soundboard_dialog = dialog
-        return dialog
+        self._kill_soundboard_bus_players()
 
     def _remote_server_reachable(self) -> bool:
         try:
@@ -5458,13 +5820,17 @@ class PadsPanel(QWidget):
             + "--property=media.name=K-Sounds-Hub-Soundboard-Player"
         )
 
-        subprocess.Popen(
+        self._cleanup_soundboard_bus_players()
+        proc = subprocess.Popen(
             ["bash", "-lc", cmd],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
+        self._soundboard_bus_player_processes.append(proc)
+        QTimer.singleShot(500, self._cleanup_soundboard_bus_players)
+        QTimer.singleShot(2500, self._cleanup_soundboard_bus_players)
         return True
 
     def _play_pad(self, slot_key: str) -> None:
@@ -5473,10 +5839,9 @@ class PadsPanel(QWidget):
 
         try:
             controller = getattr(self.window(), "backend_controller", None)
-            if controller is not None:
-                controller._load_soundboard_output_loopback(controller.soundboard_output_channel())
-                controller._load_soundboard_micro_loopback(controller._soundboard_send_to_micro_config())
-
+            # Routes are applied on startup and whenever the Soundboard routing
+            # controls change. Do not run heavy pactl route validation on every
+            # pad click: it stalls Glass meters/UI exactly when a sound starts.
             slot = self._slot_for_key(slot_key)
             if not slot or not self._play_slot_to_soundboard_bus(slot):
                 QMessageBox.warning(self, "Soundboard playback", "This sound could not be found or could not be played.")
@@ -5543,12 +5908,8 @@ class PadsPanel(QWidget):
         return data, slots, index
 
     def _refresh_soundboard_after_edit(self) -> None:
-        dialog = self._soundboard_dialog
-        if dialog is not None:
-            try:
-                dialog.slots = dialog._load_slots()
-            except Exception:
-                pass
+        # Glass pads read soundboard.json directly; there is no hidden playback dialog to sync.
+        return
 
     def _persist_card_emoji(self, card: SoundPadCard, emoji: str) -> None:
         data, slots, index = self._ensure_slot_for_card(card)
