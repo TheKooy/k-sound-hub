@@ -735,6 +735,59 @@ class GlassBackendController(QObject):
 
         return True
 
+    def soundboard_output_channel(self) -> str:
+        for channel_key in ("all", "game", "chat", "media", "more", "return-mic"):
+            channel = self._find_channel(channel_key)
+            linked = {
+                str(key).strip().lower()
+                for key in (getattr(channel, "linked_channels", []) if channel is not None else [])
+                if str(key).strip()
+            }
+            if "soundboard" in linked:
+                return channel_key
+        return "media"
+
+    def set_soundboard_output_channel(self, channel_key: str) -> bool:
+        wanted = self._normalize_channel_key(channel_key)
+        if wanted not in {"all", "game", "chat", "media", "more", "return-mic"}:
+            return False
+
+        changed_keys: list[str] = []
+        for key in ("all", "game", "chat", "media", "more", "return-mic"):
+            channel = self._find_channel(key)
+            if channel is None:
+                continue
+
+            linked = [
+                str(item).strip().lower()
+                for item in getattr(channel, "linked_channels", []) or []
+                if str(item).strip()
+            ]
+            before = list(linked)
+
+            linked = [item for item in linked if item != "soundboard"]
+            if key == wanted and "soundboard" not in linked:
+                linked.append("soundboard")
+
+            if linked != before:
+                channel.linked_channels = linked
+                changed_keys.append(key)
+
+        ok = True
+        for key in changed_keys:
+            try:
+                self.audio_engine.apply_channel(self.settings, key)
+            except Exception as exc:
+                ok = False
+                self.status_changed.emit(f"Soundboard output route error — {exc}")
+
+        if changed_keys:
+            self._save_timer.start()
+            label = SOUNDBOARD_LOGICAL_LABEL_BY_KEY.get(wanted, wanted.upper())
+            self.status_changed.emit(f"Soundboard output → {label}")
+
+        return ok
+
     def _ensure_android_soundboard_dialog(self) -> SoundboardDialog:
         dialog = self._android_soundboard_dialog
         if dialog is None:
@@ -959,6 +1012,17 @@ APP_ROUTE_CHANNELS = [
 APP_ROUTE_LABEL_BY_KEY = {key: label for label, key in APP_ROUTE_CHANNELS}
 APP_ROUTE_KEY_BY_LABEL = {label: key for label, key in APP_ROUTE_CHANNELS}
 APP_ROUTE_KEYS = {key for _label, key in APP_ROUTE_CHANNELS}
+
+SOUNDBOARD_LOGICAL_OUTPUTS = [
+    ("ALL", "all"),
+    ("GAME", "game"),
+    ("CHAT", "chat"),
+    ("MEDIA", "media"),
+    ("MORE", "more"),
+    ("MIC OUT", "return-mic"),
+]
+SOUNDBOARD_LOGICAL_LABEL_BY_KEY = {key: label for label, key in SOUNDBOARD_LOGICAL_OUTPUTS}
+SOUNDBOARD_LOGICAL_KEY_BY_LABEL = {label: key for label, key in SOUNDBOARD_LOGICAL_OUTPUTS}
 
 
 STYLE = """
@@ -2824,39 +2888,48 @@ class AppsPanel(QWidget):
         soundboard_state = self.backend_controller._soundboard_route_state()
         return_state = self.backend_controller.return_mic_route_state()
 
+        current_key = self.backend_controller.soundboard_output_channel()
+        current_label = SOUNDBOARD_LOGICAL_LABEL_BY_KEY.get(current_key, "MEDIA")
+
         self.permanent_layout.addWidget(
             PermanentRouteCard(
                 "🎛",
                 "Soundboard",
-                "Permanent soundboard bus. Choose where it is injected.",
+                "Choose where you hear the soundboard, and optionally inject it into MICRO.",
+                select_items=[label for label, _key in SOUNDBOARD_LOGICAL_OUTPUTS],
+                select_current=current_label,
+                select_callback=self._set_soundboard_output,
                 checks=[
-                    ("MIC OUT", bool(soundboard_state.get("monitor_to_mic_out")), self._set_soundboard_to_mic_out),
                     ("MICRO", bool(soundboard_state.get("send_to_micro")), self._set_soundboard_to_micro),
                 ],
             )
         )
 
-        current_sink = self.backend_controller.channel_primary_target("return-mic")
-        current_label = PHYSICAL_OUTPUT_LABEL_BY_SINK.get(current_sink, PHYSICAL_OUTPUT_LABELS[0])
-
         self.permanent_layout.addWidget(
             PermanentRouteCard(
                 "🎧",
                 "MIC OUT / Return Mic",
-                "Permanent return channel. Pick the physical output and choose whether your mic is included.",
-                select_items=PHYSICAL_OUTPUT_LABELS,
-                select_current=current_label,
-                select_callback=self._set_return_mic_output,
+                "Enable this when you want to hear your microphone in the return channel.",
                 checks=[
-                    ("Include MICRO", bool(return_state.get("micro-final")), self._set_return_mic_micro_source),
+                    ("MICRO", bool(return_state.get("micro-final")), self._set_return_mic_micro_source),
                 ],
             )
         )
 
+    def _set_soundboard_output(self, label: str) -> None:
+        if self.backend_controller is None:
+            return
+        key = SOUNDBOARD_LOGICAL_KEY_BY_LABEL.get(str(label or "").strip())
+        if not key:
+            return
+        self.backend_controller.set_soundboard_output_channel(key)
+        QTimer.singleShot(120, self._build_permanent_routes)
+
     def _set_soundboard_to_mic_out(self, enabled: bool) -> None:
         if self.backend_controller is None:
             return
-        self.backend_controller._set_soundboard_route_state("monitor_to_mic_out", bool(enabled))
+        self.backend_controller.set_soundboard_output_channel("return-mic" if enabled else "media")
+        QTimer.singleShot(120, self._build_permanent_routes)
 
     def _set_soundboard_to_micro(self, enabled: bool) -> None:
         if self.backend_controller is None:
@@ -5165,9 +5238,8 @@ class PreviewWindow(QMainWindow):
 
         tray.setContextMenu(menu)
         tray.activated.connect(self._tray_activated)
+        tray.show()
 
-        # Keep KDE clean: while the window is open, the taskbar icon is enough.
-        tray.hide()
         self.tray_icon = tray
 
     def _tray_activated(self, reason) -> None:
@@ -5176,7 +5248,10 @@ class PreviewWindow(QMainWindow):
 
     def _restore_from_tray(self) -> None:
         if self.tray_icon is not None:
-            self.tray_icon.hide()
+            try:
+                self.tray_icon.show()
+            except Exception:
+                pass
         self.show()
         self.showNormal()
         self.raise_()
@@ -5193,7 +5268,6 @@ class PreviewWindow(QMainWindow):
         app = QApplication.instance()
         if app is not None:
             QTimer.singleShot(0, app.quit)
-            QTimer.singleShot(150, app.quit)
 
     def closeEvent(self, event) -> None:
         if (
