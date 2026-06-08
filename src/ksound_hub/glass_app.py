@@ -607,59 +607,242 @@ class GlassBackendController(QObject):
     def set_channel_muted(self, channel_key: str, muted: bool) -> bool:
         return self._apply_mixer_action(channel_key, "set-mute", muted=muted)
 
-    def _soundboard_route_state(self) -> dict[str, bool]:
-        def linked(channel_key: str) -> bool:
-            channel = self._find_channel(channel_key)
-            if channel is None:
-                return False
-            return "soundboard" in {
-                str(key).strip().lower()
-                for key in getattr(channel, "linked_channels", []) or []
-            }
+    def _normalize_soundboard_output_key(self, channel_key: str) -> str:
+        raw = str(channel_key or "").strip()
+        lowered = raw.lower().replace("_", "-")
+        aliases = {
+            "mic out": "return-mic",
+            "mic-out": "return-mic",
+            "return mic": "return-mic",
+            "return-mic": "return-mic",
+            "retour": "return-mic",
+        }
+        lowered = aliases.get(lowered, lowered)
+        key = self._normalize_channel_key(lowered)
+        if key in {"all", "game", "chat", "media", "more", "return-mic"}:
+            return key
+        return "media"
 
+    def _read_soundboard_document(self) -> dict:
+        try:
+            if SOUNDBOARD_PATH.is_file():
+                loaded = json.loads(SOUNDBOARD_PATH.read_text(encoding="utf-8"))
+            else:
+                loaded = {}
+            if isinstance(loaded, list):
+                return {"slots": loaded}
+            if isinstance(loaded, dict):
+                if not isinstance(loaded.get("slots"), list):
+                    loaded["slots"] = []
+                return loaded
+        except Exception:
+            pass
+        return {"slots": []}
+
+    def _write_soundboard_document(self, data: dict) -> None:
+        try:
+            if not isinstance(data, dict):
+                data = {"slots": []}
+            if not isinstance(data.get("slots"), list):
+                data["slots"] = []
+            SOUNDBOARD_PATH.parent.mkdir(parents=True, exist_ok=True)
+            SOUNDBOARD_PATH.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        except Exception as exc:
+            self.status_changed.emit(f"Soundboard config save error — {exc}")
+
+    def _soundboard_send_to_micro_config(self) -> bool:
+        data = self._read_soundboard_document()
+        value = data.get("send_to_micro")
+        if isinstance(value, bool):
+            return value
+        slots = data.get("slots", [])
+        if isinstance(slots, list):
+            return any(bool(slot.get("send_to_micro")) for slot in slots if isinstance(slot, dict))
+        return False
+
+    def _soundboard_output_config(self) -> str:
+        data = self._read_soundboard_document()
+
+        root = str(data.get("output_channel") or "").strip()
+        if root:
+            return self._normalize_soundboard_output_key(root)
+
+        # Legacy flag from previous UI attempts.
+        if bool(data.get("monitor_to_mic_out")):
+            return "return-mic"
+
+        counts: dict[str, int] = {}
+        for slot in data.get("slots", []):
+            if not isinstance(slot, dict):
+                continue
+            key = self._normalize_soundboard_output_key(str(slot.get("output_channel") or ""))
+            counts[key] = counts.get(key, 0) + 1
+        if counts:
+            return max(counts.items(), key=lambda item: item[1])[0]
+        return "media"
+
+    def _pactl(self, *args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["pactl", *[str(arg) for arg in args]],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+    def _list_pulse_modules_short(self) -> list[str]:
+        result = self._pactl("list", "short", "modules")
+        if result.returncode != 0:
+            return []
+        return [line for line in result.stdout.splitlines() if line.strip()]
+
+    def _unload_matching_modules(self, predicate) -> None:
+        for line in self._list_pulse_modules_short():
+            parts = line.split("\t", 2)
+            if not parts:
+                continue
+            module_id = parts[0].strip()
+            if not module_id.isdigit():
+                continue
+            try:
+                if predicate(line):
+                    self._pactl("unload-module", module_id)
+            except Exception:
+                pass
+
+    def apply_soundboard_runtime_routes(self) -> None:
+        output_key = self._soundboard_output_config()
+        send_to_micro = self._soundboard_send_to_micro_config()
+        output_sink = {
+            "all": "all",
+            "game": "game",
+            "chat": "chat",
+            "media": "media",
+            "more": "more",
+            "return-mic": "retour",
+        }.get(output_key, "media")
+
+        def is_old_soundboard_route(line: str) -> bool:
+            lowered = line.lower()
+            return (
+                "module-loopback" in lowered
+                and "source=soundboard.monitor" in lowered
+                and any(f"sink={sink}" in lowered for sink in ["all", "game", "chat", "media", "more", "retour", "micro_bus"])
+            )
+
+        self._unload_matching_modules(is_old_soundboard_route)
+
+        self._pactl(
+            "load-module",
+            "module-loopback",
+            "source=soundboard.monitor",
+            f"sink={output_sink}",
+            "latency_msec=20",
+            "source_dont_move=true",
+            "sink_dont_move=true",
+            "channels=2",
+            "sink_input_properties=media.name=K-Sound-Hub-Soundboard-To-Output",
+        )
+
+        if send_to_micro:
+            self._pactl(
+                "load-module",
+                "module-loopback",
+                "source=soundboard.monitor",
+                "sink=micro_bus",
+                "latency_msec=20",
+                "source_dont_move=true",
+                "sink_dont_move=true",
+                "channels=2",
+                "sink_input_properties=media.name=K-Sound-Hub-Soundboard-To-Micro",
+            )
+
+    def apply_return_mic_runtime_route(self) -> None:
+        state = self.return_mic_route_state()
+        enabled = bool(state.get("micro"))
+
+        def is_old_return_mic_micro_route(line: str) -> bool:
+            lowered = line.lower()
+            return (
+                "module-loopback" in lowered
+                and "sink=retour" in lowered
+                and (
+                    "source=micro" in lowered
+                    or "k-sound-hub-return-mic-micro" in lowered
+                )
+            )
+
+        self._unload_matching_modules(is_old_return_mic_micro_route)
+
+        if enabled:
+            self._pactl(
+                "load-module",
+                "module-loopback",
+                "source=micro",
+                "sink=retour",
+                "latency_msec=20",
+                "source_dont_move=true",
+                "sink_dont_move=true",
+                "channels=2",
+                "sink_input_properties=media.name=K-Sound-Hub-Return-Mic-Micro",
+            )
+
+    def _sync_soundboard_settings_links(self, output_key: str, send_to_micro: bool) -> None:
+        output_key = self._normalize_soundboard_output_key(output_key)
+
+        for key in ("all", "game", "chat", "media", "more", "return-mic", "micro"):
+            channel = self._find_channel(key)
+            if channel is None:
+                continue
+
+            linked = [
+                str(item).strip().lower()
+                for item in getattr(channel, "linked_channels", []) or []
+                if str(item).strip()
+            ]
+            linked = [item for item in linked if item != "soundboard"]
+
+            if key == output_key:
+                linked.append("soundboard")
+            if key == "micro" and send_to_micro:
+                linked.append("soundboard")
+
+            channel.linked_channels = linked
+
+    def _soundboard_route_state(self) -> dict[str, bool]:
+        output_key = self._soundboard_output_config()
         return {
-            "monitor_to_mic_out": linked("return-mic"),
-            "send_to_micro": linked("micro"),
+            "monitor_to_mic_out": output_key == "return-mic",
+            "send_to_micro": self._soundboard_send_to_micro_config(),
         }
 
     def _set_soundboard_route_state(self, route_key: str, enabled: bool) -> bool:
-        route_to_channel = {
-            "monitor_to_mic_out": "return-mic",
-            "send_to_micro": "micro",
-        }
+        route = str(route_key or "").strip().lower()
+        data = self._read_soundboard_document()
 
-        channel_key = route_to_channel.get(str(route_key or "").strip())
-        if not channel_key:
+        if route == "monitor_to_mic_out":
+            return self.set_soundboard_output_channel("return-mic" if enabled else "media")
+
+        if route != "send_to_micro":
             return False
 
-        channel = self._find_channel(channel_key)
-        if channel is None:
-            return False
+        send_to_micro = bool(enabled)
+        data["send_to_micro"] = send_to_micro
+        for slot in data.get("slots", []):
+            if isinstance(slot, dict):
+                slot["send_to_micro"] = send_to_micro
+        self._write_soundboard_document(data)
 
-        linked = [
-            str(key).strip().lower()
-            for key in getattr(channel, "linked_channels", []) or []
-            if str(key).strip()
-        ]
+        self._sync_soundboard_settings_links(self._soundboard_output_config(), send_to_micro)
 
-        before = list(linked)
-        if enabled:
-            if "soundboard" not in linked:
-                linked.append("soundboard")
-        else:
-            linked = [key for key in linked if key != "soundboard"]
+        try:
+            self.audio_engine.apply_channel(self.settings, "micro")
+        except Exception as exc:
+            self.status_changed.emit(f"Soundboard MICRO route error — {exc}")
 
-        channel.linked_channels = linked
-
-        if linked != before:
-            try:
-                self.audio_engine.apply_channel(self.settings, channel_key)
-            except Exception as exc:
-                self.status_changed.emit(f"Soundboard route error — {exc}")
-                return False
-            self._save_timer.start()
-            self.status_changed.emit(f"Soundboard route updated: {route_key}={bool(enabled)}")
-
+        self.apply_soundboard_runtime_routes()
+        self._save_timer.start()
+        self.status_changed.emit(f"Soundboard MICRO: {send_to_micro}")
         return True
 
     def set_channel_primary_target(self, channel_key: str, target_sink: str) -> bool:
@@ -693,15 +876,14 @@ class GlassBackendController(QObject):
             if str(key).strip()
         }
         return {
-            "soundboard": "soundboard" in linked,
-            "micro-final": "micro-final" in linked or "micro" in linked,
+            "micro": "micro" in linked or "micro-final" in linked,
         }
 
     def set_return_mic_source_state(self, source_key: str, enabled: bool) -> bool:
         source = str(source_key or "").strip().lower()
-        if source == "micro":
-            source = "micro-final"
-        if source not in {"soundboard", "micro-final"}:
+        if source in {"micro-final", "micro"}:
+            source = "micro"
+        if source != "micro":
             return False
 
         channel = self._find_channel("return-mic")
@@ -715,11 +897,9 @@ class GlassBackendController(QObject):
         ]
 
         before = list(linked)
+        linked = [key for key in linked if key not in {"micro", "micro-final"}]
         if enabled:
-            if source not in linked:
-                linked.append(source)
-        else:
-            linked = [key for key in linked if key != source]
+            linked.append("micro")
 
         channel.linked_channels = linked
 
@@ -729,63 +909,43 @@ class GlassBackendController(QObject):
             except Exception as exc:
                 self.status_changed.emit(f"MIC OUT source route error — {exc}")
                 return False
+            self.apply_return_mic_runtime_route()
             self._save_timer.start()
-            label = "MICRO" if source == "micro-final" else "Soundboard"
-            self.status_changed.emit(f"MIC OUT source {label}: {bool(enabled)}")
+            self.status_changed.emit(f"MIC OUT MICRO: {bool(enabled)}")
+        else:
+            self.apply_return_mic_runtime_route()
 
         return True
 
     def soundboard_output_channel(self) -> str:
-        for channel_key in ("all", "game", "chat", "media", "more", "return-mic"):
-            channel = self._find_channel(channel_key)
-            linked = {
-                str(key).strip().lower()
-                for key in (getattr(channel, "linked_channels", []) if channel is not None else [])
-                if str(key).strip()
-            }
-            if "soundboard" in linked:
-                return channel_key
-        return "media"
+        return self._soundboard_output_config()
 
     def set_soundboard_output_channel(self, channel_key: str) -> bool:
-        wanted = self._normalize_channel_key(channel_key)
-        if wanted not in {"all", "game", "chat", "media", "more", "return-mic"}:
-            return False
+        wanted = self._normalize_soundboard_output_key(channel_key)
+        send_to_micro = self._soundboard_send_to_micro_config()
 
-        changed_keys: list[str] = []
-        for key in ("all", "game", "chat", "media", "more", "return-mic"):
-            channel = self._find_channel(key)
-            if channel is None:
-                continue
+        data = self._read_soundboard_document()
+        data["output_channel"] = wanted
+        data["monitor_to_mic_out"] = wanted == "return-mic"
+        for slot in data.get("slots", []):
+            if isinstance(slot, dict):
+                slot["output_channel"] = wanted
+        self._write_soundboard_document(data)
 
-            linked = [
-                str(item).strip().lower()
-                for item in getattr(channel, "linked_channels", []) or []
-                if str(item).strip()
-            ]
-            before = list(linked)
-
-            linked = [item for item in linked if item != "soundboard"]
-            if key == wanted and "soundboard" not in linked:
-                linked.append("soundboard")
-
-            if linked != before:
-                channel.linked_channels = linked
-                changed_keys.append(key)
+        self._sync_soundboard_settings_links(wanted, send_to_micro)
 
         ok = True
-        for key in changed_keys:
+        for key in ("all", "game", "chat", "media", "more", "return-mic", "micro"):
             try:
                 self.audio_engine.apply_channel(self.settings, key)
             except Exception as exc:
                 ok = False
                 self.status_changed.emit(f"Soundboard output route error — {exc}")
 
-        if changed_keys:
-            self._save_timer.start()
-            label = SOUNDBOARD_LOGICAL_LABEL_BY_KEY.get(wanted, wanted.upper())
-            self.status_changed.emit(f"Soundboard output → {label}")
-
+        self.apply_soundboard_runtime_routes()
+        self._save_timer.start()
+        label = SOUNDBOARD_LOGICAL_LABEL_BY_KEY.get(wanted, wanted.upper())
+        self.status_changed.emit(f"Soundboard output → {label}")
         return ok
 
     def _ensure_android_soundboard_dialog(self) -> SoundboardDialog:
@@ -2885,6 +3045,9 @@ class AppsPanel(QWidget):
             self.permanent_layout.addWidget(PermanentRouteCard("⚠", "Internal routes", "Backend not connected yet"))
             return
 
+        self.backend_controller.apply_soundboard_runtime_routes()
+        self.backend_controller.apply_return_mic_runtime_route()
+
         soundboard_state = self.backend_controller._soundboard_route_state()
         return_state = self.backend_controller.return_mic_route_state()
 
@@ -2911,7 +3074,7 @@ class AppsPanel(QWidget):
                 "MIC OUT / Return Mic",
                 "MICRO lets you hear your microphone in the return channel.",
                 checks=[
-                    ("MICRO", bool(return_state.get("micro-final")), self._set_return_mic_micro_source),
+                    ("MICRO", bool(return_state.get("micro")), self._set_return_mic_micro_source),
                 ],
             )
         )
@@ -2923,7 +3086,7 @@ class AppsPanel(QWidget):
         if not key:
             return
         self.backend_controller.set_soundboard_output_channel(key)
-        QTimer.singleShot(120, self._build_permanent_routes)
+        self._build_permanent_routes()
 
     def _set_soundboard_to_mic_out(self, enabled: bool) -> None:
         if self.backend_controller is None:
@@ -2935,13 +3098,13 @@ class AppsPanel(QWidget):
         if self.backend_controller is None:
             return
         self.backend_controller._set_soundboard_route_state("send_to_micro", bool(enabled))
-        QTimer.singleShot(120, self._build_permanent_routes)
+        self._build_permanent_routes()
 
     def _set_return_mic_micro_source(self, enabled: bool) -> None:
         if self.backend_controller is None:
             return
-        self.backend_controller.set_return_mic_source_state("micro-final", bool(enabled))
-        QTimer.singleShot(120, self._build_permanent_routes)
+        self.backend_controller.set_return_mic_source_state("micro", bool(enabled))
+        self._build_permanent_routes()
 
     def _set_return_mic_output(self, label: str) -> None:
         if self.backend_controller is None:
@@ -5301,21 +5464,6 @@ class PreviewWindow(QMainWindow):
             QTimer.singleShot(0, app.quit)
 
     def closeEvent(self, event) -> None:
-        close_to_tray = bool(getattr(self.backend_controller.settings, "close_to_tray", True))
-
-        if close_to_tray and not bool(getattr(self, "_allow_real_close", False)):
-            if self.tray_icon is not None and QSystemTrayIcon.isSystemTrayAvailable():
-                event.ignore()
-                try:
-                    self.tray_icon.show()
-                except Exception:
-                    pass
-                self.hide()
-                return
-
-            # Failsafe: never create an invisible app without a usable tray.
-            self._allow_real_close = True
-
         try:
             if self.tray_icon is not None:
                 self.tray_icon.hide()
