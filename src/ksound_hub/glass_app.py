@@ -608,6 +608,136 @@ class GlassBackendController(QObject):
     def set_channel_muted(self, channel_key: str, muted: bool) -> bool:
         return self._apply_mixer_action(channel_key, "set-mute", muted=muted)
 
+    def _pactl_blocks(self, kind: str) -> list[dict[str, str]]:
+        result = self._pactl("list", kind)
+        if result.returncode != 0:
+            return []
+
+        blocks: list[dict[str, str]] = []
+        current: dict[str, str] | None = None
+
+        for raw in result.stdout.splitlines():
+            line = raw.rstrip()
+            if re.match(r"^(Sink|Source) #\d+", line):
+                if current:
+                    blocks.append(current)
+                current = {}
+                continue
+
+            if current is None:
+                continue
+
+            stripped = line.strip()
+            if stripped.startswith("Name:"):
+                current["name"] = stripped.split(":", 1)[1].strip()
+            elif stripped.startswith("Description:"):
+                current["description"] = stripped.split(":", 1)[1].strip()
+
+        if current:
+            blocks.append(current)
+
+        return blocks
+
+    def _dedupe_device_label(self, label: str, name: str, used: set[str]) -> str:
+        clean = str(label or name or "Unknown device").strip()
+        if clean not in used:
+            used.add(clean)
+            return clean
+
+        short = str(name or "").strip()
+        candidate = f"{clean} [{short}]" if short else clean
+        index = 2
+        while candidate in used:
+            candidate = f"{clean} [{index}]"
+            index += 1
+        used.add(candidate)
+        return candidate
+
+    def available_output_targets(self) -> list[tuple[str, str]]:
+        internal = {
+            "all",
+            "game",
+            "chat",
+            "media",
+            "more",
+            "retour",
+            "micro_bus",
+            "soundboard",
+            "easyeffects_sink",
+        }
+
+        targets: list[tuple[str, str]] = []
+        used: set[str] = set()
+
+        for block in self._pactl_blocks("sinks"):
+            name = str(block.get("name") or "").strip()
+            if not name or name in internal:
+                continue
+            if name.endswith(".monitor"):
+                continue
+
+            description = str(block.get("description") or name).strip()
+            lowered = f"{name} {description}".lower()
+            if any(token in lowered for token in ["k-sound", "ksounds", "soundboard", "micro-bus", "retour-micro"]):
+                continue
+
+            label = self._dedupe_device_label(description, name, used)
+            targets.append((label, name))
+
+        if not targets:
+            targets = list(PHYSICAL_OUTPUT_TARGETS)
+
+        return targets
+
+    def available_input_targets(self) -> list[tuple[str, str]]:
+        targets: list[tuple[str, str]] = []
+        used: set[str] = set()
+
+        for block in self._pactl_blocks("sources"):
+            name = str(block.get("name") or "").strip()
+            if not name or name.endswith(".monitor"):
+                continue
+
+            description = str(block.get("description") or name).strip()
+            lowered = f"{name} {description}".lower()
+            if any(token in lowered for token in ["k-sound-hub-soundboard", "soundboard", "retour"]):
+                continue
+
+            label = self._dedupe_device_label(description, name, used)
+            targets.append((label, name))
+
+        if not targets:
+            targets = list(PHYSICAL_INPUT_TARGETS) if "PHYSICAL_INPUT_TARGETS" in globals() else [("MICRO", "micro")]
+
+        return targets
+
+    def resolve_output_label(self, label: str) -> str:
+        wanted = str(label or "").strip()
+        dynamic = dict(self.available_output_targets())
+        if wanted in dynamic:
+            return dynamic[wanted]
+        return PHYSICAL_OUTPUT_BY_LABEL.get(wanted, "")
+
+    def resolve_input_label(self, label: str) -> str:
+        wanted = str(label or "").strip()
+        dynamic = dict(self.available_input_targets())
+        if wanted in dynamic:
+            return dynamic[wanted]
+        if "PHYSICAL_INPUT_BY_LABEL" in globals():
+            return PHYSICAL_INPUT_BY_LABEL.get(wanted, "")
+        return ""
+
+    def label_for_target(self, target: str, *, input_device: bool = False) -> str:
+        wanted = str(target or "").strip()
+        pairs = self.available_input_targets() if input_device else self.available_output_targets()
+        for label, name in pairs:
+            if name == wanted:
+                return label
+
+        if input_device and "PHYSICAL_INPUT_LABEL_BY_SOURCE" in globals():
+            return PHYSICAL_INPUT_LABEL_BY_SOURCE.get(wanted, wanted)
+        return PHYSICAL_OUTPUT_LABEL_BY_SINK.get(wanted, wanted)
+
     def _normalize_soundboard_output_key(self, channel_key: str) -> str:
         raw = str(channel_key or "").strip()
         lowered = raw.lower().replace("_", "-")
@@ -989,26 +1119,26 @@ class GlassBackendController(QObject):
         }.get(self._normalize_soundboard_output_key(output_key), "media")
 
         media_name = "K-Sound-Hub-Soundboard-To-Output"
-        existing = self._sink_inputs_by_media_name(media_name)
 
-        if existing:
-            keep = existing[0]
-            # Smooth route change: move the existing loopback stream instead of unloading/reloading it.
-            self._pactl("move-sink-input", keep, sink)
-            for duplicate in existing[1:]:
-                self._pactl("kill-sink-input", duplicate)
-            return
+        existing_inputs = self._sink_inputs_by_media_name(media_name)
+        for stream_id in existing_inputs:
+            self._pactl("set-sink-input-mute", stream_id, "1")
+            self._pactl("set-sink-input-volume", stream_id, "0%")
 
-        # First creation / legacy cleanup only.
+        if existing_inputs:
+            time.sleep(0.05)
+
+        # Stable route: reload only the soundboard listening/output loopback.
+        # Do not touch Soundboard -> MICRO and do not touch Return Mic.
         self._unload_modules_matching(
             lambda line: (
-                "module-loopback" in line
-                and "source=soundboard.monitor" in line
-                and "sink=micro_bus" not in line
+                "module-loopback" in line.lower()
+                and "source=soundboard.monitor" in line.lower()
+                and "sink=micro_bus" not in line.lower()
                 and (
-                    "K-Sound-Hub-Soundboard-To-Output" in line
-                    or "K-Sounds Hub Mic Output Monitor Monitor soundboard" in line
-                    or any(f"sink={old}" in line for old in ["all", "game", "chat", "media", "more", "retour"])
+                    "k-sound-hub-soundboard-to-output" in line.lower()
+                    or "k-sounds hub mic output monitor monitor soundboard" in line.lower()
+                    or any(f"sink={old}" in line.lower() for old in ["all", "game", "chat", "media", "more", "retour"])
                 )
             )
         )
@@ -1026,12 +1156,21 @@ class GlassBackendController(QObject):
         )
 
     def _load_soundboard_micro_loopback(self, enabled: bool) -> None:
-        # MICRO checkbox owns ONLY soundboard -> micro_bus.
+        exists = any(
+            "module-loopback" in line.lower()
+            and "source=soundboard.monitor" in line.lower()
+            and "sink=micro_bus" in line.lower()
+            for line in self._pulse_modules()
+        )
+
+        if enabled and exists:
+            return
+
         self._unload_modules_matching(
             lambda line: (
-                "module-loopback" in line
-                and "source=soundboard.monitor" in line
-                and "sink=micro_bus" in line
+                "module-loopback" in line.lower()
+                and "source=soundboard.monitor" in line.lower()
+                and "sink=micro_bus" in line.lower()
             )
         )
 
@@ -1049,27 +1188,26 @@ class GlassBackendController(QObject):
             )
 
     def _load_return_mic_micro_loopback(self, enabled: bool) -> None:
-        # Return Mic MICRO owns ONLY actual mic monitoring into retour.
-        # Use easyeffects_source so it does not include soundboard injected into micro_bus.
+        # Return Mic selector owns ONLY: selected input source -> retour.
         self._unload_modules_matching(
             lambda line: (
                 "module-loopback" in line
                 and "sink=retour" in line
                 and (
                     "K-Sound-Hub-Return-Mic-Micro" in line
+                    or "source=easyeffects_source" in line
                     or "source=micro " in line
                     or "source=micro\t" in line
-                    or "source=micro " in line
-                    or "source=easyeffects_source" in line
                 )
             )
         )
 
-        if enabled:
+        source = self._return_mic_source_config() if enabled else ""
+        if source:
             self._pactl(
                 "load-module",
                 "module-loopback",
-                "source=easyeffects_source",
+                f"source={source}",
                 "sink=retour",
                 "latency_msec=20",
                 "source_dont_move=true",
@@ -1097,11 +1235,86 @@ class GlassBackendController(QObject):
 
         self._write_settings_document(settings)
 
+    def micro_injection_channels(self) -> set[str]:
+        data = self._read_settings_document()
+        raw = data.get("glass_micro_injection_channels", [])
+        if not isinstance(raw, list):
+            raw = []
+        allowed = {"all", "game", "chat", "media", "more"}
+        return {str(item).strip().lower() for item in raw if str(item).strip().lower() in allowed}
+
+    def set_micro_injection_channel_state(self, channel_key: str, enabled: bool) -> bool:
+        key = str(channel_key or "").strip().lower()
+        allowed = {"all", "game", "chat", "media", "more"}
+        if key not in allowed:
+            return False
+
+        current = self.micro_injection_channels()
+        if enabled:
+            current.add(key)
+        else:
+            current.discard(key)
+
+        data = self._read_settings_document()
+        data["glass_micro_injection_channels"] = sorted(current)
+        self._write_settings_document(data)
+
+        # Immediate and stable: only add/remove the changed channel loopback state.
+        self.apply_micro_injection_runtime_routes()
+        self.status_changed.emit(f"MICRO injection {key.upper()}: {bool(enabled)}")
+        return True
+
+    def apply_micro_injection_runtime_routes(self) -> None:
+        enabled = self.micro_injection_channels()
+        allowed = {"all", "game", "chat", "media", "more"}
+
+        existing: dict[str, str] = {}
+        for line in self._pulse_modules():
+            lowered = line.lower()
+            parts = line.split("\t", 2)
+            if not parts or not parts[0].isdigit():
+                continue
+
+            if "module-loopback" not in lowered or "sink=micro_bus" not in lowered:
+                continue
+
+            matched_key = ""
+            for key in allowed:
+                if f"k-sound-hub-micro-inject-{key}" in lowered or f"source={key}.monitor" in lowered:
+                    matched_key = key
+                    break
+
+            if not matched_key:
+                continue
+
+            if matched_key in enabled and matched_key not in existing:
+                existing[matched_key] = parts[0]
+            else:
+                self._pactl("unload-module", parts[0])
+
+        for key in sorted(enabled):
+            if key in existing:
+                continue
+
+            self._pactl(
+                "load-module",
+                "module-loopback",
+                f"source={key}.monitor",
+                "sink=micro_bus",
+                "latency_msec=20",
+                "source_dont_move=true",
+                "sink_dont_move=true",
+                "channels=2",
+                f"sink_input_properties=media.name=K-Sound-Hub-Micro-Inject-{key}",
+            )
+
     def apply_glass_runtime_routes(self) -> None:
         self._sync_legacy_linked_channels_off()
         self._load_soundboard_output_loopback(self._soundboard_output_config())
         self._load_soundboard_micro_loopback(self._soundboard_send_to_micro_config())
-        self._load_return_mic_micro_loopback(self._return_mic_micro_enabled())
+        self._load_return_mic_micro_loopback(bool(self._return_mic_source_config()))
+        self.apply_micro_injection_runtime_routes()
+        self.normalize_channel_playback_routes()
 
     def _soundboard_route_state(self) -> dict[str, bool]:
         return {
@@ -1130,21 +1343,122 @@ class GlassBackendController(QObject):
         self.status_changed.emit(f"Soundboard MICRO: {bool(enabled)}")
         return True
 
+    def _sink_inputs_matching_tokens(self, tokens: list[str]) -> list[str]:
+        result = self._pactl("list", "sink-inputs")
+        if result.returncode != 0:
+            return []
+
+        wanted = [str(token or "").lower() for token in tokens if str(token or "").strip()]
+        ids: list[str] = []
+        current_id: str | None = None
+        current_lines: list[str] = []
+
+        def flush() -> None:
+            nonlocal current_id, current_lines
+            if current_id is None:
+                return
+            block = "\n".join(current_lines).lower()
+            if any(token in block for token in wanted):
+                ids.append(current_id)
+            current_id = None
+            current_lines = []
+
+        for raw in result.stdout.splitlines():
+            line = raw.rstrip()
+            match = re.match(r"Sink Input #(\d+)", line)
+            if match:
+                flush()
+                current_id = match.group(1)
+                current_lines = [line]
+            elif current_id is not None:
+                current_lines.append(line)
+
+        flush()
+        return ids
+
+    def _move_channel_playback_to_target(self, channel_key: str, target_sink: str) -> None:
+        key = str(channel_key or "").strip().lower()
+        target = str(target_sink or "").strip()
+        if not key or not target or key == "micro":
+            return
+
+        label = {
+            "all": "ALL",
+            "game": "GAME",
+            "chat": "CHAT",
+            "media": "MEDIA",
+            "more": "MORE",
+            "return-mic": "RETURN-MIC",
+        }.get(key, key.upper())
+
+        tokens = [
+            f"ksh_{key}_eq.playback",
+            f"K-Sound Hub {label} EQ",
+            f"K-Sound Hub {label.replace('-', ' ')} EQ",
+        ]
+
+        stream_ids = self._sink_inputs_matching_tokens(tokens)
+        if not stream_ids:
+            return
+
+        numeric_ids = sorted({int(stream_id) for stream_id in stream_ids})
+        keep = str(numeric_ids[-1])
+
+        for stream_id in numeric_ids[:-1]:
+            self._pactl("kill-sink-input", str(stream_id))
+
+        self._pactl("move-sink-input", keep, target)
+
+    def _persist_channel_primary_target(self, channel_key: str, target: str) -> None:
+        data = self._read_settings_document()
+        channels = data.get("channels", [])
+        if not isinstance(channels, list):
+            return
+
+        for channel in channels:
+            if isinstance(channel, dict) and channel.get("key") == channel_key:
+                channel["primary_target"] = target
+                break
+
+        self._write_settings_document(data)
+
+    def normalize_channel_playback_routes(self) -> None:
+        for key in ("all", "game", "chat", "media", "more", "return-mic"):
+            channel = self._find_channel(key)
+            if channel is None:
+                continue
+            target = str(getattr(channel, "primary_target", "") or "").strip()
+            if target:
+                self._move_channel_playback_to_target(key, target)
+
     def set_channel_primary_target(self, channel_key: str, target_sink: str) -> bool:
-        channel = self._find_channel(channel_key)
-        if channel is None:
+        key = str(channel_key or "").strip()
+        target = str(target_sink or "").strip()
+
+        channel = self._find_channel(key)
+        if channel is None or not target:
             return False
 
-        channel.primary_target = str(target_sink or "").strip()
+        channel.primary_target = target
+
         try:
             self.audio_engine.apply_channel(self.settings, channel.key)
         except Exception as exc:
-            self.status_changed.emit(f"Target route error — {exc}")
-            return False
+            self.status_changed.emit(f"Target route warning — {exc}")
+
+        self._persist_channel_primary_target(channel.key, target)
+
+        if channel.key != "micro":
+            self._move_channel_playback_to_target(channel.key, target)
 
         self._save_timer.start()
-        label = PHYSICAL_OUTPUT_LABEL_BY_SINK.get(channel.primary_target, channel.primary_target or "auto")
-        self.status_changed.emit(f"{GLASS_CHANNEL_OVERLAY_META.get(channel.key, ('', channel.key.upper()))[1]} output → {label}")
+
+        if channel.key == "micro":
+            label = self.label_for_target(target, input_device=True)
+        else:
+            label = self.label_for_target(target, input_device=False)
+
+        self.status_changed.emit(f"{GLASS_CHANNEL_OVERLAY_META.get(channel.key, ('', channel.key.upper()))[1]} device → {label}")
         return True
 
     def channel_primary_target(self, channel_key: str) -> str:
@@ -1153,23 +1467,63 @@ class GlassBackendController(QObject):
             return ""
         return str(getattr(channel, "primary_target", "") or "").strip()
 
+    def _return_mic_source_config(self) -> str:
+        data = self._read_settings_document()
+        source = str(data.get("glass_return_mic_source") or "").strip()
+        if source:
+            return source
+
+        if bool(data.get("glass_return_mic_micro_enabled")):
+            return "micro"
+
+        return ""
+
+    def return_mic_source_label(self) -> str:
+        source = self._return_mic_source_config()
+        if not source:
+            return "Off"
+        return self.label_for_target(source, input_device=True) or "Off"
+
+    def set_return_mic_source_label(self, label: str) -> bool:
+        selected = str(label or "").strip()
+        if not selected or selected.lower() == "off":
+            target = ""
+        else:
+            target = self.resolve_input_label(selected)
+
+        data = self._read_settings_document()
+        data["glass_return_mic_source"] = target
+        data["glass_return_mic_micro_enabled"] = bool(target)
+        self._write_settings_document(data)
+
+        self._load_return_mic_micro_loopback(bool(target))
+        self.status_changed.emit(f"MIC OUT source → {selected or 'Off'}")
+        return True
+
     def return_mic_route_state(self) -> dict[str, bool]:
-        enabled = self._return_mic_micro_enabled()
+        enabled = bool(self._return_mic_source_config())
         return {
             "micro": enabled,
             "micro-final": enabled,
         }
 
     def set_return_mic_source_state(self, source_key: str, enabled: bool) -> bool:
-        source = str(source_key or "").strip().lower()
-        if source in {"micro-final", "micro"}:
-            source = "micro"
-        if source != "micro":
-            return False
+        source = str(source_key or "").strip()
+        if not enabled:
+            data = self._read_settings_document()
+            data["glass_return_mic_source"] = ""
+            data["glass_return_mic_micro_enabled"] = False
+            self._write_settings_document(data)
+            self._load_return_mic_micro_loopback(False)
+            self.status_changed.emit("MIC OUT source → Off")
+            return True
 
-        self._save_return_mic_micro_enabled(bool(enabled))
-        self._load_return_mic_micro_loopback(bool(enabled))
-        self.status_changed.emit(f"MIC OUT MICRO: {bool(enabled)}")
+        data = self._read_settings_document()
+        data["glass_return_mic_source"] = source or "micro"
+        data["glass_return_mic_micro_enabled"] = True
+        self._write_settings_document(data)
+        self._load_return_mic_micro_loopback(True)
+        self.status_changed.emit(f"MIC OUT source → {source or 'micro'}")
         return True
 
     def soundboard_output_channel(self) -> str:
@@ -3309,7 +3663,6 @@ class AppsPanel(QWidget):
             return
 
         soundboard_state = self.backend_controller._soundboard_route_state()
-        return_state = self.backend_controller.return_mic_route_state()
 
         current_key = self.backend_controller.soundboard_output_channel()
         current_label = SOUNDBOARD_LOGICAL_LABEL_BY_KEY.get(current_key, "MEDIA")
@@ -3328,14 +3681,37 @@ class AppsPanel(QWidget):
             )
         )
 
+        return_inputs = ["Off"] + [label for label, _source in self.backend_controller.available_input_targets()]
+        current_return = self.backend_controller.return_mic_source_label()
+        if current_return not in return_inputs:
+            current_return = "Off"
+
         self.permanent_layout.addWidget(
             PermanentRouteCard(
                 "🎧",
                 "MIC OUT / Return Mic",
-                "MICRO lets you hear your microphone in the return channel.",
-                checks=[
-                    ("MICRO", bool(return_state.get("micro")), self._set_return_mic_micro_source),
-                ],
+                "Choose the microphone source you hear in the return channel.",
+                select_items=return_inputs,
+                select_current=current_return,
+                select_callback=self._set_return_mic_source,
+            )
+        )
+
+        injected = self.backend_controller.micro_injection_channels()
+        injection_checks = [
+            ("ALL", "all" in injected, lambda value, key="all": self._set_micro_injection_channel(key, value)),
+            ("GAME", "game" in injected, lambda value, key="game": self._set_micro_injection_channel(key, value)),
+            ("CHAT", "chat" in injected, lambda value, key="chat": self._set_micro_injection_channel(key, value)),
+            ("MEDIA", "media" in injected, lambda value, key="media": self._set_micro_injection_channel(key, value)),
+            ("MORE", "more" in injected, lambda value, key="more": self._set_micro_injection_channel(key, value)),
+        ]
+
+        self.permanent_layout.addWidget(
+            PermanentRouteCard(
+                "🎙",
+                "MICRO Injection",
+                "Send selected channels into the MICRO output.",
+                checks=injection_checks,
             )
         )
 
@@ -3360,10 +3736,20 @@ class AppsPanel(QWidget):
         self.backend_controller._set_soundboard_route_state("send_to_micro", bool(enabled))
         self._build_permanent_routes()
 
-    def _set_return_mic_micro_source(self, enabled: bool) -> None:
+    def _set_return_mic_source(self, label: str) -> None:
         if self.backend_controller is None:
             return
-        self.backend_controller.set_return_mic_source_state("micro", bool(enabled))
+        self.backend_controller.set_return_mic_source_label(str(label or "").strip())
+        self._build_permanent_routes()
+
+    def _set_return_mic_micro_source(self, enabled: bool) -> None:
+        # Compatibility with older checkbox path. The UI now uses _set_return_mic_source().
+        if self.backend_controller is None:
+            return
+        if enabled:
+            self.backend_controller.set_return_mic_source_label("MICRO")
+        else:
+            self.backend_controller.set_return_mic_source_label("Off")
         self._build_permanent_routes()
 
     def _set_return_mic_output(self, label: str) -> None:
@@ -3373,6 +3759,12 @@ class AppsPanel(QWidget):
         if not sink:
             return
         self.backend_controller.set_channel_primary_target("return-mic", sink)
+
+    def _set_micro_injection_channel(self, channel_key: str, enabled: bool) -> None:
+        if self.backend_controller is None:
+            return
+        self.backend_controller.set_micro_injection_channel_state(channel_key, bool(enabled))
+        self._build_permanent_routes()
 
     def _clear_streams(self) -> None:
         while self.streams_layout.count():
@@ -5595,16 +5987,17 @@ class PreviewWindow(QMainWindow):
         for channel in CHANNELS:
             name, icon, devices, fallback_value, channel_key = channel
             value, muted = self._channel_state_for_card(channel_key, fallback_value)
+            card_devices = self._channel_device_choices(channel_key, devices)
             card = ChannelCard(
                 name,
                 icon,
-                devices,
+                card_devices,
                 value,
                 channel_key,
                 volume_callback=self._send_channel_volume,
                 mute_callback=self._set_channel_muted,
                 device_callback=self._set_channel_device,
-                current_device=self._channel_device_label(channel_key, devices),
+                current_device=self._channel_device_label(channel_key, card_devices),
             )
             card.sync_from_saved_state(volume=value, muted=muted)
             self.channel_cards.append(card)
@@ -5623,6 +6016,7 @@ class PreviewWindow(QMainWindow):
         self._apply_visual_style()
         self._refresh_background()
         self._start_meter_simulation()
+        QTimer.singleShot(450, self.backend_controller.normalize_channel_playback_routes)
 
         # Glass is the future K-Sounds frontend, not a companion window.
         # Do not poll the old/stable UI settings file to drive live controls:
@@ -5954,21 +6348,35 @@ QFrame#channelCard[muted="true"]:hover {{
         self.overlay.set_enabled(bool(getattr(self.backend_controller.settings, "overlay_enabled", False)))
         self.overlay.show_message(str(text or ""), muted_active=bool(muted_active))
 
+    def _channel_device_choices(self, channel_key: str, fallback_devices: list[str]) -> list[str]:
+        key = str(channel_key or "").strip()
+        if key == "micro":
+            pairs = self.backend_controller.available_input_targets()
+        else:
+            pairs = self.backend_controller.available_output_targets()
+
+        labels = [label for label, _name in pairs if str(label or "").strip()]
+        return labels or list(fallback_devices or [])
+
     def _channel_device_label(self, channel_key: str, fallback_devices: list[str]) -> str:
-        target = self.backend_controller.channel_primary_target(channel_key)
-        if target in PHYSICAL_OUTPUT_LABEL_BY_SINK:
-            return PHYSICAL_OUTPUT_LABEL_BY_SINK[target]
-        if target in PHYSICAL_INPUT_LABEL_BY_SOURCE:
-            return PHYSICAL_INPUT_LABEL_BY_SOURCE[target]
+        key = str(channel_key or "").strip()
+        target = self.backend_controller.channel_primary_target(key)
+
+        if target:
+            label = self.backend_controller.label_for_target(target, input_device=(key == "micro"))
+            if label:
+                return label
+
         return fallback_devices[0] if fallback_devices else ""
 
     def _set_channel_device(self, channel_key: str, label: str) -> None:
         key = str(channel_key or "").strip()
         name = str(label or "").strip()
 
-        target = PHYSICAL_OUTPUT_BY_LABEL.get(name)
-        if target is None and key == "micro":
-            target = PHYSICAL_INPUT_BY_LABEL.get(name)
+        if key == "micro":
+            target = self.backend_controller.resolve_input_label(name)
+        else:
+            target = self.backend_controller.resolve_output_label(name)
 
         if not target:
             self.backend_controller.status_changed.emit(f"Unsupported device route: {key} → {name}")
