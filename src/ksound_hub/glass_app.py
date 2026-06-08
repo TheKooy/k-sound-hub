@@ -6146,19 +6146,8 @@ class PreviewWindow(QMainWindow):
     resize_margin = 9
 
 
-    def changeEvent(self, event) -> None:
-        # Minimize must remain a normal window minimize.
-        # It must not quit, hide to tray, or immediately force the window visible again.
-        try:
-            super().changeEvent(event)
-        except Exception:
-            pass
-
-        try:
-            if event.type() == QEvent.WindowStateChange and self.isMinimized():
-                return
-        except Exception:
-            pass
+    def _glass_activation_file(self):
+        return Path.home() / ".cache" / "k-sounds-hub" / "glass.activate"
 
     def _close_to_tray_enabled(self) -> bool:
         try:
@@ -6179,19 +6168,55 @@ class PreviewWindow(QMainWindow):
 
         return False
 
-    def _sync_tray_visibility(self) -> None:
+    def _set_tray_visible_for_state(self) -> None:
         try:
             tray = getattr(self, "tray_icon", None)
-            if tray is None:
-                return
-            if self._close_to_tray_enabled():
-                tray.show()
-            else:
-                tray.hide()
+            if tray is not None:
+                tray.setVisible(self._close_to_tray_enabled())
         except Exception:
             pass
 
-    def _shutdown_for_real_close(self) -> None:
+    def _focus_existing_window(self) -> None:
+        try:
+            if self.isMinimized():
+                self.showNormal()
+            else:
+                self.show()
+        except Exception:
+            pass
+
+        try:
+            self.raise_()
+            self.activateWindow()
+        except Exception:
+            pass
+
+    def _setup_external_activation(self) -> None:
+        try:
+            path = self._glass_activation_file()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.touch(exist_ok=True)
+
+            watcher = QFileSystemWatcher([str(path)], self)
+            watcher.fileChanged.connect(self._handle_external_activation)
+            self._activation_watcher = watcher
+        except Exception:
+            pass
+
+    def _handle_external_activation(self, _path: str = "") -> None:
+        try:
+            path = self._glass_activation_file()
+            path.touch(exist_ok=True)
+
+            watcher = getattr(self, "_activation_watcher", None)
+            if watcher is not None and str(path) not in watcher.files():
+                watcher.addPath(str(path))
+        except Exception:
+            pass
+
+        self._focus_existing_window()
+
+    def _shutdown_window_runtime(self) -> None:
         try:
             tray = getattr(self, "tray_icon", None)
             if tray is not None:
@@ -6217,67 +6242,49 @@ class PreviewWindow(QMainWindow):
         except Exception:
             pass
 
-    def _force_visible_front(self) -> None:
+    def closeEvent(self, event) -> None:
+        # Window policy:
+        # - Close-to-tray ON: close button hides the window and keeps Glass alive.
+        # - Close-to-tray OFF: close button quits Glass for real.
+        if self._close_to_tray_enabled():
+            try:
+                self.hide()
+                tray = getattr(self, "tray_icon", None)
+                if tray is not None:
+                    tray.show()
+            except Exception:
+                pass
+            event.ignore()
+            return
+
+        self._shutdown_window_runtime()
+        event.accept()
+
+        app = QApplication.instance()
+        if app is not None:
+            QTimer.singleShot(0, app.quit)
+
+    def changeEvent(self, event) -> None:
+        # Minimize is normal minimize. It must not hide to tray or force the
+        # window back to the front.
         try:
-            self.setWindowState(self.windowState() & ~Qt.WindowMinimized)
-        except Exception:
-            pass
-        try:
-            self.show()
-            self.raise_()
-            self.activateWindow()
+            super().changeEvent(event)
         except Exception:
             pass
 
-    def _glass_activation_file(self):
-        return Path.home() / ".cache" / "k-sounds-hub" / "glass.activate"
-
-    def _setup_external_activation(self) -> None:
         try:
-            path = self._glass_activation_file()
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.touch(exist_ok=True)
-            self._activation_watcher = QFileSystemWatcher([str(path)], self)
-            self._activation_watcher.fileChanged.connect(self._handle_external_activation)
-        except Exception:
-            pass
-
-    def _handle_external_activation(self, path: str = "") -> None:
-        try:
-            activate_path = self._glass_activation_file()
-            activate_path.touch(exist_ok=True)
-            watcher = getattr(self, "_activation_watcher", None)
-            if watcher is not None and str(activate_path) not in watcher.files():
-                watcher.addPath(str(activate_path))
-        except Exception:
-            pass
-        self._force_visible_front()
-
-    def _force_visible_front(self) -> None:
-        try:
-            self.setWindowState(self.windowState() & ~Qt.WindowMinimized)
-        except Exception:
-            pass
-        try:
-            self.show()
-            self.raise_()
-            self.activateWindow()
+            if event.type() == QEvent.WindowStateChange:
+                self._set_tray_visible_for_state()
         except Exception:
             pass
 
     def __init__(self):
         super().__init__()
         self.setWindowTitle("K-Sounds Hub Glass")
-        # KSH_TRAY_VISIBILITY_SYNC
-        QTimer.singleShot(500, self._sync_tray_visibility)
-        # KSH_SINGLE_INSTANCE_FOCUS: wrapper touches ~/.cache/k-sounds-hub/glass.activate to refocus this window.
+        # KSH_WINDOW_POLICY_CLEAN
         QTimer.singleShot(0, self._setup_external_activation)
-        QTimer.singleShot(0, self._force_visible_front)
-        QTimer.singleShot(250, self._force_visible_front)
-        # KSH_FORCE_VISIBLE_START: never launch as invisible/tray-only while Glass is being stabilized.
-        QTimer.singleShot(0, self._force_visible_front)
-        QTimer.singleShot(250, self._force_visible_front)
-        QTimer.singleShot(800, self._force_visible_front)
+        QTimer.singleShot(0, self._focus_existing_window)
+        QTimer.singleShot(300, self._set_tray_visible_for_state)
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Window)
         self.resize(1320, 560)
         self.setMinimumSize(860, 430)
@@ -6547,32 +6554,6 @@ class PreviewWindow(QMainWindow):
             except Exception:
                 pass
         self.close()
-
-        app = QApplication.instance()
-        if app is not None:
-            QTimer.singleShot(0, app.quit)
-
-    def closeEvent(self, event) -> None:
-        # Close-to-tray policy:
-        # - enabled: close button hides the window and keeps Glass alive.
-        # - disabled: close button quits Glass for real.
-        if self._close_to_tray_enabled():
-            try:
-                self.hide()
-                tray = getattr(self, "tray_icon", None)
-                if tray is not None:
-                    tray.show()
-            except Exception:
-                pass
-            event.ignore()
-            return
-
-        try:
-            self._shutdown_for_real_close()
-        except Exception:
-            pass
-
-        event.accept()
 
         app = QApplication.instance()
         if app is not None:
