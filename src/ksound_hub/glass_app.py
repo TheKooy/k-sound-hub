@@ -2895,7 +2895,7 @@ class AppsPanel(QWidget):
             PermanentRouteCard(
                 "🎛",
                 "Soundboard",
-                "Choose where you hear the soundboard, and optionally inject it into MICRO.",
+                "Choose where you hear the soundboard. MICRO injects it into your microphone.",
                 select_items=[label for label, _key in SOUNDBOARD_LOGICAL_OUTPUTS],
                 select_current=current_label,
                 select_callback=self._set_soundboard_output,
@@ -2909,7 +2909,7 @@ class AppsPanel(QWidget):
             PermanentRouteCard(
                 "🎧",
                 "MIC OUT / Return Mic",
-                "Enable this when you want to hear your microphone in the return channel.",
+                "MICRO lets you hear your microphone in the return channel.",
                 checks=[
                     ("MICRO", bool(return_state.get("micro-final")), self._set_return_mic_micro_source),
                 ],
@@ -2935,11 +2935,13 @@ class AppsPanel(QWidget):
         if self.backend_controller is None:
             return
         self.backend_controller._set_soundboard_route_state("send_to_micro", bool(enabled))
+        QTimer.singleShot(120, self._build_permanent_routes)
 
     def _set_return_mic_micro_source(self, enabled: bool) -> None:
         if self.backend_controller is None:
             return
         self.backend_controller.set_return_mic_source_state("micro-final", bool(enabled))
+        QTimer.singleShot(120, self._build_permanent_routes)
 
     def _set_return_mic_output(self, label: str) -> None:
         if self.backend_controller is None:
@@ -2955,6 +2957,28 @@ class AppsPanel(QWidget):
             widget = item.widget()
             if widget is not None:
                 widget.deleteLater()
+
+    def _is_internal_soundboard_stream(self, stream) -> bool:
+        sink_name = str(getattr(stream, "sink_name", "") or "").strip().lower()
+        values = [
+            getattr(stream, "display_name", ""),
+            getattr(stream, "app_name", ""),
+            getattr(stream, "binary_name", ""),
+            getattr(stream, "media_name", ""),
+            getattr(stream, "node_name", ""),
+            sink_name,
+        ]
+        haystack = " ".join(str(value or "").lower() for value in values)
+
+        if sink_name == "soundboard":
+            return True
+        if "k-sound-hub-soundboard" in haystack:
+            return True
+        if "k-sounds hub soundboard" in haystack:
+            return True
+        if "soundboard" in haystack and any(token in haystack for token in ("pacat", "python", "k-sounds", "k-sound")):
+            return True
+        return False
 
     def _stream_signature(self, streams: list) -> tuple:
         return tuple(
@@ -2976,18 +3000,23 @@ class AppsPanel(QWidget):
             return
 
         streams = self.backend_controller.list_app_streams()
-        signature = self._stream_signature(streams)
+        visible_streams = [
+            stream for stream in streams
+            if not self._is_internal_soundboard_stream(stream)
+        ]
+
+        signature = self._stream_signature(visible_streams)
         if not force and signature == self._last_signature:
             return
 
         self._last_signature = signature
         self._clear_streams()
 
-        if not streams:
-            self._show_message("No active playback app stream")
+        if not visible_streams:
+            self._show_message("No active external playback app stream")
             return
 
-        for stream in streams:
+        for stream in visible_streams:
             self.streams_layout.addWidget(AppRouteCard(stream, self._move_stream))
 
     def _show_message(self, text: str) -> None:
@@ -5252,6 +5281,7 @@ class PreviewWindow(QMainWindow):
                 self.tray_icon.show()
             except Exception:
                 pass
+
         self.show()
         self.showNormal()
         self.raise_()
@@ -5265,23 +5295,26 @@ class PreviewWindow(QMainWindow):
             except Exception:
                 pass
         self.close()
+
         app = QApplication.instance()
         if app is not None:
             QTimer.singleShot(0, app.quit)
 
     def closeEvent(self, event) -> None:
-        if (
-            bool(getattr(self.backend_controller.settings, "close_to_tray", True))
-            and not bool(getattr(self, "_allow_real_close", False))
-            and self.tray_icon is not None
-        ):
-            event.ignore()
-            self.hide()
-            try:
-                self.tray_icon.show()
-            except Exception:
-                pass
-            return
+        close_to_tray = bool(getattr(self.backend_controller.settings, "close_to_tray", True))
+
+        if close_to_tray and not bool(getattr(self, "_allow_real_close", False)):
+            if self.tray_icon is not None and QSystemTrayIcon.isSystemTrayAvailable():
+                event.ignore()
+                try:
+                    self.tray_icon.show()
+                except Exception:
+                    pass
+                self.hide()
+                return
+
+            # Failsafe: never create an invisible app without a usable tray.
+            self._allow_real_close = True
 
         try:
             if self.tray_icon is not None:
