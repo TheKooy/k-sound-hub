@@ -1733,6 +1733,56 @@ QScrollBar#padsGridScrollbar::sub-page:vertical {
 
 
 
+
+STYLE += """
+/* Glass pad shape/perf quick overrides */
+QFrame#soundPadCard {
+    border-radius: 18px;
+    background: rgba(0, 0, 0, 172);
+}
+
+QFrame#soundPadCard:hover {
+    border-radius: 18px;
+    background: rgba(8, 24, 38, 188);
+}
+
+QFrame#soundPadCard[edit="true"] {
+    border-radius: 18px;
+    background: rgba(11, 31, 47, 205);
+}
+
+QFrame#soundPadActions {
+    border-radius: 12px;
+    background: rgba(0, 0, 0, 105);
+}
+
+QPushButton#soundPadEmoji {
+    background: rgba(0, 0, 0, 215);
+    border-radius: 17px;
+}
+
+QPushButton#soundPadEmoji:hover {
+    background: rgba(34, 78, 108, 150);
+    border-radius: 17px;
+}
+
+QFrame#emojiPalette {
+    background: rgba(0, 0, 0, 225);
+    border: 1px solid rgba(95, 190, 255, 55);
+    border-radius: 18px;
+}
+
+QPushButton#emojiChoice {
+    border-radius: 10px;
+    background: rgba(18, 36, 54, 135);
+}
+
+QPushButton#emojiChoice:hover {
+    border-radius: 10px;
+    background: rgba(50, 120, 170, 175);
+}
+"""
+
 class AdaptiveScrollArea(QScrollArea):
     RIGHT_MARGIN_WITH_SCROLL = 10
 
@@ -3172,17 +3222,18 @@ class SoundPadCard(QFrame):
         self.setStyleSheet(f"""
 QFrame#soundPadCard {{
     border-image: url("{url}") 0 0 0 0 stretch stretch;
-    border-radius: 16px;
+    border-radius: 18px;
+    background: rgba(0, 0, 0, 185);
 }}
 QFrame#soundPadCard QLabel#soundPadName,
 QFrame#soundPadCard QLabel#soundPadMeta {{
-    background: rgba(0, 0, 0, 150);
-    border-radius: 8px;
-    padding: 2px 6px;
+    background: rgba(0, 0, 0, 178);
+    border-radius: 9px;
+    padding: 3px 7px;
 }}
 QFrame#soundPadCard QPushButton#soundPadEmoji {{
-    background: rgba(0, 0, 0, 210);
-    border-radius: 16px;
+    background: rgba(0, 0, 0, 230);
+    border-radius: 18px;
 }}
 """)
 
@@ -3257,14 +3308,24 @@ QFrame#soundPadCard QPushButton#soundPadEmoji {{
         self.name_label.setVisible(True)
 
     def set_edit_mode(self, enabled: bool) -> None:
+        enabled = bool(enabled)
+        if self._edit_enabled == enabled and self.actions.isVisible() == enabled:
+            return
+
         self._edit_enabled = enabled
         self.setProperty("edit", "true" if enabled else "false")
         self.actions.setVisible(enabled)
-        self.setMinimumHeight(100 if enabled else 70)
+
+        desired_height = 104 if enabled else 82
+        if self.minimumHeight() != desired_height:
+            self.setMinimumHeight(desired_height)
+
         if not enabled:
             self.name_editor.setVisible(False)
             self.name_label.setVisible(True)
-            self.set_bulk_select_enabled(False)
+            if self._bulk_select_enabled:
+                self.set_bulk_select_enabled(False)
+
         self.style().unpolish(self)
         self.style().polish(self)
         self.update()
@@ -3393,6 +3454,7 @@ class PadsPanel(QWidget):
             palette_layout.addWidget(button, index // 8, index % 8)
 
         self.emoji_overlay.hide()
+        QTimer.singleShot(0, self._update_responsive_columns)
 
     def eventFilter(self, obj, event) -> bool:
         if event.type() == QEvent.MouseButtonPress and hasattr(self, "emoji_overlay") and self.emoji_overlay.isVisible():
@@ -3408,8 +3470,42 @@ class PadsPanel(QWidget):
 
         return super().eventFilter(obj, event)
 
+    def _apply_responsive_card_heights(self) -> None:
+        if not hasattr(self, "grid_scroll") or not hasattr(self, "grid"):
+            return
+
+        columns = max(1, int(getattr(self, "_columns", 1)))
+        viewport_width = max(1, self.grid_scroll.viewport().width())
+        spacing = max(0, int(self.grid.horizontalSpacing()))
+        card_width = max(72, (viewport_width - spacing * max(0, columns - 1)) // columns)
+
+        if bool(getattr(self, "_show_detach", True)):
+            target_height = max(84, min(126, int(card_width * 0.64)))
+        else:
+            # Detached window: more square, still with rounded corners.
+            target_height = max(116, min(176, int(card_width * 0.92)))
+
+        for card in getattr(self, "pad_cards", []):
+            if card.minimumHeight() != target_height:
+                card.setMinimumHeight(target_height)
+
+    def _update_responsive_columns(self) -> None:
+        if not hasattr(self, "grid_scroll"):
+            return
+
+        width = max(1, self.grid_scroll.viewport().width())
+        target_width = 180 if bool(getattr(self, "_show_detach", True)) else 145
+        columns = max(1, min(9, width // target_width))
+
+        if columns != self._columns:
+            self._columns = columns
+            self._reflow_grid()
+        else:
+            self._apply_responsive_card_heights()
+
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
+        self._update_responsive_columns()
         self._position_emoji_overlay()
 
     def _position_emoji_overlay(self) -> None:
@@ -3796,8 +3892,16 @@ class PadsPanel(QWidget):
             self.emoji_overlay.hide()
             self._stop_bulk_delete()
 
-        for card in self.pad_cards:
-            card.set_edit_mode(enabled)
+        self.grid_host.setUpdatesEnabled(False)
+        self.grid_scroll.setUpdatesEnabled(False)
+        try:
+            for card in self.pad_cards:
+                card.set_edit_mode(enabled)
+        finally:
+            self.grid_host.setUpdatesEnabled(True)
+            self.grid_scroll.setUpdatesEnabled(True)
+
+        QTimer.singleShot(0, self._update_responsive_columns)
 
     def _add_pad(self, name: str | None = None, icon: str = "🎧", meta: str = "new", slot_key: str = "", background_path: str = "") -> None:
         if name is None or isinstance(name, bool):
@@ -3836,6 +3940,8 @@ class PadsPanel(QWidget):
         for col in range(self._columns):
             self.grid.setColumnMinimumWidth(col, 0)
             self.grid.setColumnStretch(col, 1)
+
+        self._apply_responsive_card_heights()
 
     def _remove_card(self, card: SoundPadCard) -> None:
         if card not in self.pad_cards:
