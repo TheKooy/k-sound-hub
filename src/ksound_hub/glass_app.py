@@ -6145,9 +6145,25 @@ class Drawer(QFrame):
 class PreviewWindow(QMainWindow):
     resize_margin = 9
 
+    def _force_visible_front(self) -> None:
+        try:
+            self.setWindowState(self.windowState() & ~Qt.WindowMinimized)
+        except Exception:
+            pass
+        try:
+            self.show()
+            self.raise_()
+            self.activateWindow()
+        except Exception:
+            pass
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("K-Sounds Hub Glass")
+        # KSH_FORCE_VISIBLE_START: never launch as invisible/tray-only while Glass is being stabilized.
+        QTimer.singleShot(0, self._force_visible_front)
+        QTimer.singleShot(250, self._force_visible_front)
+        QTimer.singleShot(800, self._force_visible_front)
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Window)
         self.resize(1320, 560)
         self.setMinimumSize(860, 430)
@@ -6423,8 +6439,7 @@ class PreviewWindow(QMainWindow):
             QTimer.singleShot(0, app.quit)
 
     def closeEvent(self, event) -> None:
-        # Stabilization policy: closing Glass must really quit.
-        # No hidden/tray-only instance while Glass is being debugged.
+        # Closing Glass must really quit. No hidden/tray-only instance.
         try:
             self._allow_real_close = True
         except Exception:
