@@ -2801,10 +2801,51 @@ QSlider#soundboardVolumeSlider::add-page:horizontal {
     border-radius: 3px;
     background: rgba(12, 24, 36, 150);
 }
+
+
+/* Glass drawer/apps scrollbar */
+QScrollArea#drawerScroll {
+    border: none;
+    background: transparent;
+    padding-right: 0px;
+}
+
+QScrollBar#drawerScrollbar:vertical {
+    background: rgba(0, 0, 0, 110);
+    width: 8px;
+    min-width: 8px;
+    margin: 4px 1px 4px 3px;
+    border: none;
+    border-radius: 4px;
+}
+
+QScrollBar#drawerScrollbar::handle:vertical {
+    background: rgba(92, 204, 255, 180);
+    border: none;
+    border-radius: 4px;
+    min-height: 32px;
+}
+
+QScrollBar#drawerScrollbar::handle:vertical:hover {
+    background: rgba(115, 220, 255, 230);
+}
+
+QScrollBar#drawerScrollbar::add-line:vertical,
+QScrollBar#drawerScrollbar::sub-line:vertical {
+    height: 0px;
+    background: transparent;
+    border: none;
+}
+
+QScrollBar#drawerScrollbar::add-page:vertical,
+QScrollBar#drawerScrollbar::sub-page:vertical {
+    background: transparent;
+    border: none;
+}
 """
 
 class AdaptiveScrollArea(QScrollArea):
-    RIGHT_MARGIN_WITH_SCROLL = 10
+    RIGHT_MARGIN_WITH_SCROLL = 14
 
     def __init__(self):
         super().__init__()
@@ -2816,6 +2857,9 @@ class AdaptiveScrollArea(QScrollArea):
         self._pending_margin_update = False
 
         bar = self.verticalScrollBar()
+        bar.setObjectName("drawerScrollbar")
+        bar.setMinimumWidth(8)
+        bar.setSingleStep(36)
         bar.rangeChanged.connect(lambda _minimum, _maximum: self._schedule_margin_update())
         bar.valueChanged.connect(lambda _value: self._schedule_margin_update())
 
