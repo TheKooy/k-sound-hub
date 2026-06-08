@@ -1173,8 +1173,8 @@ class GlassBackendController(QObject):
             self._pactl("set-sink-input-mute", stream_id, "0")
             self._pactl("set-sink-input-volume", stream_id, "100%")
 
-    def _load_soundboard_output_loopback(self, output_key: str) -> None:
-        sink = {
+    def _soundboard_output_sink_for_key(self, output_key: str) -> str:
+        return {
             "all": "all",
             "game": "game",
             "chat": "chat",
@@ -1182,6 +1182,39 @@ class GlassBackendController(QObject):
             "more": "more",
             "return-mic": "retour",
         }.get(self._normalize_soundboard_output_key(output_key), "media")
+
+    def _soundboard_output_loopback_ok(self, output_key: str) -> bool:
+        sink = self._soundboard_output_sink_for_key(output_key)
+        for line in self._pulse_modules():
+            low = line.lower()
+            if (
+                "module-loopback" in low
+                and "source=soundboard.monitor" in low
+                and f"sink={sink}" in low
+                and "sink=micro_bus" not in low
+            ):
+                return True
+        return False
+
+    def _soundboard_micro_loopback_ok(self) -> bool:
+        for line in self._pulse_modules():
+            low = line.lower()
+            if (
+                "module-loopback" in low
+                and "source=soundboard.monitor" in low
+                and "sink=micro_bus" in low
+            ):
+                return True
+        return False
+
+    def _load_soundboard_output_loopback(self, output_key: str) -> None:
+        sink = self._soundboard_output_sink_for_key(output_key)
+
+        # Critical for pads latency: if the correct listening route already
+        # exists, do NOT unload/reload it before each sound.
+        if self._soundboard_output_loopback_ok(output_key):
+            self._unmute_soundboard_output_streams()
+            return
 
         self._unload_modules_matching(
             lambda line: (
@@ -1203,10 +1236,18 @@ class GlassBackendController(QObject):
             "sink_input_properties=media.name=K-Sound-Hub-Soundboard-To-Output",
         )
 
-        time.sleep(0.08)
+        time.sleep(0.04)
         self._unmute_soundboard_output_streams()
 
     def _load_soundboard_micro_loopback(self, enabled: bool) -> None:
+        exists = self._soundboard_micro_loopback_ok()
+
+        # Critical for pads latency: do not reload the MICRO route on every pad.
+        if enabled and exists:
+            return
+        if not enabled and not exists:
+            return
+
         self._unload_modules_matching(
             lambda line: (
                 "module-loopback" in line.lower()
@@ -5404,7 +5445,7 @@ class PadsPanel(QWidget):
             + f" -filter:a volume={gain:.4f} "
             + " -f f32le -ac 2 -ar 48000 pipe:1 | "
             + "pacat --playback --device=soundboard --raw --format=float32le --rate=48000 --channels=2 "
-            + "--latency-msec=60 --process-time-msec=20 "
+            + "--latency-msec=25 --process-time-msec=8 "
             + "--property=media.name=K-Sounds-Hub-Soundboard-Player"
         )
 
