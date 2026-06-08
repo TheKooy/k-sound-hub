@@ -1283,6 +1283,20 @@ class GlassBackendController(QObject):
         muted = bool(getattr(channel, "muted", False))
         return volume, muted
 
+    def _apply_return_mic_visible_volume(self) -> None:
+        # MIC OUT has two relevant runtime pieces:
+        # 1) selected input source -> retour
+        # 2) retour EQ playback -> physical output, controlled by the normal engine
+        #
+        # The first one is a Pulse loopback recreated on source/micro changes.
+        # Pulse restores it at 100%, so force it back to the visible MIC OUT slider.
+        volume, muted = self._return_mic_volume_state()
+        mute_flag = "1" if muted else "0"
+
+        for stream_id in self._sink_inputs_by_media_name("K-Sound-Hub-Return-Mic-Micro"):
+            self._pactl("set-sink-input-volume", stream_id, f"{volume}%")
+            self._pactl("set-sink-input-mute", stream_id, mute_flag)
+
     def _apply_return_mic_input_route_volume(self) -> None:
         # The MIC OUT source selector recreates this Pulse loopback:
         # selected input source -> retour.
@@ -1324,8 +1338,8 @@ class GlassBackendController(QObject):
                 "sink_input_properties=media.name=K-Sound-Hub-Return-Mic-Micro",
             )
 
-            time.sleep(0.08)
-            self._apply_return_mic_input_route_volume()
+            time.sleep(0.06)
+            self._apply_return_mic_visible_volume()
 
     def _sync_legacy_linked_channels_off(self) -> None:
         # Prevent the older channel engine from re-creating mixed routes.
@@ -1564,6 +1578,10 @@ class GlassBackendController(QObject):
         if channel.key != "micro":
             self._move_channel_playback_to_target(channel.key, target)
 
+        if channel.key in {"micro", "return-mic"}:
+            self._apply_return_mic_visible_volume()
+            QTimer.singleShot(120, self._apply_return_mic_visible_volume)
+
         self._save_timer.start()
 
         if channel.key == "micro":
@@ -1610,8 +1628,8 @@ class GlassBackendController(QObject):
         self._write_settings_document(data)
 
         self._load_return_mic_micro_loopback(bool(target))
-        self._apply_return_mic_input_route_volume()
-        QTimer.singleShot(120, self._apply_return_mic_input_route_volume)
+        self._apply_return_mic_visible_volume()
+        QTimer.singleShot(120, self._apply_return_mic_visible_volume)
 
         self.status_changed.emit(f"MIC OUT source → {selected or 'Off'}")
         return True
@@ -1640,8 +1658,8 @@ class GlassBackendController(QObject):
         self._write_settings_document(data)
 
         self._load_return_mic_micro_loopback(True)
-        self._apply_return_mic_input_route_volume()
-        QTimer.singleShot(120, self._apply_return_mic_input_route_volume)
+        self._apply_return_mic_visible_volume()
+        QTimer.singleShot(120, self._apply_return_mic_visible_volume)
 
         self.status_changed.emit(f"MIC OUT source → {source or 'micro'}")
         return True
@@ -1847,9 +1865,9 @@ class GlassBackendController(QObject):
                 else:
                     self.audio_engine.apply_channel(self.settings, key)
 
-                if key == "return-mic":
-                    self._apply_return_mic_input_route_volume()
-                    QTimer.singleShot(120, self._apply_return_mic_input_route_volume)
+                if key in {"micro", "return-mic"}:
+                    self._apply_return_mic_visible_volume()
+                    QTimer.singleShot(120, self._apply_return_mic_visible_volume)
             except Exception as exc:
                 self.status_changed.emit(f"Volume apply error on {key} — {exc}")
 
@@ -1861,9 +1879,9 @@ class GlassBackendController(QObject):
             try:
                 self.audio_engine.apply_channel(self.settings, key)
 
-                if key == "return-mic":
-                    self._apply_return_mic_input_route_volume()
-                    QTimer.singleShot(120, self._apply_return_mic_input_route_volume)
+                if key in {"micro", "return-mic"}:
+                    self._apply_return_mic_visible_volume()
+                    QTimer.singleShot(120, self._apply_return_mic_visible_volume)
             except Exception as exc:
                 self.status_changed.emit(f"Channel apply error on {key} — {exc}")
 
