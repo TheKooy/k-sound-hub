@@ -203,15 +203,62 @@ class GlassBackendController(QObject):
         except Exception as exc:
             self.status_changed.emit(f"Audio backend startup error — {exc}")
 
+    def cleanup_glass_audio_runtime(self) -> None:
+        # Full KSounds runtime stop for Glass close/quit.
+        # This intentionally does not restart PipeWire and does not kill this Glass process.
+        patterns = [
+            "ksound_hub.app",
+            "ksound_soundboard_web.py",
+            "ksound-v2-audio-keepalive",
+            "KSH_KEEPALIVE",
+            "pipewire -c filter-chain.conf",
+            "K-Sounds-Hub-Soundboard-Player",
+            "K-Sound-Hub-Soundboard",
+            "ffmpeg.*soundboard",
+            "pacat.*soundboard",
+            "pacat --playback --device=(all|game|chat|media|more|retour|micro_bus|soundboard)",
+            "parec --device=(all|game|chat|media|more|retour|micro|micro_bus|soundboard)",
+        ]
+
+        for signal in ("-TERM", "-KILL"):
+            for pattern in patterns:
+                try:
+                    subprocess.run(
+                        ["pkill", signal, "-f", pattern],
+                        check=False,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                except Exception:
+                    pass
+            if signal == "-TERM":
+                time.sleep(0.25)
+
+        try:
+            self._unload_modules_matching(
+                lambda line: (
+                    "module-loopback" in line.lower()
+                    and (
+                        "ksh_mic_physical" in line.lower()
+                        or "k-sound-hub-soundboard" in line.lower()
+                        or "k-sounds hub mic output monitor" in line.lower()
+                        or "k-sound-hub-return-mic-micro" in line.lower()
+                        or "k-sound-hub-micro-inject" in line.lower()
+                        or "source=soundboard.monitor" in line.lower()
+                        or "sink=micro_bus" in line.lower()
+                        or "sink=retour" in line.lower()
+                    )
+                )
+            )
+        except Exception:
+            pass
+
     def shutdown(self) -> None:
         try:
             self._autosave()
         except Exception:
             pass
-        try:
-            self.ipc_server.stop()
-        except Exception:
-            pass
+
         try:
             dialog = self._android_soundboard_dialog
             self._android_soundboard_dialog = None
@@ -224,8 +271,19 @@ class GlassBackendController(QObject):
                 dialog.deleteLater()
         except Exception:
             pass
+
+        try:
+            self.ipc_server.stop()
+        except Exception:
+            pass
+
         try:
             self.audio_engine.shutdown()
+        except Exception:
+            pass
+
+        try:
+            self.cleanup_glass_audio_runtime()
         except Exception:
             pass
 
