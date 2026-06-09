@@ -24,7 +24,7 @@ HOST = "0.0.0.0"
 HTTP_PORT = int(os.environ.get("KSOUND_SOUNDBOARD_WEB_PORT", "8765"))
 DISCOVERY_PORT = int(os.environ.get("KSOUND_SOUNDBOARD_DISCOVERY_PORT", "8766"))
 
-SERVICE_NAME = "K-Sounds Soundboard Remote"
+SERVICE_NAME = "K-Sounds Remote"
 DISCOVERY_REQUEST = b"KSH_DISCOVER_V2"
 DISCOVERY_REQUESTS = {b"KSH_DISCOVER_V1", b"KSH_DISCOVER_V2"}
 DISCOVERY_SERVICE = "KSH_SOUNDBOARD"
@@ -400,7 +400,7 @@ def page(status: str = "") -> bytes:
     <head>
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width, initial-scale=1">
-      <title>K-Sounds Soundboard Remote</title>
+      <title>K-Sounds Remote</title>
       <meta name="theme-color" content="#070a12">
       <meta name="mobile-web-app-capable" content="yes">
       <style>
@@ -639,11 +639,39 @@ def page(status: str = "") -> bytes:
         .edit-mini:active, .stop-mini:active {{
           transform: scale(.96);
         }}
-      </style>
+
+.disconnect-link {{
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0.35rem auto 1rem;
+  padding: 0.55rem 0.95rem;
+  border: 1px solid rgba(255, 92, 199, 0.65);
+  border-radius: 999px;
+  color: #ffe1f0;
+  background: rgba(36, 14, 32, 0.78);
+  text-decoration: none;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}}
+.disconnect-link:active {{
+  transform: scale(0.98);
+}}
+.remote-subtitle {{
+  margin: -0.35rem 0 0.55rem;
+  color: rgba(236, 247, 255, 0.72);
+  font-size: 0.92rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}}
+
+</style>
     </head>
     <body>
       <header>
-        <h1>K-SOUNDS SOUNDBOARD REMOTE</h1>
+        <h1>K-SOUNDS</h1>
+        <p class="remote-subtitle">Soundboard Remote</p>
+        <a class="disconnect-link" href="ksounds://disconnect">Disconnect</a>
         <div class="hint">Local Android remote. Secure LAN pairing.</div>
         <div id="remoteStatus" class="status">{initial_status}</div>
       </header>
@@ -1805,7 +1833,7 @@ def main() -> int:
     thread.start()
 
     print()
-    print("K-Sounds Soundboard Remote Web")
+    print("K-Sounds Remote Web")
     print("======================")
     print(f"HTTP     : http://127.0.0.1:{HTTP_PORT}/")
     print(f"LAN      : http://{ip}:{HTTP_PORT}/")

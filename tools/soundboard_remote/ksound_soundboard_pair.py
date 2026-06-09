@@ -33,11 +33,11 @@ PAIRING_PATH.write_text(
 PAIRING_PATH.chmod(0o600)
 
 print()
-print("K-Sound Soundboard Pairing")
+print("K-Sounds Remote Pairing")
 print("==========================")
 print(f"Android code: {pin}")
 print(f"Expires in: {TTL_SECONDS // 60} minutes")
 print()
-print("Open the K-Sound Soundboard Android app.")
+print("Open the K-Sounds Remote Android app.")
 print("It should discover the PC automatically, then ask for this code.")
 print()

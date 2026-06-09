@@ -3,7 +3,7 @@ import signal
 import os
 
 """
-Experimental K-Sounds Hub Glass UI.
+Experimental K-Sounds Hub UI.
 
 This module is intentionally separate from ksound_hub.app.
 The stable app stays available as the fallback launcher.
@@ -3637,7 +3637,7 @@ class TitleBar(QFrame):
                 icon.setPixmap(pixmap.scaled(18, 18, Qt.KeepAspectRatio, Qt.SmoothTransformation))
         layout.addWidget(icon)
 
-        title = QLabel("K-Sounds Hub Glass")
+        title = QLabel("K-Sounds Hub")
         title.setObjectName("titleText")
         layout.addWidget(title)
 
@@ -5753,7 +5753,7 @@ class PadsPanel(QWidget):
                 "Android pairing code:\n\n"
                 f"{pin}\n\n"
                 "Expires in 5 minutes.\n\n"
-                "Open the Android K-Sounds Soundboard Remote app, search the PC, "
+                "Open the Android K-Sounds Remote app, search the PC, "
                 "then enter this code."
             ),
         )
@@ -6124,7 +6124,7 @@ class PadsPanel(QWidget):
 class DetachedPadsWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("K-Sounds Hub Glass - Pads")
+        self.setWindowTitle("K-Sounds Soundboard")
         self.resize(720, 520)
 
         if APP_ICON.is_file():
@@ -6457,7 +6457,7 @@ class Drawer(QFrame):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(10)
 
-        title = QLabel("Pads hub")
+        title = QLabel("Soundboard")
         title.setObjectName("sectionTitle")
         root.addWidget(title)
 
@@ -6614,7 +6614,7 @@ class PreviewWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("K-Sounds Hub Glass")
+        self.setWindowTitle("K-Sounds Hub")
         # KSH_WINDOW_POLICY_DEDUPED
         QTimer.singleShot(0, self._setup_external_activation)
         QTimer.singleShot(300, self._set_tray_visible_for_state)
@@ -6847,11 +6847,11 @@ class PreviewWindow(QMainWindow):
         elif not self.windowIcon().isNull():
             tray.setIcon(self.windowIcon())
 
-        tray.setToolTip("K-Sounds Hub Glass")
+        tray.setToolTip("K-Sounds Hub")
 
         menu = QMenu(self)
 
-        show_action = menu.addAction("Show K-Sounds Hub Glass")
+        show_action = menu.addAction("Show K-Sounds Hub")
         show_action.triggered.connect(self._restore_from_tray)
 
         quit_action = menu.addAction("Quit")
@@ -7229,6 +7229,10 @@ QFrame#channelCard[muted="true"]:hover {{
 
 def main() -> int:
     app = QApplication(sys.argv)
+    app.setApplicationName("K-Sounds Hub")
+    app.setApplicationDisplayName("K-Sounds Hub")
+    app.setOrganizationName("K-Sounds")
+    app.setDesktopFileName("ksounds-hub")
     app.setQuitOnLastWindowClosed(False)
     app.setStyleSheet(STYLE)
     window = PreviewWindow()
