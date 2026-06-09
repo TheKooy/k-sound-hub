@@ -24,7 +24,7 @@ import time
 from pathlib import Path
 
 from PySide6.QtCore import QFileSystemWatcher, QEvent, QObject, QPoint, QRect, QRectF, QSize, QTimer, Qt, Signal
-from PySide6.QtGui import QColor, QIcon, QImage, QPainter, QPixmap
+from PySide6.QtGui import QColor, QIcon, QImage, QPainter, QPainterPath, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -4824,6 +4824,7 @@ class SoundPadCard(QFrame):
         self._slot_key = str(slot_key or "").strip()
         self._always_show_meta = False
         self._background_path = str(background_path or "").strip()
+        self._background_pixmap = QPixmap()
 
         self.setObjectName("soundPadCard")
         self.setProperty("edit", "false")
@@ -4986,30 +4987,58 @@ class SoundPadCard(QFrame):
     def _apply_background_style(self) -> None:
         bg_path = Path(getattr(self, "_background_path", "") or "").expanduser()
         if not bg_path.is_file():
+            self._background_pixmap = QPixmap()
             self.setStyleSheet("")
+            self.update()
             return
 
-        url = _qss_url(self._darkened_background_path(bg_path))
-        self.setStyleSheet(f"""
-QFrame#soundPadCard {{
-    border-image: url("{url}") 0 0 0 0 stretch stretch;
+        pixmap = QPixmap(self._darkened_background_path(bg_path))
+        self._background_pixmap = pixmap if not pixmap.isNull() else QPixmap()
+        self.setStyleSheet("""
+QFrame#soundPadCard {
     border-radius: 16px;
-}}
+}
 QFrame#soundPadCard QLabel#soundPadName,
-QFrame#soundPadCard QLabel#soundPadMeta {{
+QFrame#soundPadCard QLabel#soundPadMeta {
     background: rgba(0, 0, 0, 178);
     border-radius: 8px;
     padding: 2px 6px;
-}}
-QFrame#soundPadCard QPushButton#soundPadEmoji {{
+}
+QFrame#soundPadCard QPushButton#soundPadEmoji {
     min-width: 34px;
     max-width: 34px;
     min-height: 34px;
     max-height: 34px;
     background: rgba(0, 0, 0, 230);
     border-radius: 17px;
-}}
+}
 """)
+        self.update()
+
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+
+        pixmap = getattr(self, "_background_pixmap", QPixmap())
+        if pixmap.isNull():
+            return
+
+        rect = self.rect()
+        if rect.width() <= 1 or rect.height() <= 1:
+            return
+
+        scaled = pixmap.scaled(rect.size(), Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+        x = (rect.width() - scaled.width()) // 2
+        y = (rect.height() - scaled.height()) // 2
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+
+        path = QPainterPath()
+        path.addRoundedRect(QRectF(rect), 16, 16)
+        painter.setClipPath(path)
+        painter.drawPixmap(x, y, scaled)
+        painter.end()
 
     def _request_background(self) -> None:
         if self._edit_enabled and self._background_callback is not None:
@@ -5370,6 +5399,7 @@ class PadsPanel(QWidget):
         self.grid_scroll = AdaptiveScrollArea()
         self.grid_scroll.setObjectName("padsGridScroll")
         self.grid_scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.grid_scroll.setWidgetResizable(True)
         self.grid_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
 
         pads_scrollbar = self.grid_scroll.verticalScrollBar()

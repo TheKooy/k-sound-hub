@@ -331,12 +331,12 @@ def page(status: str = "") -> bytes:
     pad_scale = max(35, min(130, int(settings.get("pad_scale", 100))))
     remote_columns = max(0, min(8, int(settings.get("remote_columns", 0))))
     pad_factor = pad_scale / 100.0
-    pad_min_width = max(92, int(145 * pad_factor))
-    pad_min_height = max(58, int(92 * pad_factor))
+    pad_min_width = max(92, int(126 * pad_factor))
+    pad_min_height = max(86, int(108 * pad_factor))
     pad_padding = max(8, int(14 * pad_factor))
     pad_radius = max(14, int(20 * pad_factor))
     pad_wrap_radius = max(16, int(22 * pad_factor))
-    pad_gap = max(7, int(12 * pad_factor))
+    pad_gap = max(5, int(9 * pad_factor))
     pad_title_font = max(13, int(17 * pad_factor))
     pad_subtitle_font = max(10, int(12 * pad_factor))
     pad_title_margin = max(4, int(8 * pad_factor))
@@ -406,13 +406,20 @@ def page(status: str = "") -> bytes:
       <style>
         :root {{
           color-scheme: dark;
-          --bg: #070a12;
-          --card: rgba(16, 22, 34, .92);
-          --bar: rgba(5, 8, 15, .94);
+          --bg: #05070d;
+          --panel: rgba(7, 11, 20, .72);
+          --panel-strong: rgba(10, 16, 29, .88);
+          --card: rgba(13, 20, 34, .78);
+          --card-hover: rgba(18, 30, 48, .86);
+          --bar: rgba(5, 8, 15, .86);
           --cyan: #3ed8ff;
+          --cyan-soft: rgba(62, 216, 255, .18);
           --pink: #ff5cc7;
+          --pink-soft: rgba(255, 92, 199, .16);
           --text: #ecf7ff;
           --muted: #93a4b8;
+          --line: rgba(142, 225, 255, .20);
+          --shadow: rgba(0, 0, 0, .48);
         }}
         * {{ box-sizing: border-box; }}
         html, body {{
@@ -425,41 +432,91 @@ def page(status: str = "") -> bytes:
           min-height: 100vh;
           font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
           background:
-            radial-gradient(circle at 15% 10%, rgba(62,216,255,.25), transparent 28%),
-            radial-gradient(circle at 85% 20%, rgba(255,92,199,.22), transparent 30%),
-            linear-gradient(135deg, #05070d, #101827 55%, #080b12);
+            radial-gradient(circle at 16% -8%, rgba(62,216,255,.30), transparent 34%),
+            radial-gradient(circle at 92% 8%, rgba(255,92,199,.22), transparent 30%),
+            radial-gradient(circle at 50% 110%, rgba(62,216,255,.10), transparent 38%),
+            linear-gradient(135deg, #02040a, #07101d 48%, #05070d);
           color: var(--text);
-          padding: 18px 18px 112px;
+          padding: 14px 14px 112px;
+        }}
+        body::before {{
+          content: "";
+          position: fixed;
+          inset: 0;
+          pointer-events: none;
+          background:
+            linear-gradient(rgba(255,255,255,.025) 1px, transparent 1px),
+            linear-gradient(90deg, rgba(255,255,255,.018) 1px, transparent 1px);
+          background-size: 42px 42px;
+          mask-image: linear-gradient(to bottom, rgba(0,0,0,.65), transparent 72%);
         }}
         body.edit-mode header {{
           border-color: rgba(255,92,199,.65);
         }}
         header {{
-          border: 1px solid rgba(62,216,255,.28);
-          border-radius: {pad_wrap_radius}px;
-          background: rgba(8, 12, 22, .78);
-          padding: 16px;
+          position: sticky;
+          top: 10px;
+          z-index: 20;
+          border: 1px solid var(--line);
+          border-radius: 24px;
+          background:
+            linear-gradient(135deg, rgba(10,16,29,.86), rgba(7,11,20,.68)),
+            linear-gradient(135deg, rgba(62,216,255,.10), rgba(255,92,199,.08));
+          padding: 14px;
           margin-bottom: 14px;
-          box-shadow: 0 18px 44px rgba(0,0,0,.28);
+          box-shadow: 0 18px 48px var(--shadow);
+          backdrop-filter: blur(18px) saturate(1.35);
+        }}
+        .brand-row {{
+          display: grid;
+          grid-template-columns: 54px minmax(0, 1fr) auto;
+          gap: 12px;
+          align-items: center;
+        }}
+        .brand-mark {{
+          width: 54px;
+          height: 54px;
+          display: grid;
+          place-items: center;
+          border: 1px solid rgba(62,216,255,.42);
+          border-radius: 18px;
+          color: var(--cyan);
+          background: rgba(2,4,10,.72);
+          font-size: 24px;
+          font-weight: 900;
+          box-shadow: inset 0 0 18px rgba(62,216,255,.10), 0 12px 28px rgba(0,0,0,.35);
+        }}
+        .brand-title {{
+          min-width: 0;
         }}
         h1 {{
-          margin: 0 0 4px;
-          letter-spacing: .08em;
+          margin: 0;
+          letter-spacing: .11em;
           font-size: 22px;
+          line-height: 1.05;
         }}
         .hint, .status {{
           color: var(--muted);
-          font-size: 14px;
+          font-size: 13px;
+        }}
+        .hint {{
+          margin-top: 10px;
         }}
         .status {{
-          margin-top: 8px;
+          margin-top: 10px;
           color: var(--cyan);
           min-height: 18px;
+          padding: 8px 10px;
+          border: 1px solid rgba(62,216,255,.18);
+          border-radius: 14px;
+          background: rgba(2,4,10,.34);
         }}
         .grid {{
           display: grid;
           grid-template-columns: repeat(auto-fit, minmax({pad_min_width}px, 1fr));
           gap: var(--ksh-pad-gap, {pad_gap}px);
+          position: relative;
+          z-index: 1;
         }}
         .pad-wrap {{
           position: relative;
@@ -472,23 +529,41 @@ def page(status: str = "") -> bytes:
           touch-action: none;
         }}
         .pad {{
+          position: relative;
+          overflow: hidden;
           width: 100%;
           min-height: var(--ksh-pad-height, {pad_min_height}px);
-          border: 1px solid rgba(62,216,255,.34);
+          aspect-ratio: 1 / 0.84;
+          border: 1px solid rgba(62,216,255,.28);
           border-radius: var(--ksh-pad-radius, {pad_radius}px);
-          background: var(--card);
+          background:
+            linear-gradient(135deg, rgba(62,216,255,.08), rgba(255,92,199,.05)),
+            var(--card);
           background-size: cover;
           background-position: center;
           background-repeat: no-repeat;
           color: var(--text);
           padding: var(--ksh-pad-padding, {pad_padding}px);
           text-align: left;
-          box-shadow: 0 14px 34px rgba(0,0,0,.28);
+          box-shadow: inset 0 1px 0 rgba(255,255,255,.05), 0 14px 34px rgba(0,0,0,.30);
           touch-action: manipulation;
+          backdrop-filter: blur(10px) saturate(1.25);
+        }}
+        .pad::before {{
+          content: "";
+          position: absolute;
+          inset: 0;
+          pointer-events: none;
+          background: linear-gradient(135deg, rgba(255,255,255,.08), transparent 34%, rgba(62,216,255,.05));
+          opacity: .70;
+        }}
+        .pad > * {{
+          position: relative;
+          z-index: 1;
         }}
         .pad.has-bg {{
           background-image:
-            linear-gradient(135deg, rgba(5, 8, 15, .38), rgba(5, 8, 15, .72)),
+            linear-gradient(135deg, rgba(5, 8, 15, .30), rgba(5, 8, 15, .76)),
             var(--pad-bg);
         }}
         .pad.has-bg span {{
@@ -500,7 +575,9 @@ def page(status: str = "") -> bytes:
         }}
         .pad:active, .pad.sending {{
           transform: scale(.98);
-          border-color: rgba(255,92,199,.85);
+          border-color: rgba(255,92,199,.88);
+          background-color: var(--card-hover);
+          box-shadow: inset 0 0 0 1px rgba(255,92,199,.22), 0 10px 28px rgba(255,92,199,.12);
         }}
         body.edit-mode .pad {{
           border-color: rgba(255,92,199,.58);
@@ -566,19 +643,20 @@ def page(status: str = "") -> bytes:
         }}
         .bottom-bar {{
           position: fixed;
-          left: 0;
-          right: 0;
-          bottom: 0;
+          left: 10px;
+          right: 10px;
+          bottom: 10px;
           z-index: 50;
           display: grid;
           grid-template-columns: 54px minmax(0, 1fr) 54px;
           gap: 10px;
           align-items: center;
           padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
-          border-top: 1px solid rgba(62,216,255,.24);
+          border: 1px solid rgba(62,216,255,.20);
+          border-radius: 24px;
           background: var(--bar);
-          backdrop-filter: blur(18px);
-          box-shadow: 0 -16px 42px rgba(0,0,0,.38);
+          backdrop-filter: blur(20px) saturate(1.35);
+          box-shadow: 0 -10px 42px rgba(0,0,0,.44);
         }}
         .bottom-volume {{
           min-width: 0;
@@ -640,38 +718,44 @@ def page(status: str = "") -> bytes:
           transform: scale(.96);
         }}
 
-.disconnect-link {{
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  margin: 0.35rem auto 1rem;
-  padding: 0.55rem 0.95rem;
-  border: 1px solid rgba(255, 92, 199, 0.65);
-  border-radius: 999px;
-  color: #ffe1f0;
-  background: rgba(36, 14, 32, 0.78);
-  text-decoration: none;
-  font-weight: 700;
-  letter-spacing: 0.02em;
-}}
-.disconnect-link:active {{
-  transform: scale(0.98);
-}}
-.remote-subtitle {{
-  margin: -0.35rem 0 0.55rem;
-  color: rgba(236, 247, 255, 0.72);
-  font-size: 0.92rem;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}}
+        .disconnect-link {{
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          min-height: 42px;
+          padding: 0 14px;
+          border: 1px solid rgba(255, 92, 199, 0.58);
+          border-radius: 999px;
+          color: #ffe1f0;
+          background: rgba(36, 14, 32, 0.72);
+          text-decoration: none;
+          font-weight: 800;
+          letter-spacing: 0.02em;
+          box-shadow: 0 10px 22px rgba(0,0,0,.28);
+        }}
+        .disconnect-link:active {{
+          transform: scale(0.98);
+        }}
+        .remote-subtitle {{
+          margin: 4px 0 0;
+          color: rgba(236, 247, 255, 0.70);
+          font-size: 0.76rem;
+          letter-spacing: 0.12em;
+          text-transform: uppercase;
+        }}
 
 </style>
     </head>
     <body>
       <header>
-        <h1>K-SOUNDS</h1>
-        <p class="remote-subtitle">Soundboard Remote</p>
-        <a class="disconnect-link" href="ksounds://disconnect">Disconnect</a>
+        <div class="brand-row">
+          <div class="brand-mark">K</div>
+          <div class="brand-title">
+            <h1>K-SOUNDS</h1>
+            <p class="remote-subtitle">Soundboard Remote</p>
+          </div>
+          <a class="disconnect-link" href="ksounds://disconnect">Disconnect</a>
+        </div>
         <div class="hint">Local Android remote. Secure LAN pairing.</div>
         <div id="remoteStatus" class="status">{initial_status}</div>
       </header>
@@ -855,8 +939,8 @@ def page(status: str = "") -> bytes:
           const factor = visualScaleForColumns(columns);
 
           const rootStyle = document.documentElement.style;
-          rootStyle.setProperty("--ksh-pad-gap", Math.round(12 * factor) + "px");
-          rootStyle.setProperty("--ksh-pad-height", Math.round(92 * factor) + "px");
+          rootStyle.setProperty("--ksh-pad-gap", Math.round(9 * factor) + "px");
+          rootStyle.setProperty("--ksh-pad-height", Math.round(108 * factor) + "px");
           rootStyle.setProperty("--ksh-pad-padding", Math.round(14 * factor) + "px");
           rootStyle.setProperty("--ksh-pad-radius", Math.round(20 * factor) + "px");
           rootStyle.setProperty("--ksh-wrap-radius", Math.round(22 * factor) + "px");
