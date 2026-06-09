@@ -84,6 +84,106 @@ def _qss_url(path: str) -> str:
 SETTINGS_PATH = CONFIG_DIR / "settings.json"
 
 
+def _read_window_settings_document() -> dict:
+    try:
+        if SETTINGS_PATH.is_file():
+            data = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+    except Exception:
+        pass
+    return {}
+
+
+def _write_window_settings_document(data: dict) -> None:
+    try:
+        SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        SETTINGS_PATH.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _window_geometry_rect(window) -> QRect:
+    try:
+        normal = window.normalGeometry()
+        if normal.isValid() and normal.width() > 0 and normal.height() > 0:
+            return normal
+    except Exception:
+        pass
+    return window.geometry()
+
+
+def _save_window_geometry(window, key: str) -> None:
+    # Size-only on KDE Wayland: KWin owns window placement, but app-side size
+    # memory is reliable and avoids fighting the compositor.
+    if not key:
+        return
+
+    try:
+        size = window.size()
+        width = int(size.width())
+        height = int(size.height())
+        if width < 160 or height < 120:
+            rect = _window_geometry_rect(window)
+            width = int(rect.width())
+            height = int(rect.height())
+
+        if width < 160 or height < 120:
+            return
+
+        data = _read_window_settings_document()
+        previous = data.get(key)
+        if not isinstance(previous, dict):
+            previous = {}
+
+        data[key] = {
+            "w": width,
+            "h": height,
+            "maximized": bool(window.isMaximized()),
+        }
+        _write_window_settings_document(data)
+    except Exception:
+        pass
+
+
+def _queue_window_geometry_save(window, key: str, timer: QTimer | None) -> None:
+    try:
+        if timer is None or not window.isVisible():
+            return
+        timer.start()
+    except Exception:
+        pass
+
+
+def _restore_window_geometry(window, key: str, default_w: int, default_h: int, min_w: int, min_h: int) -> None:
+    data = _read_window_settings_document()
+    geometry = data.get(key)
+    if not isinstance(geometry, dict):
+        window.resize(default_w, default_h)
+        return
+
+    try:
+        width = max(min_w, min(5000, int(geometry.get("w", default_w))))
+        height = max(min_h, min(3000, int(geometry.get("h", default_h))))
+    except Exception:
+        window.resize(default_w, default_h)
+        return
+
+    def apply_size() -> None:
+        try:
+            window.resize(width, height)
+            if bool(geometry.get("maximized", False)):
+                window.showMaximized()
+        except Exception:
+            pass
+
+    apply_size()
+    QTimer.singleShot(0, apply_size)
+    QTimer.singleShot(220, apply_size)
+    QTimer.singleShot(900, apply_size)
+    QTimer.singleShot(1600, apply_size)
+
+
 def _send_ksh_ipc_payload(payload: dict) -> bool:
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
@@ -5241,7 +5341,18 @@ class PadsPanel(QWidget):
             return
 
         width = max(1, self.grid_scroll.viewport().width())
-        columns = max(1, min(9, width // 145))
+        spacing = 4 if width < 900 else 5
+        if self.grid.horizontalSpacing() != spacing:
+            self.grid.setHorizontalSpacing(spacing)
+            self.grid.setVerticalSpacing(spacing)
+
+        min_card_width = 118 if width >= 900 else 132
+        columns = max(1, min(12, (width + spacing) // max(1, min_card_width + spacing)))
+
+        try:
+            self.grid_host.setMinimumWidth(width)
+        except Exception:
+            pass
 
         if columns != self._columns:
             self._columns = columns
@@ -5407,10 +5518,11 @@ class PadsPanel(QWidget):
         pads_scrollbar.setFixedWidth(8)
 
         self.grid_host = QWidget()
+        self.grid_host.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         self.grid = QGridLayout(self.grid_host)
         self.grid.setContentsMargins(0, 0, 0, 0)
-        self.grid.setHorizontalSpacing(6)
-        self.grid.setVerticalSpacing(6)
+        self.grid.setHorizontalSpacing(5)
+        self.grid.setVerticalSpacing(5)
 
         self.grid_scroll.setWidget(self.grid_host)
         self.grid_scroll._schedule_margin_update()
@@ -5453,6 +5565,10 @@ class PadsPanel(QWidget):
             palette_layout.addWidget(button, index // 8, index % 8)
 
         self.emoji_overlay.hide()
+
+        self.pair_overlay = None
+        self.pair_code_input = None
+
         self._set_pad_bg_darkness(self._pad_bg_darkness, persist=False)
         QTimer.singleShot(0, self._update_responsive_columns)
 
@@ -5474,6 +5590,179 @@ class PadsPanel(QWidget):
         super().resizeEvent(event)
         self._update_responsive_columns()
         self._position_emoji_overlay()
+        self._position_pair_overlay()
+
+    def _pair_overlay_parent(self):
+        try:
+            parent = self.window()
+            if parent is not None:
+                return parent
+        except Exception:
+            pass
+        return self
+
+    def _ensure_pair_overlay(self) -> QFrame:
+        parent = self._pair_overlay_parent()
+        overlay = getattr(self, "pair_overlay", None)
+        if overlay is not None and overlay.parent() is parent:
+            return overlay
+
+        if overlay is not None:
+            try:
+                overlay.hide()
+                overlay.deleteLater()
+            except Exception:
+                pass
+
+        overlay = QFrame(parent)
+        overlay.setObjectName("pairOverlayDim")
+        overlay.setAttribute(Qt.WA_StyledBackground, True)
+
+        root = QVBoxLayout(overlay)
+        root.setContentsMargins(16, 16, 16, 16)
+        root.setSpacing(0)
+        root.addStretch(1)
+
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.addStretch(1)
+
+        card = QFrame(overlay)
+        card.setObjectName("pairOverlayCard")
+        card.setMaximumWidth(420)
+        card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(18, 16, 18, 16)
+        layout.setSpacing(10)
+
+        title = QLabel("Android pairing code")
+        title.setObjectName("pairOverlayTitle")
+        title.setAlignment(Qt.AlignCenter)
+        layout.addWidget(title)
+
+        code = QLineEdit("")
+        code.setObjectName("pairOverlayCode")
+        code.setReadOnly(True)
+        code.setAlignment(Qt.AlignCenter)
+        code.setMinimumHeight(46)
+        layout.addWidget(code)
+        self.pair_code_input = code
+
+        hint = QLabel(
+            "Open K-Sounds Remote on Android, search the PC, then enter this code.\n"
+            "The code expires in 5 minutes."
+        )
+        hint.setObjectName("pairOverlayHint")
+        hint.setWordWrap(True)
+        hint.setAlignment(Qt.AlignCenter)
+        layout.addWidget(hint)
+
+        buttons = QHBoxLayout()
+        buttons.setSpacing(8)
+
+        copy_button = QPushButton("Copy")
+        copy_button.setObjectName("pairOverlayButton")
+        copy_button.clicked.connect(self._copy_pair_code)
+        buttons.addWidget(copy_button)
+
+        close_button = QPushButton("Close")
+        close_button.setObjectName("pairOverlayButton")
+        close_button.clicked.connect(self._hide_pair_overlay)
+        buttons.addWidget(close_button)
+
+        layout.addLayout(buttons)
+
+        row.addWidget(card)
+        row.addStretch(1)
+
+        root.addLayout(row)
+        root.addStretch(1)
+
+        overlay.setStyleSheet("""
+QFrame#pairOverlayDim {
+    background: rgba(0, 0, 0, 150);
+}
+QFrame#pairOverlayCard {
+    background: rgba(7, 10, 18, 245);
+    border: 1px solid rgba(62, 216, 255, 95);
+    border-radius: 18px;
+}
+QLabel#pairOverlayTitle {
+    color: rgba(236, 247, 255, 245);
+    font-size: 16px;
+    font-weight: 800;
+}
+QLineEdit#pairOverlayCode {
+    color: white;
+    background: rgba(0, 0, 0, 190);
+    border: 1px solid rgba(62, 216, 255, 120);
+    border-radius: 12px;
+    font-size: 26px;
+    font-weight: 900;
+    letter-spacing: 5px;
+}
+QLabel#pairOverlayHint {
+    color: rgba(198, 218, 232, 220);
+    font-size: 12px;
+}
+QPushButton#pairOverlayButton {
+    color: white;
+    background: rgba(22, 42, 70, 220);
+    border: 1px solid rgba(62, 216, 255, 90);
+    border-radius: 10px;
+    padding: 8px 14px;
+    font-weight: 700;
+}
+QPushButton#pairOverlayButton:hover {
+    background: rgba(38, 78, 118, 235);
+}
+""")
+
+        self.pair_overlay = overlay
+        self._position_pair_overlay()
+        return overlay
+
+    def _position_pair_overlay(self) -> None:
+        overlay = getattr(self, "pair_overlay", None)
+        if overlay is None:
+            return
+
+        parent = overlay.parentWidget()
+        if parent is None:
+            return
+
+        try:
+            overlay.setGeometry(parent.rect())
+        except Exception:
+            overlay.setGeometry(self.rect())
+
+    def _show_pair_overlay(self, pin: str) -> None:
+        overlay = self._ensure_pair_overlay()
+        self._position_pair_overlay()
+
+        code = getattr(self, "pair_code_input", None)
+        if code is not None:
+            code.setText(str(pin or ""))
+            code.selectAll()
+            code.setFocus()
+
+        overlay.show()
+        overlay.raise_()
+
+    def _hide_pair_overlay(self) -> None:
+        overlay = getattr(self, "pair_overlay", None)
+        if overlay is not None:
+            overlay.hide()
+
+    def _copy_pair_code(self) -> None:
+        code = getattr(self, "pair_code_input", None)
+        if code is None:
+            return
+        try:
+            QApplication.clipboard().setText(code.text())
+        except Exception:
+            pass
 
     def _position_emoji_overlay(self) -> None:
         if not hasattr(self, "emoji_overlay"):
@@ -5776,17 +6065,7 @@ class PadsPanel(QWidget):
             QMessageBox.warning(self, "Pair Android", f"Could not write pairing code.\n\n{exc}")
             return
 
-        QMessageBox.information(
-            self,
-            "Pair Android",
-            (
-                "Android pairing code:\n\n"
-                f"{pin}\n\n"
-                "Expires in 5 minutes.\n\n"
-                "Open the Android K-Sounds Remote app, search the PC, "
-                "then enter this code."
-            ),
-        )
+        self._show_pair_overlay(pin)
 
 
     def _slot_for_key(self, slot_key: str) -> dict | None:
@@ -6063,6 +6342,11 @@ class PadsPanel(QWidget):
             col = index % self._columns
             self.grid.addWidget(card, row, col)
 
+        max_columns_to_clear = max(len(self.pad_cards), self._columns + 8, 16)
+        for col in range(max_columns_to_clear):
+            self.grid.setColumnMinimumWidth(col, 0)
+            self.grid.setColumnStretch(col, 0)
+
         for col in range(self._columns):
             self.grid.setColumnMinimumWidth(col, 0)
             self.grid.setColumnStretch(col, 1)
@@ -6154,8 +6438,15 @@ class PadsPanel(QWidget):
 class DetachedPadsWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+        self._geometry_settings_key = "glass_soundboard_geometry"
+        self._geometry_save_timer = QTimer(self)
+        self._geometry_save_timer.setSingleShot(True)
+        self._geometry_save_timer.setInterval(550)
+        self._geometry_save_timer.timeout.connect(self._save_geometry_now)
+
         self.setWindowTitle("K-Sounds Soundboard")
-        self.resize(720, 520)
+        self.setMinimumSize(420, 320)
+        _restore_window_geometry(self, self._geometry_settings_key, 720, 520, 420, 320)
 
         if APP_ICON.is_file():
             self.setWindowIcon(QIcon(str(APP_ICON)))
@@ -6320,8 +6611,31 @@ QFrame#soundPadCard[bulkSelected="true"] {{
 }}
 """)
 
+    def _save_geometry_now(self) -> None:
+        _save_window_geometry(self, self._geometry_settings_key)
+
+    def _restore_geometry_after_show(self) -> None:
+        _restore_window_geometry(self, self._geometry_settings_key, 720, 520, 420, 320)
+
+    def _queue_geometry_save(self) -> None:
+        _queue_window_geometry_save(self, self._geometry_settings_key, self._geometry_save_timer)
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        QTimer.singleShot(0, self._restore_geometry_after_show)
+        QTimer.singleShot(350, self._restore_geometry_after_show)
+
+    def closeEvent(self, event) -> None:
+        self._save_geometry_now()
+        super().closeEvent(event)
+
+    def moveEvent(self, event) -> None:
+        super().moveEvent(event)
+        self._queue_geometry_save()
+
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
+        self._queue_geometry_save()
         self._refresh_background()
 
     def _refresh_background(self) -> None:
@@ -6584,7 +6898,26 @@ class PreviewWindow(QMainWindow):
 
         self._focus_existing_window()
 
+    def _save_detached_pads_window_geometry(self) -> None:
+        try:
+            drawer = getattr(self, "drawer", None)
+            window = getattr(drawer, "_detached_pads_window", None)
+            if window is None:
+                return
+
+            save = getattr(window, "_save_geometry_now", None)
+            if callable(save):
+                save()
+        except Exception:
+            pass
+
+    def _save_all_window_geometry_now(self) -> None:
+        self._save_geometry_now()
+        self._save_detached_pads_window_geometry()
+
     def _shutdown_window_runtime(self) -> None:
+        self._save_all_window_geometry_now()
+
         try:
             tray = getattr(self, "tray_icon", None)
             if tray is not None:
@@ -6611,6 +6944,8 @@ class PreviewWindow(QMainWindow):
             pass
 
     def closeEvent(self, event) -> None:
+        self._save_all_window_geometry_now()
+
         if self._close_to_tray_enabled():
             try:
                 self.hide()
@@ -6645,12 +6980,17 @@ class PreviewWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("K-Sounds Hub")
+        self._geometry_settings_key = "glass_hub_geometry"
+        self._geometry_save_timer = QTimer(self)
+        self._geometry_save_timer.setSingleShot(True)
+        self._geometry_save_timer.setInterval(550)
+        self._geometry_save_timer.timeout.connect(self._save_geometry_now)
         # KSH_WINDOW_POLICY_DEDUPED
         QTimer.singleShot(0, self._setup_external_activation)
         QTimer.singleShot(300, self._set_tray_visible_for_state)
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Window)
-        self.resize(1320, 560)
         self.setMinimumSize(860, 430)
+        _restore_window_geometry(self, self._geometry_settings_key, 1320, 560, 860, 430)
 
         if APP_ICON.is_file():
             self.setWindowIcon(QIcon(str(APP_ICON)))
@@ -6911,6 +7251,7 @@ class PreviewWindow(QMainWindow):
 
     def _quit_from_tray(self) -> None:
         self._allow_real_close = True
+        self._save_all_window_geometry_now()
         if self.tray_icon is not None:
             try:
                 self.tray_icon.hide()
@@ -7197,10 +7538,29 @@ QFrame#channelCard[muted="true"]:hover {{
             card.set_meter_levels(left, right)
             card.tick_meters()
 
+    def _save_geometry_now(self) -> None:
+        _save_window_geometry(self, self._geometry_settings_key)
+
+    def _restore_geometry_after_show(self) -> None:
+        _restore_window_geometry(self, self._geometry_settings_key, 1320, 560, 860, 430)
+
+    def _queue_geometry_save(self) -> None:
+        _queue_window_geometry_save(self, self._geometry_settings_key, self._geometry_save_timer)
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        QTimer.singleShot(0, self._restore_geometry_after_show)
+        QTimer.singleShot(350, self._restore_geometry_after_show)
+
+    def moveEvent(self, event) -> None:
+        super().moveEvent(event)
+        self._queue_geometry_save()
+
     def resizeEvent(self, event) -> None:
         # Do not rescale/reprocess the background during live resize.
         # QLabel scaledContents keeps the preview responsive.
         super().resizeEvent(event)
+        self._queue_geometry_save()
 
     def _queue_background_refresh(self) -> None:
         self._background_refresh_timer.start()
@@ -7266,6 +7626,7 @@ def main() -> int:
     app.setQuitOnLastWindowClosed(False)
     app.setStyleSheet(STYLE)
     window = PreviewWindow()
+    app.aboutToQuit.connect(window._save_all_window_geometry_now)
     window.show()
     return app.exec()
 
