@@ -15,6 +15,8 @@ import android.view.Window;
 import android.view.WindowManager;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputMethodManager;
+import android.webkit.WebResourceError;
+import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebStorage;
 import android.webkit.WebView;
@@ -40,15 +42,28 @@ public class MainActivity extends Activity {
     private static final String DISCOVERY_REQUEST = "KSH_DISCOVER_V2";
     private static final String EXPECTED_SERVICE = "KSH_SOUNDBOARD";
 
+    private static final int BG = Color.rgb(7, 10, 18);
+    private static final int CARD = Color.rgb(12, 18, 30);
+    private static final int PANEL = Color.rgb(8, 13, 24);
+    private static final int CYAN = Color.rgb(62, 216, 255);
+    private static final int MAGENTA = Color.rgb(255, 92, 199);
+    private static final int TEXT = Color.rgb(236, 247, 255);
+    private static final int MUTED = Color.rgb(147, 164, 184);
+    private static final int DANGER = Color.rgb(255, 111, 132);
+
     private SharedPreferences prefs;
     private WebView webView;
     private LinearLayout root;
     private TextView status;
     private EditText pinInput;
-    private Button pairButton;
-    private Button searchButton;
+    private Button primaryButton;
+    private Button secondaryButton;
+    private Button tertiaryButton;
 
     private String discoveredBaseUrl = "";
+    private String activeWebBaseUrl = "";
+    private String activeWebToken = "";
+    private boolean webLoadFailureHandled = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -68,8 +83,8 @@ public class MainActivity extends Activity {
         String baseUrl = prefs.getString("base_url", "");
 
         if (!token.isEmpty() && !baseUrl.isEmpty()) {
-            showWeb(baseUrl, token);
-            rediscoverInBackgroundAndUpdate(token);
+            showConnectingUi(baseUrl, token);
+            retrySavedConnection(baseUrl, token);
         } else {
             showPairingUi("Searching for K-Sounds Hub on your network...");
             discoverAndShow();
@@ -100,32 +115,58 @@ public class MainActivity extends Activity {
         return view;
     }
 
-    private Button makeButton(String text, boolean primary) {
+    private Button makeButton(String text, int role) {
         Button button = new Button(this);
         button.setText(text);
         button.setAllCaps(false);
         button.setTextSize(14);
         button.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        button.setTextColor(primary ? Color.rgb(7, 16, 24) : Color.rgb(236, 247, 255));
         button.setPadding(dp(14), dp(8), dp(14), dp(8));
-        button.setBackground(
-            rounded(
-                primary ? Color.rgb(62, 216, 255) : Color.rgb(18, 24, 38),
-                primary ? Color.rgb(62, 216, 255) : Color.rgb(62, 216, 255),
-                1,
-                14
-            )
-        );
+
+        int fill = Color.rgb(18, 24, 38);
+        int stroke = CYAN;
+        int textColor = TEXT;
+
+        if (role == 1) {
+            fill = CYAN;
+            stroke = CYAN;
+            textColor = Color.rgb(7, 16, 24);
+        } else if (role == 2) {
+            fill = Color.rgb(36, 14, 32);
+            stroke = MAGENTA;
+            textColor = TEXT;
+        } else if (role == 3) {
+            fill = Color.rgb(34, 17, 26);
+            stroke = DANGER;
+            textColor = Color.rgb(255, 225, 231);
+        }
+
+        button.setTextColor(textColor);
+        button.setBackground(rounded(fill, stroke, 1, 14));
         return button;
     }
 
-    private void showPairingUi(String message) {
+    private View spacer(int heightDp) {
+        View view = new View(this);
+        view.setLayoutParams(new LinearLayout.LayoutParams(1, dp(heightDp)));
+        return view;
+    }
+
+    private LinearLayout makeRoot() {
+        webView = null;
+
         root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setGravity(Gravity.CENTER);
         root.setPadding(dp(14), dp(14), dp(14), dp(14));
-        root.setBackgroundColor(Color.rgb(7, 10, 18));
+        root.setBackgroundColor(BG);
 
+        setContentView(root);
+        immersive();
+        return root;
+    }
+
+    private LinearLayout makeCard(String title, String subtitle, String message) {
         int screenWidth = getResources().getDisplayMetrics().widthPixels;
         boolean narrow = screenWidth < dp(620);
 
@@ -133,50 +174,84 @@ public class MainActivity extends Activity {
         card.setOrientation(LinearLayout.VERTICAL);
         card.setGravity(Gravity.CENTER);
         card.setPadding(dp(24), dp(22), dp(24), dp(22));
-        card.setBackground(
-            rounded(
-                Color.rgb(12, 18, 30),
-                Color.rgb(62, 216, 255),
-                1,
-                24
-            )
-        );
+        card.setBackground(rounded(CARD, CYAN, 1, 24));
 
         int cardWidth = Math.min(screenWidth - dp(28), dp(760));
         if (cardWidth < dp(280)) {
             cardWidth = screenWidth - dp(16);
         }
+
         root.addView(card, new LinearLayout.LayoutParams(cardWidth, LinearLayout.LayoutParams.WRAP_CONTENT));
 
-        TextView title = makeText("K-SOUND SOUNDBOARD", narrow ? 22 : 28, Color.rgb(236, 247, 255), Typeface.BOLD);
-        title.setLetterSpacing(0.08f);
-        card.addView(title);
-
-        TextView subtitle = makeText(
-            "Local Android remote for your K-Sounds Hub soundboard.",
-            narrow ? 12 : 14,
-            Color.rgb(147, 164, 184),
-            Typeface.NORMAL
+        TextView badge = makeText("K", 28, CYAN, Typeface.BOLD);
+        badge.setBackground(rounded(Color.rgb(5, 8, 15), MAGENTA, 1, 18));
+        badge.setPadding(dp(16), dp(8), dp(16), dp(8));
+        LinearLayout.LayoutParams badgeParams = new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
         );
-        subtitle.setPadding(0, dp(6), 0, dp(16));
-        card.addView(subtitle);
+        badgeParams.setMargins(0, 0, 0, dp(12));
+        card.addView(badge, badgeParams);
 
-        status = makeText(message, narrow ? 13 : 15, Color.rgb(62, 216, 255), Typeface.NORMAL);
+        TextView titleView = makeText(title, narrow ? 22 : 28, TEXT, Typeface.BOLD);
+        titleView.setLetterSpacing(0.08f);
+        card.addView(titleView);
+
+        TextView subtitleView = makeText(subtitle, narrow ? 12 : 14, MUTED, Typeface.NORMAL);
+        subtitleView.setPadding(0, dp(6), 0, dp(16));
+        card.addView(subtitleView);
+
+        status = makeText(message, narrow ? 13 : 15, CYAN, Typeface.NORMAL);
         status.setPadding(dp(12), dp(10), dp(12), dp(10));
-        status.setBackground(
-            rounded(
-                Color.rgb(8, 13, 24),
-                Color.rgb(38, 88, 112),
-                1,
-                16
-            )
-        );
+        status.setBackground(rounded(PANEL, Color.rgb(38, 88, 112), 1, 16));
         LinearLayout.LayoutParams statusParams = new LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
             LinearLayout.LayoutParams.WRAP_CONTENT
         );
         statusParams.setMargins(0, 0, 0, dp(16));
         card.addView(status, statusParams);
+
+        return card;
+    }
+
+    private void addButtonRow(LinearLayout card, Button first, Button second, Button third) {
+        int screenWidth = getResources().getDisplayMetrics().widthPixels;
+        boolean narrow = screenWidth < dp(620);
+
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(narrow ? LinearLayout.VERTICAL : LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER);
+
+        LinearLayout.LayoutParams buttonParams = new LinearLayout.LayoutParams(
+            narrow ? LinearLayout.LayoutParams.MATCH_PARENT : dp(180),
+            dp(48)
+        );
+        buttonParams.setMargins(dp(6), dp(4), dp(6), dp(4));
+
+        if (first != null) {
+            row.addView(first, buttonParams);
+        }
+        if (second != null) {
+            row.addView(second, buttonParams);
+        }
+        if (third != null) {
+            row.addView(third, buttonParams);
+        }
+
+        card.addView(row);
+    }
+
+    private void showPairingUi(String message) {
+        makeRoot();
+
+        LinearLayout card = makeCard(
+            "K-SOUNDS",
+            "Soundboard Remote",
+            message
+        );
+
+        int screenWidth = getResources().getDisplayMetrics().widthPixels;
+        boolean narrow = screenWidth < dp(620);
 
         pinInput = new EditText(this);
         pinInput.setHint("6-digit PC code");
@@ -187,19 +262,12 @@ public class MainActivity extends Activity {
         pinInput.setFilters(new InputFilter[] { new InputFilter.LengthFilter(6) });
         pinInput.setSelectAllOnFocus(true);
         pinInput.setTextColor(Color.WHITE);
-        pinInput.setHintTextColor(Color.rgb(147, 164, 184));
+        pinInput.setHintTextColor(MUTED);
         pinInput.setGravity(Gravity.CENTER);
         pinInput.setTextSize(narrow ? 20 : 22);
         pinInput.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         pinInput.setPadding(dp(14), dp(10), dp(14), dp(10));
-        pinInput.setBackground(
-            rounded(
-                Color.rgb(5, 8, 15),
-                Color.rgb(255, 92, 199),
-                1,
-                16
-            )
-        );
+        pinInput.setBackground(rounded(Color.rgb(5, 8, 15), MAGENTA, 1, 16));
 
         LinearLayout.LayoutParams pinParams = new LinearLayout.LayoutParams(
             narrow ? LinearLayout.LayoutParams.MATCH_PARENT : dp(280),
@@ -208,48 +276,115 @@ public class MainActivity extends Activity {
         pinParams.setMargins(0, 0, 0, dp(14));
         card.addView(pinInput, pinParams);
 
-        LinearLayout buttonRow = new LinearLayout(this);
-        buttonRow.setOrientation(narrow ? LinearLayout.VERTICAL : LinearLayout.HORIZONTAL);
-        buttonRow.setGravity(Gravity.CENTER);
-
-        pairButton = makeButton("Connect", true);
-        pairButton.setOnClickListener(new View.OnClickListener() {
+        primaryButton = makeButton("Connect", 1);
+        primaryButton.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 pairWithPin();
             }
         });
 
-        searchButton = makeButton("Search PC", false);
-        searchButton.setOnClickListener(new View.OnClickListener() {
+        secondaryButton = makeButton("Search PC", 0);
+        secondaryButton.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 discoverAndShow();
             }
         });
 
-        LinearLayout.LayoutParams buttonParams = new LinearLayout.LayoutParams(
-            narrow ? LinearLayout.LayoutParams.MATCH_PARENT : dp(180),
-            dp(48)
-        );
-        buttonParams.setMargins(dp(6), dp(4), dp(6), dp(4));
-
-        buttonRow.addView(pairButton, buttonParams);
-        buttonRow.addView(searchButton, buttonParams);
-        card.addView(buttonRow);
+        tertiaryButton = null;
+        addButtonRow(card, primaryButton, secondaryButton, null);
 
         TextView help = makeText(
-            "On the PC: run `ksound-soundboard-pair`, then enter the code here.",
+            "On the PC: open K-Sounds Hub and click Pair Android, then enter the 6-digit code here.",
             narrow ? 11 : 12,
-            Color.rgb(147, 164, 184),
+            MUTED,
             Typeface.NORMAL
         );
         help.setPadding(0, dp(14), 0, 0);
         card.addView(help);
 
-        setContentView(root);
         setPairControlsEnabled(false);
-        immersive();
+    }
+
+    private void showConnectingUi(final String baseUrl, final String token) {
+        makeRoot();
+
+        LinearLayout card = makeCard(
+            "K-SOUNDS",
+            "Remote",
+            "Connecting to saved PC...\n" + baseUrl
+        );
+
+        primaryButton = makeButton("Retry", 1);
+        primaryButton.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                retrySavedConnection(baseUrl, token);
+            }
+        });
+
+        secondaryButton = makeButton("Pair again", 2);
+        secondaryButton.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                startPairingWithoutForgetting();
+            }
+        });
+
+        tertiaryButton = makeButton("Disconnect", 3);
+        tertiaryButton.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                forgetSavedPc();
+            }
+        });
+
+        addButtonRow(card, primaryButton, secondaryButton, tertiaryButton);
+    }
+
+    private void showServerNotFoundUi(final String baseUrl, final String token, final String reason) {
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                makeRoot();
+
+                LinearLayout card = makeCard(
+                    "SERVER NOT FOUND",
+                    "Remote — Server not found",
+                    reason
+                    + "\n\nSaved PC: "
+                    + (baseUrl == null || baseUrl.length() == 0 ? "none" : baseUrl)
+                    + "\n\nCheck that K-Sounds Hub is running, Pair Android is active, and the phone is on the same LAN."
+                );
+
+                primaryButton = makeButton("Retry", 1);
+                primaryButton.setOnClickListener(new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        retrySavedConnection(baseUrl, token);
+                    }
+                });
+
+                secondaryButton = makeButton("Pair again", 2);
+                secondaryButton.setOnClickListener(new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        startPairingWithoutForgetting();
+                    }
+                });
+
+                tertiaryButton = makeButton("Disconnect", 3);
+                tertiaryButton.setOnClickListener(new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        forgetSavedPc();
+                    }
+                });
+
+                addButtonRow(card, primaryButton, secondaryButton, tertiaryButton);
+            }
+        });
     }
 
     private JSONObject tryParseJson(String text) {
@@ -264,9 +399,9 @@ public class MainActivity extends Activity {
         runOnUiThread(new Runnable() {
             @Override
             public void run() {
-                if (pairButton != null) {
-                    pairButton.setEnabled(enabled);
-                    pairButton.setAlpha(enabled ? 1.0f : 0.45f);
+                if (primaryButton != null) {
+                    primaryButton.setEnabled(enabled);
+                    primaryButton.setAlpha(enabled ? 1.0f : 0.45f);
                 }
             }
         });
@@ -276,10 +411,10 @@ public class MainActivity extends Activity {
         runOnUiThread(new Runnable() {
             @Override
             public void run() {
-                if (searchButton != null) {
-                    searchButton.setText(searching ? "Searching..." : "Search PC");
-                    searchButton.setEnabled(!searching);
-                    searchButton.setAlpha(searching ? 0.55f : 1.0f);
+                if (secondaryButton != null) {
+                    secondaryButton.setText(searching ? "Searching..." : "Search PC");
+                    secondaryButton.setEnabled(!searching);
+                    secondaryButton.setAlpha(searching ? 0.55f : 1.0f);
                 }
             }
         });
@@ -318,6 +453,103 @@ public class MainActivity extends Activity {
         });
     }
 
+    private void clearSavedPairingAndRestart(boolean autoSearch) {
+        prefs.edit()
+            .remove("base_url")
+            .remove("token")
+            .apply();
+
+        discoveredBaseUrl = "";
+        activeWebBaseUrl = "";
+        activeWebToken = "";
+        webLoadFailureHandled = false;
+
+        showPairingUi(autoSearch
+            ? "Searching for K-Sounds Hub on your network..."
+            : "Saved PC forgotten. Tap Search PC when you are ready."
+        );
+
+        if (autoSearch) {
+            discoverAndShow();
+        }
+    }
+
+    private void startPairingWithoutForgetting() {
+        discoveredBaseUrl = "";
+        activeWebBaseUrl = "";
+        activeWebToken = "";
+        webLoadFailureHandled = false;
+
+        showPairingUi("Searching for K-Sounds Hub on your network...");
+        discoverAndShow();
+    }
+
+    private void forgetSavedPc() {
+        clearSavedPairingAndRestart(false);
+    }
+
+    private void retrySavedConnection(final String fallbackBaseUrl, final String token) {
+        setStatus("Searching for K-Sounds Hub...");
+        if (primaryButton != null) {
+            primaryButton.setEnabled(false);
+            primaryButton.setAlpha(0.55f);
+        }
+
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                String base = discoverServer();
+                if (base == null || base.isEmpty()) {
+                    base = fallbackBaseUrl;
+                }
+
+                final String targetBase = base;
+
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (primaryButton != null) {
+                            primaryButton.setEnabled(true);
+                            primaryButton.setAlpha(1.0f);
+                        }
+                    }
+                });
+
+                if (targetBase == null || targetBase.isEmpty()) {
+                    showServerNotFoundUi(
+                        fallbackBaseUrl,
+                        token,
+                        "K-Sounds Hub could not be found on this network."
+                    );
+                    return;
+                }
+
+                prefs.edit().putString("base_url", targetBase).apply();
+
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        showWeb(targetBase, token);
+                    }
+                });
+            }
+        }).start();
+    }
+
+    private void handleWebLoadFailure(String reason) {
+        if (webLoadFailureHandled) {
+            return;
+        }
+
+        webLoadFailureHandled = true;
+
+        if (reason == null || reason.trim().length() == 0) {
+            reason = "The remote page did not load.";
+        }
+
+        showServerNotFoundUi(activeWebBaseUrl, activeWebToken, reason);
+    }
+
     private void discoverAndShow() {
         setPairControlsEnabled(false);
         setSearching(true);
@@ -331,13 +563,13 @@ public class MainActivity extends Activity {
 
                 if (base == null || base.isEmpty()) {
                     discoveredBaseUrl = "";
-                    setStatus("PC not found. Check Wi-Fi/LAN, the web service, and firewall UDP 8766.");
+                    setStatus("PC not found. Check Wi-Fi/LAN, K-Sounds Hub → Pair Android, and firewall UDP 8766.");
                     return;
                 }
 
                 discoveredBaseUrl = base;
                 setPairControlsEnabled(true);
-                setStatus("PC found: " + base + "\nRun `ksound-soundboard-pair` on the PC, then enter the 6-digit code.");
+                setStatus("PC found: " + base + "\nEnter the 6-digit code shown by K-Sounds Hub → Pair Android.");
                 focusPinInput();
             }
         }).start();
@@ -383,23 +615,15 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void rediscoverInBackgroundAndUpdate(String token) {
-        new Thread(new Runnable() {
-            @Override
-            public void run() {
-                String base = discoverServer();
-                if (base != null && !base.isEmpty()) {
-                    prefs.edit().putString("base_url", base).apply();
-                }
-            }
-        }).start();
-    }
-
     private void pairWithPin() {
+        if (pinInput == null) {
+            return;
+        }
+
         final String pin = pinInput.getText().toString().trim();
 
         if (pin.length() == 0) {
-            setStatus("Enter the 6-digit code shown by `ksound-soundboard-pair`.");
+            setStatus("Enter the 6-digit code shown by K-Sounds Hub → Pair Android.");
             focusPinInput();
             return;
         }
@@ -483,9 +707,26 @@ public class MainActivity extends Activity {
         }).start();
     }
 
+    private boolean handleSpecialUrl(String url) {
+        if (url == null) {
+            return false;
+        }
+
+        if (url.startsWith("ksounds://disconnect")) {
+            forgetSavedPc();
+            return true;
+        }
+
+        return false;
+    }
+
     private void showWeb(String baseUrl, String token) {
+        activeWebBaseUrl = baseUrl;
+        activeWebToken = token;
+        webLoadFailureHandled = false;
+
         webView = new WebView(this);
-        webView.setBackgroundColor(Color.rgb(7, 10, 18));
+        webView.setBackgroundColor(BG);
 
         WebSettings settings = webView.getSettings();
         settings.setJavaScriptEnabled(true);
@@ -493,13 +734,58 @@ public class MainActivity extends Activity {
         settings.setLoadWithOverviewMode(true);
         settings.setUseWideViewPort(true);
         settings.setMediaPlaybackRequiresUserGesture(false);
-
         settings.setCacheMode(WebSettings.LOAD_NO_CACHE);
+
         webView.clearCache(true);
         webView.clearHistory();
         WebStorage.getInstance().deleteAllData();
 
-        webView.setWebViewClient(new WebViewClient());
+        webView.setWebViewClient(new WebViewClient() {
+            @Override
+            public boolean shouldOverrideUrlLoading(WebView view, String url) {
+                return handleSpecialUrl(url);
+            }
+
+            @Override
+            public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+                if (request == null || request.getUrl() == null) {
+                    return false;
+                }
+                return handleSpecialUrl(request.getUrl().toString());
+            }
+
+            @Override
+            public void onReceivedError(
+                WebView view,
+                int errorCode,
+                String description,
+                String failingUrl
+            ) {
+                if (
+                    failingUrl == null
+                    || activeWebBaseUrl.length() == 0
+                    || failingUrl.startsWith(activeWebBaseUrl)
+                ) {
+                    handleWebLoadFailure(description);
+                }
+            }
+
+            @Override
+            public void onReceivedError(
+                WebView view,
+                WebResourceRequest request,
+                WebResourceError error
+            ) {
+                if (request != null && request.isForMainFrame()) {
+                    String description = "The remote page did not load.";
+                    if (error != null && error.getDescription() != null) {
+                        description = error.getDescription().toString();
+                    }
+                    handleWebLoadFailure(description);
+                }
+            }
+        });
+
         setContentView(webView);
         immersive();
 
@@ -509,7 +795,7 @@ public class MainActivity extends Activity {
                 + "&v=" + System.currentTimeMillis();
             webView.loadUrl(url);
         } catch (Exception e) {
-            showPairingUi("URL error: " + e.getMessage());
+            showServerNotFoundUi(baseUrl, token, "URL error: " + e.getMessage());
         }
     }
 
