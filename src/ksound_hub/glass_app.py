@@ -862,6 +862,11 @@ class GlassBackendController(QObject):
                 continue
 
             description = str(block.get("description") or name).strip()
+            if name == "easyeffects_source":
+                description = "RØDE NT-USB (EasyEffects)"
+            elif name == "alsa_input.usb-RODE_Microphones_RODE_NT-USB-00.iec958-stereo":
+                description = "RØDE NT-USB (Raw)"
+
             lowered = f"{name} {description}".lower()
             if any(token in lowered for token in ["k-sound-hub-soundboard", "soundboard", "retour"]):
                 continue
@@ -2283,7 +2288,8 @@ PHYSICAL_OUTPUT_LABEL_BY_SINK = {sink: label for label, sink in PHYSICAL_OUTPUT_
 PHYSICAL_OUTPUT_LABELS = [label for label, _sink in PHYSICAL_OUTPUT_TARGETS]
 
 PHYSICAL_INPUT_TARGETS = [
-    ("RØDE NT-USB", "easyeffects_source"),
+    ("RØDE NT-USB (EasyEffects)", "easyeffects_source"),
+    ("RØDE NT-USB (Raw)", "alsa_input.usb-RODE_Microphones_RODE_NT-USB-00.iec958-stereo"),
     ("Arctis Mic", "alsa_input.usb-SteelSeries_Arctis_Nova_Pro_Wireless-00.mono-fallback"),
 ]
 PHYSICAL_INPUT_BY_LABEL = dict(PHYSICAL_INPUT_TARGETS)
