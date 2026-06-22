@@ -2288,8 +2288,8 @@ PHYSICAL_OUTPUT_LABEL_BY_SINK = {sink: label for label, sink in PHYSICAL_OUTPUT_
 PHYSICAL_OUTPUT_LABELS = [label for label, _sink in PHYSICAL_OUTPUT_TARGETS]
 
 PHYSICAL_INPUT_TARGETS = [
-    ("RØDE NT-USB (EasyEffects)", "easyeffects_source"),
     ("RØDE NT-USB (Raw)", "alsa_input.usb-RODE_Microphones_RODE_NT-USB-00.iec958-stereo"),
+    ("RØDE NT-USB (EasyEffects)", "easyeffects_source"),
     ("Arctis Mic", "alsa_input.usb-SteelSeries_Arctis_Nova_Pro_Wireless-00.mono-fallback"),
 ]
 PHYSICAL_INPUT_BY_LABEL = dict(PHYSICAL_INPUT_TARGETS)
@@ -2301,7 +2301,7 @@ CHANNELS = [
     ("CHAT", str(CHANNEL_ICON_PATHS["chat"]), ["Arctis Nova Pro", "USB / SPDIF"], 70, "chat"),
     ("MEDIA", str(CHANNEL_ICON_PATHS["media"]), ["USB / SPDIF", "Arctis Nova Pro"], 64, "media"),
     ("MORE", str(CHANNEL_ICON_PATHS["more"]), ["Arctis Nova Pro", "USB / SPDIF"], 58, "more"),
-    ("MICRO", str(CHANNEL_ICON_PATHS["micro"]), ["RØDE NT-USB", "Arctis Mic"], 84, "micro"),
+    ("MICRO", str(CHANNEL_ICON_PATHS["micro"]), ["RØDE NT-USB (Raw)", "RØDE NT-USB (EasyEffects)", "Arctis Mic"], 84, "micro"),
     ("MIC OUT", str(CHANNEL_ICON_PATHS["return-mic"]), PHYSICAL_OUTPUT_LABELS, 52, "return-mic"),
 ]
 

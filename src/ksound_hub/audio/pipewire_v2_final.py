@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import signal
 import subprocess
 import time
@@ -385,28 +384,8 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
                 self._run_no_fail(["pactl", "unload-module", module_id])
 
     def _ensure_easyeffects_running(self) -> None:
-        if self._preferred_easyeffects_source():
-            return
-
-        try:
-            proc = self._run(["pgrep", "-u", str(os.getuid()), "-f", r"(^|/)easyeffects($| )|com.github.wwmm.easyeffects"])
-            if proc.returncode == 0:
-                return
-        except Exception:
-            pass
-
-        if not shutil.which("easyeffects"):
-            return
-
-        try:
-            subprocess.Popen(
-                ["easyeffects", "--service-mode", "--hide-window"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                env=os.environ.copy(),
-            )
-        except Exception:
-            return
+        # EasyEffects is optional. Do not start it from K-Sounds.
+        return
 
     def _source_output_blocks(self) -> list[dict[str, str]]:
         proc = self._run(["pactl", "list", "source-outputs"])
@@ -485,12 +464,13 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
         if not target:
             return
 
-        self._ensure_easyeffects_running()
+        if not self._preferred_easyeffects_source():
+            return
 
         # EasyEffects creates/uses one processed source only. We try a few short
-        # passes because its source-output may appear just after K-Sound starts
-        # capturing easyeffects_source.
-        for _ in range(6):
+        # passes only when EasyEffects is already running and exposing its
+        # virtual source. K-Sounds does not launch EasyEffects.
+        for _ in range(4):
             self._move_easyeffects_input_to(target)
             time.sleep(0.04)
 

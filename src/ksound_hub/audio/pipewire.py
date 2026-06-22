@@ -780,17 +780,15 @@ class PipeWireAudioEngine(AudioEngine):
         if wanted and self._source_exists(wanted):
             return wanted
 
-        # base EasyEffects micro routing v1:
-        # If the saved MICRO target asks for EasyEffects but the virtual source
-        # is not available yet, start EasyEffects and wait briefly before
-        # falling back to a physical microphone.
+        # base EasyEffects optional routing v2:
+        # EasyEffects is an optional external processor. K-Sounds must not
+        # launch it or depend on it. If the user/session has already started
+        # EasyEffects and its virtual source exists, use it; otherwise fall back
+        # to the normal physical microphone path.
         if self._is_easyeffects_source_name(wanted):
-            self._ensure_easyeffects_running()
-            for _ in range(10):
-                source = self._preferred_easyeffects_source()
-                if source:
-                    return source
-                time.sleep(0.05)
+            source = self._preferred_easyeffects_source()
+            if source:
+                return source
 
         return self._default_micro_source_name()
 
@@ -828,34 +826,10 @@ class PipeWireAudioEngine(AudioEngine):
         return ""
 
     def _ensure_easyeffects_running(self) -> None:
-        if self._preferred_easyeffects_source():
-            return
-
-        try:
-            proc = self._run([
-                "pgrep",
-                "-u",
-                str(os.getuid()),
-                "-f",
-                r"(^|/)easyeffects($| )|com.github.wwmm.easyeffects",
-            ])
-            if proc.returncode == 0:
-                return
-        except Exception:
-            pass
-
-        if not shutil.which("easyeffects"):
-            return
-
-        try:
-            subprocess.Popen(
-                ["easyeffects", "--service-mode", "--hide-window"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                env=os.environ.copy(),
-            )
-        except Exception:
-            return
+        # EasyEffects is optional. Do not start it from K-Sounds.
+        # Users who want processed microphone audio should launch EasyEffects
+        # separately, e.g. via their desktop session autostart.
+        return
 
     def _physical_micro_source_for_easyeffects(self, channel: ChannelConfig) -> str:
         # Keep this conservative. EasyEffects should process the real hardware
@@ -945,11 +919,13 @@ class PipeWireAudioEngine(AudioEngine):
         if not target_source:
             return
 
-        self._ensure_easyeffects_running()
+        if not self._preferred_easyeffects_source():
+            return
 
         # EasyEffects may create its capture stream shortly after something
-        # starts listening to easyeffects_source, so retry briefly.
-        for _ in range(8):
+        # starts listening to easyeffects_source, so retry briefly. K-Sounds
+        # only configures an already-running EasyEffects instance.
+        for _ in range(4):
             self._move_easyeffects_input_to(target_source)
             time.sleep(0.04)
 
