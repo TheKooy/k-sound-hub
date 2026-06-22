@@ -21,8 +21,6 @@ from .pipewire import (
 PLAYBACK_KEYS = tuple(PLAYBACK_EQ_CHANNELS.keys())
 
 MIC_PHYSICAL_SOURCE_BY_LABEL: dict[str, str] = {}
-MIC_EASYEFFECTS_TARGET_BY_LABEL: dict[str, str] = {}
-RETURN_MIC_EASYEFFECTS_TARGET_BY_KEY: dict[str, str] = {}
 
 RETURN_MIC_MONITOR_SOURCE_PREFIX = "source:"
 RETURN_MIC_MONITOR_STATIC_SOURCE_BY_KEY = {
@@ -301,20 +299,6 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
                 names.append(parts[1])
         return names
 
-    def _preferred_easyeffects_source(self) -> str:
-        names = self._audio_source_names()
-
-        for wanted in ("easyeffects_source", "EasyEffects Source"):
-            if wanted in names:
-                return wanted
-
-        for name in names:
-            low = name.lower()
-            if "easyeffects" in low and "monitor" not in low:
-                return name
-
-        return ""
-
     def _micro_physical_source_for_label(self, label: str) -> str:
         wanted = (label or "").strip()
         if wanted and self._source_exists(wanted):
@@ -382,97 +366,6 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
 
             if any(needle in args for needle in needles):
                 self._run_no_fail(["pactl", "unload-module", module_id])
-
-    def _ensure_easyeffects_running(self) -> None:
-        # EasyEffects is optional. Do not start it from K-Sounds.
-        return
-
-    def _source_output_blocks(self) -> list[dict[str, str]]:
-        proc = self._run(["pactl", "list", "source-outputs"])
-        if proc.returncode != 0:
-            return []
-
-        blocks: list[dict[str, str]] = []
-        current: dict[str, str] | None = None
-
-        def flush() -> None:
-            nonlocal current
-            if current is not None and current.get("id"):
-                blocks.append(current)
-            current = None
-
-        for raw in proc.stdout.splitlines():
-            line = raw.rstrip()
-            if line.startswith("Source Output #"):
-                flush()
-                current = {"id": line.split("#", 1)[1].strip(), "text": line + "\n"}
-                continue
-
-            if current is None:
-                continue
-
-            current["text"] = current.get("text", "") + line + "\n"
-            stripped = line.strip()
-
-            if stripped.startswith("Source: "):
-                current["source"] = stripped.split(":", 1)[1].strip()
-            elif stripped.startswith("application.name = "):
-                current["app"] = stripped.split("=", 1)[1].strip().strip('"')
-            elif stripped.startswith("application.process.binary = "):
-                current["binary"] = stripped.split("=", 1)[1].strip().strip('"')
-            elif stripped.startswith("node.name = "):
-                current["node"] = stripped.split("=", 1)[1].strip().strip('"')
-            elif stripped.startswith("media.name = "):
-                current["media"] = stripped.split("=", 1)[1].strip().strip('"')
-
-        flush()
-        return blocks
-
-    def _move_easyeffects_input_to(self, target_source: str) -> None:
-        if not target_source or not self._source_exists(target_source):
-            return
-
-        for block in self._source_output_blocks():
-            text = block.get("text", "").lower()
-            if "easyeffects" not in text and "easy effects" not in text:
-                continue
-
-            source_output_id = block.get("id", "")
-            if source_output_id:
-                self._run_no_fail(["pactl", "move-source-output", source_output_id, target_source])
-
-    def _easyeffects_target_from_settings(self, settings: AppSettings) -> str:
-        micro_channel = self._find_channel(settings, "micro")
-        if micro_channel is not None:
-            label = (micro_channel.primary_target or "").strip()
-            target = MIC_EASYEFFECTS_TARGET_BY_LABEL.get(label, "")
-            if target:
-                return target
-
-        return_channel = self._find_channel(settings, "return-mic")
-        if return_channel is not None:
-            linked = [str(key).lower() for key in getattr(return_channel, "linked_channels", []) or []]
-            for key in linked:
-                target = RETURN_MIC_EASYEFFECTS_TARGET_BY_KEY.get(key, "")
-                if target:
-                    return target
-
-        return ""
-
-    def _configure_easyeffects_for_settings(self, settings: AppSettings) -> None:
-        target = self._easyeffects_target_from_settings(settings)
-        if not target:
-            return
-
-        if not self._preferred_easyeffects_source():
-            return
-
-        # EasyEffects creates/uses one processed source only. We try a few short
-        # passes only when EasyEffects is already running and exposing its
-        # virtual source. K-Sounds does not launch EasyEffects.
-        for _ in range(4):
-            self._move_easyeffects_input_to(target)
-            time.sleep(0.04)
 
     def _channel_send_gain_for_micro(self, settings: AppSettings, channel_key: str) -> float:
         channel = self._find_channel(settings, channel_key)
@@ -607,10 +500,6 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
                     channel = self._find_channel(settings, "micro")
                     if channel is not None:
                         self._apply_micro_endpoint_controls(channel)
-                    try:
-                        self._configure_easyeffects_for_settings(settings)
-                    except Exception:
-                        pass
                     return
             except Exception:
                 self._stop_native_micro_engine()

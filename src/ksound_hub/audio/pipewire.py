@@ -776,158 +776,13 @@ class PipeWireAudioEngine(AudioEngine):
 
     def _resolved_micro_source_name(self, channel: ChannelConfig) -> str:
         wanted = (channel.primary_target or "").strip()
-
         if wanted and self._source_exists(wanted):
             return wanted
-
-        # base EasyEffects optional routing v2:
-        # EasyEffects is an optional external processor. K-Sounds must not
-        # launch it or depend on it. If the user/session has already started
-        # EasyEffects and its virtual source exists, use it; otherwise fall back
-        # to the normal physical microphone path.
-        if self._is_easyeffects_source_name(wanted):
-            source = self._preferred_easyeffects_source()
-            if source:
-                return source
-
         return self._default_micro_source_name()
 
     def _resolved_micro_source_names(self, channel: ChannelConfig) -> list[str]:
         source = self._resolved_micro_source_name(channel)
         return [source] if source else []
-
-    def _audio_source_names(self) -> list[str]:
-        proc = self._run(["pactl", "list", "short", "sources"])
-        if proc.returncode != 0:
-            return []
-
-        names: list[str] = []
-        for line in proc.stdout.splitlines():
-            parts = line.split()
-            if len(parts) >= 2:
-                names.append(parts[1])
-        return names
-
-    def _is_easyeffects_source_name(self, source_name: str) -> bool:
-        low = str(source_name or "").strip().lower()
-        return bool(low) and "easyeffects" in low and "monitor" not in low
-
-    def _preferred_easyeffects_source(self) -> str:
-        names = self._audio_source_names()
-
-        for wanted in ("easyeffects_source", "EasyEffects Source"):
-            if wanted in names:
-                return wanted
-
-        for name in names:
-            if self._is_easyeffects_source_name(name):
-                return name
-
-        return ""
-
-    def _ensure_easyeffects_running(self) -> None:
-        # EasyEffects is optional. Do not start it from K-Sounds.
-        # Users who want processed microphone audio should launch EasyEffects
-        # separately, e.g. via their desktop session autostart.
-        return
-
-    def _physical_micro_source_for_easyeffects(self, channel: ChannelConfig) -> str:
-        # Keep this conservative. EasyEffects should process the real hardware
-        # microphone, while K-Sounds captures the processed easyeffects_source.
-        preferred = (
-            "alsa_input.usb-RODE_Microphones_RODE_NT-USB-00.iec958-stereo",
-            "alsa_input.usb-SteelSeries_Arctis_Nova_Pro_Wireless-00.mono-fallback",
-        )
-
-        for source_name in preferred:
-            if self._source_exists(source_name):
-                return source_name
-
-        internal = self._internal_source_names()
-        for source_name in self._audio_source_names():
-            low = source_name.lower()
-            if source_name in internal:
-                continue
-            if ".monitor" in low:
-                continue
-            if self._is_easyeffects_source_name(source_name):
-                continue
-            if source_name.startswith("alsa_input.") and self._source_exists(source_name):
-                return source_name
-
-        return ""
-
-    def _source_output_blocks(self) -> list[dict[str, str]]:
-        proc = self._run(["pactl", "list", "source-outputs"])
-        if proc.returncode != 0:
-            return []
-
-        blocks: list[dict[str, str]] = []
-        current: dict[str, str] | None = None
-
-        def flush() -> None:
-            nonlocal current
-            if current is not None and current.get("id"):
-                blocks.append(current)
-            current = None
-
-        for raw in proc.stdout.splitlines():
-            line = raw.rstrip()
-            if line.startswith("Source Output #"):
-                flush()
-                current = {"id": line.split("#", 1)[1].strip(), "text": line + "\n"}
-                continue
-
-            if current is None:
-                continue
-
-            current["text"] = current.get("text", "") + line + "\n"
-            stripped = line.strip()
-
-            if stripped.startswith("Source: "):
-                current["source"] = stripped.split(":", 1)[1].strip()
-            elif stripped.startswith("application.name = "):
-                current["app"] = stripped.split("=", 1)[1].strip().strip('"')
-            elif stripped.startswith("application.process.binary = "):
-                current["binary"] = stripped.split("=", 1)[1].strip().strip('"')
-            elif stripped.startswith("node.name = "):
-                current["node"] = stripped.split("=", 1)[1].strip().strip('"')
-            elif stripped.startswith("media.name = "):
-                current["media"] = stripped.split("=", 1)[1].strip().strip('"')
-
-        flush()
-        return blocks
-
-    def _move_easyeffects_input_to(self, target_source: str) -> None:
-        if not target_source or not self._source_exists(target_source):
-            return
-
-        for block in self._source_output_blocks():
-            text = block.get("text", "").lower()
-            if "easyeffects" not in text and "easy effects" not in text:
-                continue
-
-            source_output_id = block.get("id", "")
-            if source_output_id:
-                self._run_no_fail(["pactl", "move-source-output", source_output_id, target_source])
-
-    def _configure_easyeffects_for_micro_channel(self, channel: ChannelConfig) -> None:
-        if not self._is_easyeffects_source_name((channel.primary_target or "").strip()):
-            return
-
-        target_source = self._physical_micro_source_for_easyeffects(channel)
-        if not target_source:
-            return
-
-        if not self._preferred_easyeffects_source():
-            return
-
-        # EasyEffects may create its capture stream shortly after something
-        # starts listening to easyeffects_source, so retry briefly. K-Sounds
-        # only configures an already-running EasyEffects instance.
-        for _ in range(4):
-            self._move_easyeffects_input_to(target_source)
-            time.sleep(0.04)
 
     def _node_exists(self, node_type: str, node_name: str) -> bool:
         if node_type == "sink":
@@ -1286,8 +1141,6 @@ class PipeWireAudioEngine(AudioEngine):
         if not self._sink_exists("micro_bus"):
             return
 
-        self._configure_easyeffects_for_micro_channel(channel)
-
         desired_sources = {
             source for source in self._resolved_micro_source_names(channel)
             if source and self._source_exists(source)
@@ -1387,8 +1240,6 @@ class PipeWireAudioEngine(AudioEngine):
 
             args.append("sink_input_properties=media.name=KSH_MIC_PHYSICAL")
             self._run_no_fail(args)
-
-        self._configure_easyeffects_for_micro_channel(channel)
 
         self._physical_micro_selection_signature = desired_signature
 
