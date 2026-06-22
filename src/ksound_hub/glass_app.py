@@ -23,7 +23,7 @@ import sys
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QFileSystemWatcher, QEvent, QObject, QPoint, QRect, QRectF, QSize, QTimer, Qt, Signal
+from PySide6.QtCore import QFileSystemWatcher, QEvent, QObject, QPoint, QProcess, QRect, QRectF, QSize, QTimer, Qt, Signal
 from PySide6.QtGui import QColor, QIcon, QImage, QPainter, QPainterPath, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -2624,6 +2624,40 @@ QLabel#soundPadMeta {
     font-size: 9px;
 }
 
+QLabel#soundPadTrim {
+    color: rgba(235, 248, 255, 220);
+    font-size: 9px;
+    font-weight: 780;
+}
+
+QCheckBox#soundboardAutoLevelToggle {
+    color: rgba(235, 248, 255, 235);
+    background: rgba(10, 22, 34, 185);
+    border: 1px solid rgba(100, 190, 255, 75);
+    border-radius: 10px;
+    padding: 5px 10px;
+    font-size: 10px;
+    font-weight: 780;
+}
+QCheckBox#soundboardAutoLevelToggle:hover {
+    background: rgba(34, 82, 120, 195);
+    border: 1px solid rgba(120, 210, 255, 130);
+}
+QCheckBox#soundboardAutoLevelToggle::indicator {
+    width: 18px;
+    height: 18px;
+    border-radius: 5px;
+    margin-right: 7px;
+}
+QCheckBox#soundboardAutoLevelToggle::indicator:unchecked {
+    background: rgba(0, 0, 0, 210);
+    border: 1px solid rgba(235, 248, 255, 120);
+}
+QCheckBox#soundboardAutoLevelToggle::indicator:checked {
+    background: rgba(78, 198, 255, 235);
+    border: 1px solid rgba(210, 250, 255, 240);
+}
+
 QFrame#soundPadActions {
     background: rgba(0, 0, 0, 90);
     border: none;
@@ -2887,6 +2921,11 @@ QPushButton#selectButton {
 QPushButton#selectButton:hover {
     background: rgba(14, 32, 50, 150);
     border: none;
+}
+
+QPushButton#selectButton[deviceMissing="true"] {
+    color: rgba(255, 202, 120, 235);
+    background: rgba(76, 42, 8, 150);
 }
 
 QMenu {
@@ -3501,6 +3540,30 @@ class NoWheelSlider(QSlider):
         super().mouseReleaseEvent(event)
 
 
+DEVICE_NOT_FOUND_SUFFIX = " (not found)"
+DEVICE_NOT_FOUND_PREFIX = "⚠ "
+
+
+def _is_missing_device_label(label: str) -> bool:
+    text = str(label or "").strip()
+    return text.startswith(DEVICE_NOT_FOUND_PREFIX) and text.endswith(DEVICE_NOT_FOUND_SUFFIX)
+
+
+def _format_missing_device_label(label: str) -> str:
+    clean = str(label or "Unknown device").strip() or "Unknown device"
+    if _is_missing_device_label(clean):
+        return clean
+    return f"{DEVICE_NOT_FOUND_PREFIX}{clean}{DEVICE_NOT_FOUND_SUFFIX}"
+
+
+def _plain_missing_device_label(label: str) -> str:
+    text = str(label or "").strip()
+    if _is_missing_device_label(text):
+        text = text[len(DEVICE_NOT_FOUND_PREFIX):]
+        text = text[: -len(DEVICE_NOT_FOUND_SUFFIX)]
+    return text.strip()
+
+
 class SelectButton(QPushButton):
     def __init__(self, items: list[str], current: str | None = None, on_change=None, parent=None):
         super().__init__(parent)
@@ -3529,10 +3592,16 @@ class SelectButton(QPushButton):
         self._sync_text()
 
     def _sync_text(self) -> None:
+        missing = _is_missing_device_label(self._current)
+        wanted_prop = "true" if missing else "false"
+        if self.property("deviceMissing") != wanted_prop:
+            self.setProperty("deviceMissing", wanted_prop)
+            self.style().unpolish(self)
+            self.style().polish(self)
         width = max(28, self.width() - 16)
         text = self.fontMetrics().elidedText(self._current, Qt.ElideRight, width)
         self.setText(text)
-        self.setToolTip(self._current)
+        self.setToolTip(_plain_missing_device_label(self._current) if missing else self._current)
 
     def _open_menu(self) -> None:
         if not self.items:
@@ -3555,6 +3624,11 @@ QLabel#compactSelectItem {
 QLabel#compactSelectItem:hover {
     background: rgba(70, 165, 230, 80);
 }
+QLabel#compactSelectItemMissing {
+    color: rgba(255, 202, 120, 235);
+    background: rgba(76, 42, 8, 105);
+    padding: 5px 8px;
+}
 """)
 
         metrics = self.fontMetrics()
@@ -3563,23 +3637,27 @@ QLabel#compactSelectItem:hover {
         wanted_width = min(wanted_width, 320)
 
         for item in self.items:
-            label = QLabel(str(item))
-            label.setObjectName("compactSelectItem")
+            label_text = str(item)
+            missing = _is_missing_device_label(label_text)
+            label = QLabel(label_text)
+            label.setObjectName("compactSelectItemMissing" if missing else "compactSelectItem")
             label.setAlignment(Qt.AlignCenter)
             label.setFixedWidth(wanted_width - 6)
             label.setMinimumHeight(29)
 
             action = QWidgetAction(menu)
             action.setDefaultWidget(label)
-            action.triggered.connect(lambda _checked=False, value=item: self.set_current_text(value))
-
-            label.mouseReleaseEvent = (
-                lambda event, item_action=action: (
-                    item_action.trigger(),
-                    menu.close(),
-                    event.accept(),
+            if missing:
+                action.setEnabled(False)
+            else:
+                action.triggered.connect(lambda _checked=False, value=item: self.set_current_text(value))
+                label.mouseReleaseEvent = (
+                    lambda event, item_action=action: (
+                        item_action.trigger(),
+                        menu.close(),
+                        event.accept(),
+                    )
                 )
-            )
             menu.addAction(action)
 
         menu.setFixedWidth(wanted_width)
@@ -3609,22 +3687,44 @@ QLabel#compactSelectItem:hover {
         menu.exec(pos)
 
 
+
+
+
 class LevelMeter(QWidget):
-    # Display-only mapping. These constants do not change audio volume.
-    # Raw PipeWire meter values are naturally small, so Glass uses a visual curve
-    # to make low-level movement readable without changing the backend signal.
+    # cached meter renderer v4
+    # Same segmented look as v2, with soft attack + red/peak fixes.
+    # Optimization: cache complete rendered frames per visual state so paintEvent
+    # usually only does one drawPixmap instead of redrawing segments every frame.
     VISUAL_NOISE_FLOOR = 0.0012
     VISUAL_GAIN = 8.5
     VISUAL_GAMMA = 0.42
     PEAK_DECAY = 0.88
     PEAK_SILENCE_DECAY = 0.70
     PEAK_SILENCE_FLOOR = 0.006
+    SEGMENTS = 16
+    FRAME_CACHE_LIMIT = 96
 
     def __init__(self, level: float = 0.0, parent=None):
         super().__init__(parent)
         self.current = self._visual_level(level)
         self.target = self.current
         self.peak = self.current
+        self._background_cache: QPixmap | None = None
+        self._frame_cache: dict[tuple[int, int, bool], QPixmap] = {}
+        self._cache_size: tuple[int, int] = (0, 0)
+        self._segment_rects: list[QRectF] = []
+        self._last_visual_state: tuple[int, int, bool] | None = None
+
+        self._inactive_color = QColor(10, 22, 34, 118)
+        self._peak_color = QColor(225, 250, 255, 220)
+        self._silent_peak_color = QColor(150, 180, 200, 120)
+        self._active_colors = (
+            QColor(70, 210, 255, 165),
+            QColor(90, 235, 145, 190),
+            QColor(255, 178, 70, 205),
+            QColor(255, 72, 92, 225),
+        )
+
         self.setFixedWidth(10)
         self.setMinimumHeight(124)
         self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
@@ -3643,21 +3743,142 @@ class LevelMeter(QWidget):
         boosted = max(0.0, min(1.0, normalized * self.VISUAL_GAIN))
         return max(0.0, min(1.0, boosted ** self.VISUAL_GAMMA))
 
+    def _active_color_for_index(self, index: int) -> QColor:
+        if index >= self.SEGMENTS - 1:
+            return self._active_colors[3]
+        if index >= int(self.SEGMENTS * 0.84):
+            return self._active_colors[2]
+        if index >= int(self.SEGMENTS * 0.68):
+            return self._active_colors[1]
+        return self._active_colors[0]
+
+    def _ensure_cache(self) -> None:
+        size = (self.width(), self.height())
+        if self._background_cache is not None and self._cache_size == size:
+            return
+
+        self._cache_size = size
+        self._segment_rects = []
+        self._frame_cache.clear()
+
+        pixmap = QPixmap(max(1, size[0]), max(1, size[1]))
+        pixmap.fill(Qt.transparent)
+
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing, False)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(self._inactive_color)
+
+        width = max(2, self.width())
+        height = max(2, self.height())
+        gap = 2
+        segment_h = max(2.0, (height - gap * (self.SEGMENTS - 1)) / max(1, self.SEGMENTS))
+        bottom = height - 0.5
+
+        for i in range(self.SEGMENTS):
+            y = bottom - (i + 1) * segment_h - i * gap
+            rect = QRectF(0.5, y, width - 1.0, segment_h)
+            self._segment_rects.append(rect)
+            painter.drawRoundedRect(rect, 1.5, 1.5)
+
+        painter.end()
+        self._background_cache = pixmap
+        self._last_visual_state = None
+
+    def _frame_for_state(self, state: tuple[int, int, bool]) -> QPixmap:
+        self._ensure_cache()
+
+        cached = self._frame_cache.get(state)
+        if cached is not None:
+            return cached
+
+        if len(self._frame_cache) > self.FRAME_CACHE_LIMIT:
+            self._frame_cache.clear()
+
+        active, peak_index, silent = state
+        size = (max(1, self.width()), max(1, self.height()))
+
+        pixmap = QPixmap(size[0], size[1])
+        pixmap.fill(Qt.transparent)
+
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing, False)
+        painter.setPen(Qt.NoPen)
+
+        if self._background_cache is not None:
+            painter.drawPixmap(0, 0, self._background_cache)
+
+        for i in range(min(active, len(self._segment_rects))):
+            painter.setBrush(self._active_color_for_index(i))
+            painter.drawRoundedRect(self._segment_rects[i], 1.5, 1.5)
+
+        if self._segment_rects:
+            if silent:
+                peak_y = self._segment_rects[0].bottom() - 1.0
+                peak_color = self._silent_peak_color
+            else:
+                peak_index = max(0, min(len(self._segment_rects) - 1, peak_index))
+                peak_y = self._segment_rects[peak_index].top()
+                peak_color = self._peak_color
+
+            painter.setBrush(peak_color)
+            painter.drawRect(QRectF(0.0, peak_y, float(self.width()), 2.0))
+
+        painter.end()
+
+        self._frame_cache[state] = pixmap
+        return pixmap
+
+    def resizeEvent(self, event) -> None:
+        self._background_cache = None
+        self._frame_cache.clear()
+        self._last_visual_state = None
+        super().resizeEvent(event)
+
     def set_level(self, level: float) -> None:
         self.target = self._visual_level(level)
         if self.target > self.peak:
             self.peak = self.target
 
-        if self.target <= 0.0 and self.current < self.PEAK_SILENCE_FLOOR and self.peak < 0.04:
-            self.peak = 0.0
+    def _visual_state(self) -> tuple[int, int, bool]:
+        # Keep the original color zones, but allow real top-level peaks to
+        # light the last segment even with softened attack smoothing.
+        # Without this, short loud peaks can be smoothed just below segment 16.
+        level_for_active = self.current
+
+        # The last red segment is a "top / clip proximity" indicator.
+        # With soft attack enabled, short loud peaks may never push `current`
+        # high enough before the target falls again. When the target/peak is
+        # already in the top visual zone, force only the active-count input to
+        # full scale so the 16th segment can light without changing colors or
+        # the actual meter backend.
+        top_trigger = (self.SEGMENTS - 2) / max(1, self.SEGMENTS)  # 14/16 = 0.875
+        if self.target >= top_trigger or self.peak >= top_trigger:
+            level_for_active = 1.0
+
+        active = int(math.ceil(level_for_active * self.SEGMENTS)) if level_for_active > 0.0 else 0
+        active = max(0, min(self.SEGMENTS, active))
+
+        silent = self.peak <= self.PEAK_SILENCE_FLOOR and self.current <= self.PEAK_SILENCE_FLOOR
+        if silent:
+            peak_index = -1
+        elif active >= self.SEGMENTS:
+            # If the top red segment is lit by the top-zone trigger, the peak
+            # marker must follow it too. Otherwise the 16th segment lights but
+            # the small peak line remains one or two segments lower.
+            peak_index = self.SEGMENTS - 1
+        else:
+            peak_index = max(0, min(self.SEGMENTS - 1, int(math.ceil(self.peak * self.SEGMENTS)) - 1))
+
+        return active, peak_index, silent
 
     def tick(self) -> None:
+        # Soft attack: keeps the original segmented/cache renderer,
+        # but avoids jumping too hard upward.
         if self.target > self.current:
-            # Fast attack: visible immediately when a signal appears.
-            self.current = self.current * 0.22 + self.target * 0.78
+            self.current = self.current * 0.55 + self.target * 0.45
         else:
-            # Faster release than before so dead channels visually settle.
-            self.current = self.current * 0.78 + self.target * 0.22
+            self.current = self.current * 0.80 + self.target * 0.20
 
         if self.target <= 0.0 and self.current < self.PEAK_SILENCE_FLOOR:
             self.current = 0.0
@@ -3670,50 +3891,17 @@ class LevelMeter(QWidget):
         if self.target <= 0.0 and self.current < self.PEAK_SILENCE_FLOOR and self.peak < self.PEAK_SILENCE_FLOOR:
             self.peak = 0.0
 
-        self.update()
+        state = self._visual_state()
+        if state != self._last_visual_state:
+            self.update()
 
     def paintEvent(self, event) -> None:
+        state = self._visual_state()
+        self._last_visual_state = state
+
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-
-        segments = 20
-        gap = 2.0
-        rect = QRectF(0.5, 0.5, self.width() - 1.0, self.height() - 1.0)
-        segment_h = max(2.0, (rect.height() - gap * (segments - 1)) / segments)
-        active = int(math.ceil(self.current * segments)) if self.current > 0.0 else 0
-
-        for i in range(segments):
-            y = rect.bottom() - (i + 1) * segment_h - i * gap
-            seg = QRectF(rect.left(), y, rect.width(), segment_h)
-
-            if i < active:
-                if i >= segments - 1:
-                    color = QColor(255, 72, 92, 225)
-                elif i >= int(segments * 0.84):
-                    color = QColor(255, 178, 70, 205)
-                elif i >= int(segments * 0.68):
-                    color = QColor(90, 235, 145, 190)
-                else:
-                    color = QColor(70, 210, 255, 165)
-            else:
-                color = QColor(10, 22, 34, 118)
-
-            painter.setPen(Qt.NoPen)
-            painter.setBrush(color)
-            painter.drawRoundedRect(seg, 1.8, 1.8)
-
-        if self.peak <= self.PEAK_SILENCE_FLOOR and self.current <= self.PEAK_SILENCE_FLOOR:
-            # True silence: draw the peak marker at the physical bottom, not one segment up.
-            peak_y = rect.bottom() - 1.5
-            peak_color = QColor(150, 180, 200, 120)
-        else:
-            peak_index = max(0, min(segments - 1, int(math.ceil(self.peak * segments)) - 1))
-            peak_y = rect.bottom() - (peak_index + 1) * segment_h - peak_index * gap
-            peak_color = QColor(225, 250, 255, 220)
-
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(peak_color)
-        painter.drawRoundedRect(QRectF(rect.left() - 1.0, peak_y, rect.width() + 2.0, 2.0), 1.0, 1.0)
+        painter.setRenderHint(QPainter.Antialiasing, False)
+        painter.drawPixmap(0, 0, self._frame_for_state(state))
 
 
 
@@ -3835,10 +4023,10 @@ class ChannelCard(QFrame):
         name_label.setAlignment(Qt.AlignCenter)
         root.addWidget(name_label)
 
-        device_combo = SelectButton(devices, current_device or (devices[0] if devices else ""), self._device_changed)
-        device_combo.setMinimumWidth(0)
-        device_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        root.addWidget(device_combo)
+        self.device_select = SelectButton(devices, current_device or (devices[0] if devices else ""), self._device_changed)
+        self.device_select.setMinimumWidth(0)
+        self.device_select.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        root.addWidget(self.device_select)
 
         meter_row = QHBoxLayout()
         meter_row.setContentsMargins(0, 2, 0, 2)
@@ -3925,6 +4113,22 @@ class ChannelCard(QFrame):
             return
         if self._device_callback is not None:
             self._device_callback(self.channel_key, str(label or "").strip())
+
+    def sync_device_choices(self, devices: list[str], current_device: str | None = None) -> None:
+        items = [str(item or "").strip() for item in (devices or []) if str(item or "").strip()]
+        current = str(current_device or "").strip()
+        if current and current not in items:
+            items.insert(0, current)
+        if not current and items:
+            current = items[0]
+
+        self._syncing_controls = True
+        try:
+            self.device_select.items = items
+            self.device_select._current = current
+            self.device_select._sync_text()
+        finally:
+            self._syncing_controls = False
 
     def sync_from_saved_state(self, *, volume: int | None = None, muted: bool | None = None) -> None:
         self._syncing_controls = True
@@ -4182,6 +4386,7 @@ class AppsPanel(QWidget):
         super().__init__()
         self.backend_controller = backend_controller
         self._last_signature: tuple = ()
+        self._permanent_routes_signature: tuple = ()
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -4236,6 +4441,35 @@ class AppsPanel(QWidget):
             if widget is not None:
                 widget.deleteLater()
 
+    def _permanent_routes_current_signature(self) -> tuple:
+        if self.backend_controller is None:
+            return ()
+        return_pairs = tuple(self.backend_controller.available_input_targets())
+        return_source = ""
+        if hasattr(self.backend_controller, "_return_mic_source_config"):
+            return_source = str(self.backend_controller._return_mic_source_config() or "").strip()
+        soundboard_state = self.backend_controller._soundboard_route_state()
+        injected = tuple(sorted(self.backend_controller.micro_injection_channels()))
+        return (
+            return_pairs,
+            return_source,
+            self.backend_controller.soundboard_output_channel(),
+            bool(soundboard_state.get("send_to_micro")),
+            injected,
+        )
+
+    def _refresh_permanent_routes_if_needed(self, force: bool = False) -> None:
+        try:
+            signature = self._permanent_routes_current_signature()
+        except Exception as exc:
+            if self.backend_controller is not None:
+                self.backend_controller.status_changed.emit(f"Device watcher error — {exc}")
+            return
+        if not force and signature == self._permanent_routes_signature:
+            return
+        self._permanent_routes_signature = signature
+        self._build_permanent_routes()
+
     def _build_permanent_routes(self) -> None:
         self._clear_permanent_routes()
 
@@ -4262,9 +4496,17 @@ class AppsPanel(QWidget):
             )
         )
 
-        return_inputs = ["Off"] + [label for label, _source in self.backend_controller.available_input_targets()]
+        return_pairs = self.backend_controller.available_input_targets()
+        return_inputs = ["Off"] + [label for label, _source in return_pairs]
         current_return = self.backend_controller.return_mic_source_label()
-        if current_return not in return_inputs:
+        current_return_source = ""
+        if hasattr(self.backend_controller, "_return_mic_source_config"):
+            current_return_source = str(self.backend_controller._return_mic_source_config() or "").strip()
+        if current_return_source and current_return_source != "micro" and not any(source == current_return_source for _label, source in return_pairs):
+            current_return = _format_missing_device_label(current_return or current_return_source)
+            if current_return not in return_inputs:
+                return_inputs.insert(1, current_return)
+        elif current_return not in return_inputs:
             current_return = "Off"
 
         self.permanent_layout.addWidget(
@@ -4320,7 +4562,11 @@ class AppsPanel(QWidget):
     def _set_return_mic_source(self, label: str) -> None:
         if self.backend_controller is None:
             return
-        self.backend_controller.set_return_mic_source_label(str(label or "").strip())
+        selected = str(label or "").strip()
+        if _is_missing_device_label(selected):
+            self.backend_controller.status_changed.emit(f"Device not found: {_plain_missing_device_label(selected)}")
+            return
+        self.backend_controller.set_return_mic_source_label(selected)
         self._build_permanent_routes()
 
     def _set_return_mic_micro_source(self, enabled: bool) -> None:
@@ -4411,6 +4657,8 @@ class AppsPanel(QWidget):
         if self.backend_controller is None:
             self._show_message("Backend not connected yet")
             return
+
+        self._refresh_permanent_routes_if_needed(force=force)
 
         streams = self.backend_controller.list_app_streams()
         visible_streams = [
@@ -4911,6 +5159,8 @@ class SoundPadCard(QFrame):
         background_path: str = "",
         background_callback=None,
         sound_callback=None,
+        trim_callback=None,
+        trim_db: float = 0.0,
     ):
         super().__init__()
         self._edit_enabled = False
@@ -4921,6 +5171,7 @@ class SoundPadCard(QFrame):
         self._play_callback = play_callback
         self._background_callback = background_callback
         self._sound_callback = sound_callback
+        self._trim_callback = trim_callback
         self._slot_key = str(slot_key or "").strip()
         self._always_show_meta = False
         self._background_path = str(background_path or "").strip()
@@ -4965,8 +5216,12 @@ class SoundPadCard(QFrame):
 
         self.actions = QFrame()
         self.actions.setObjectName("soundPadActions")
-        actions_layout = QHBoxLayout(self.actions)
-        actions_layout.setContentsMargins(3, 2, 3, 2)
+        actions_outer = QVBoxLayout(self.actions)
+        actions_outer.setContentsMargins(3, 2, 3, 3)
+        actions_outer.setSpacing(3)
+
+        actions_layout = QHBoxLayout()
+        actions_layout.setContentsMargins(0, 0, 0, 0)
         actions_layout.setSpacing(3)
         actions_layout.addStretch(1)
 
@@ -4989,8 +5244,41 @@ class SoundPadCard(QFrame):
         actions_layout.addWidget(delete_button)
 
         actions_layout.addStretch(1)
+        actions_outer.addLayout(actions_layout)
+
+        trim_layout = QHBoxLayout()
+        trim_layout.setContentsMargins(0, 0, 0, 0)
+        trim_layout.setSpacing(4)
+
+        trim_down = QPushButton("−")
+        trim_down.setObjectName("padIconButton")
+        trim_down.setToolTip("Gain trim down 1 dB")
+        trim_down.setMinimumHeight(24)
+        trim_down.setMaximumHeight(24)
+        trim_down.clicked.connect(lambda: self._change_trim_db(-1.0))
+        trim_layout.addWidget(trim_down)
+
+        self.trim_label = QLabel()
+        self.trim_label.setObjectName("soundPadTrim")
+        self.trim_label.setAlignment(Qt.AlignCenter)
+        self.trim_label.setMinimumHeight(24)
+        self.trim_label.setMaximumHeight(24)
+        self.trim_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        trim_layout.addWidget(self.trim_label, 1)
+
+        trim_up = QPushButton("+")
+        trim_up.setObjectName("padIconButton")
+        trim_up.setToolTip("Gain trim up 1 dB")
+        trim_up.setMinimumHeight(24)
+        trim_up.setMaximumHeight(24)
+        trim_up.clicked.connect(lambda: self._change_trim_db(1.0))
+        trim_layout.addWidget(trim_up)
+
+        actions_outer.addLayout(trim_layout)
+
         self.actions.setVisible(False)
         root.addWidget(self.actions)
+        self.set_trim_db(trim_db, emit=False)
 
     def mousePressEvent(self, event) -> None:
         if self._bulk_select_enabled and event.button() == Qt.LeftButton:
@@ -5099,7 +5387,8 @@ QFrame#soundPadCard {
     border-radius: 16px;
 }
 QFrame#soundPadCard QLabel#soundPadName,
-QFrame#soundPadCard QLabel#soundPadMeta {
+QFrame#soundPadCard QLabel#soundPadMeta,
+QFrame#soundPadCard QLabel#soundPadTrim {
     background: rgba(0, 0, 0, 178);
     border-radius: 8px;
     padding: 2px 6px;
@@ -5147,6 +5436,28 @@ QFrame#soundPadCard QPushButton#soundPadEmoji {
     def _request_sound(self) -> None:
         if self._edit_enabled and self._sound_callback is not None:
             self._sound_callback(self)
+
+    def trim_db(self) -> float:
+        return float(getattr(self, "_trim_db", 0.0))
+
+    def set_trim_db(self, value: float, emit: bool = False) -> None:
+        try:
+            numeric = float(value)
+        except Exception:
+            numeric = 0.0
+        self._trim_db = max(-24.0, min(24.0, numeric))
+        if hasattr(self, "trim_label"):
+            if abs(self._trim_db) < 0.05:
+                text = "0 dB"
+            else:
+                text = f"{self._trim_db:+.0f} dB"
+            self.trim_label.setText(text)
+            self.trim_label.setToolTip(f"Manual gain trim: {text}")
+        if emit and self._trim_callback is not None:
+            self._trim_callback(self, self._trim_db)
+
+    def _change_trim_db(self, delta: float) -> None:
+        self.set_trim_db(self.trim_db() + float(delta), emit=True)
 
     def set_bulk_select_enabled(self, enabled: bool) -> None:
         self._bulk_select_enabled = bool(enabled)
@@ -5370,6 +5681,39 @@ class PadsPanel(QWidget):
             pass
         return 100
 
+    def _read_soundboard_auto_level_enabled(self) -> bool:
+        try:
+            if SOUNDBOARD_PATH.is_file():
+                data = json.loads(SOUNDBOARD_PATH.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    return bool(data.get("auto_level_enabled", False))
+        except Exception:
+            pass
+        return False
+
+    def _save_soundboard_auto_level_enabled(self, enabled: bool) -> None:
+        try:
+            if SOUNDBOARD_PATH.is_file():
+                loaded = json.loads(SOUNDBOARD_PATH.read_text(encoding="utf-8"))
+            else:
+                loaded = {"slots": []}
+
+            if isinstance(loaded, list):
+                data = {"slots": loaded}
+            elif isinstance(loaded, dict):
+                data = loaded
+            else:
+                data = {"slots": []}
+
+            if not isinstance(data.get("slots"), list):
+                data["slots"] = []
+
+            data["auto_level_enabled"] = bool(enabled)
+            SOUNDBOARD_PATH.parent.mkdir(parents=True, exist_ok=True)
+            SOUNDBOARD_PATH.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        except Exception:
+            pass
+
     def _save_soundboard_volume_setting(self, value: int) -> None:
         numeric = int(max(0, min(100, value)))
         try:
@@ -5404,6 +5748,27 @@ class PadsPanel(QWidget):
         if persist:
             self._save_soundboard_volume_setting(self._soundboard_volume)
 
+    def _set_soundboard_auto_level_enabled(self, enabled: bool, persist: bool = True) -> None:
+        self._soundboard_auto_level_enabled = bool(enabled)
+
+        check = getattr(self, "soundboard_auto_level_check", None)
+        if check is not None:
+            check.setText("Auto-level ON" if self._soundboard_auto_level_enabled else "Auto-level OFF")
+            check.setToolTip(
+                "Auto-level is enabled. Manual dB trim still applies."
+                if self._soundboard_auto_level_enabled
+                else "Auto-level is disabled. Only manual dB trim applies."
+            )
+            if check.isChecked() != self._soundboard_auto_level_enabled:
+                old = check.blockSignals(True)
+                try:
+                    check.setChecked(self._soundboard_auto_level_enabled)
+                finally:
+                    check.blockSignals(old)
+
+        if persist:
+            self._save_soundboard_auto_level_enabled(self._soundboard_auto_level_enabled)
+
     def _queue_soundboard_volume(self, value: int) -> None:
         self._pending_soundboard_volume = int(value)
         self._soundboard_volume_timer.start()
@@ -5422,6 +5787,7 @@ class PadsPanel(QWidget):
         self._soundboard_bus_player_processes: list[subprocess.Popen] = []
         self.pad_cards: list[SoundPadCard] = []
         self._soundboard_volume = self._read_soundboard_volume_setting()
+        self._soundboard_auto_level_enabled = self._read_soundboard_auto_level_enabled()
         self._pending_soundboard_volume = self._soundboard_volume
         self._soundboard_volume_timer = QTimer(self)
         self._soundboard_volume_timer.setSingleShot(True)
@@ -5546,10 +5912,30 @@ class PadsPanel(QWidget):
         self.soundboard_volume_slider.valueChanged.connect(lambda value: self._queue_soundboard_volume(int(value)))
         volume_layout.addWidget(self.soundboard_volume_slider, 1)
 
+        self.soundboard_auto_level_check = QCheckBox("Auto-level")
+        self.soundboard_auto_level_check.setObjectName("soundboardAutoLevelToggle")
+        self.soundboard_auto_level_check.setMinimumWidth(142)
+        self.soundboard_auto_level_check.setMinimumHeight(30)
+        self.soundboard_auto_level_check.setMaximumHeight(30)
+        self.soundboard_auto_level_check.setCursor(Qt.PointingHandCursor)
+        self.soundboard_auto_level_check.setChecked(bool(self._soundboard_auto_level_enabled))
+        self.soundboard_auto_level_check.setText(
+            "Auto-level ON" if self._soundboard_auto_level_enabled else "Auto-level OFF"
+        )
+        self.soundboard_auto_level_check.setToolTip(
+            "Auto-level is enabled. Manual dB trim still applies."
+            if self._soundboard_auto_level_enabled
+            else "Auto-level is disabled. Only manual dB trim applies."
+        )
+        self.soundboard_auto_level_check.toggled.connect(
+            lambda checked: self._set_soundboard_auto_level_enabled(bool(checked))
+        )
+        volume_layout.addWidget(self.soundboard_auto_level_check)
+
         root.addWidget(volume_row)
 
-        for name, icon, meta, slot_key, background_path in self._load_real_soundboard_pads():
-            self._add_pad(name, icon, meta, slot_key=slot_key, background_path=background_path)
+        for name, icon, meta, slot_key, background_path, trim_db in self._load_real_soundboard_pads():
+            self._add_pad(name, icon, meta, slot_key=slot_key, background_path=background_path, trim_db=trim_db)
 
         self.emoji_overlay = QFrame(self)
         self.emoji_overlay.setObjectName("emojiPalette")
@@ -5846,8 +6232,8 @@ QPushButton#pairOverlayButton:hover {
         }
         return names.get(key, key.upper() if key else "MEDIA")
 
-    def _load_real_soundboard_pads(self) -> list[tuple[str, str, str, str, str]]:
-        pads: list[tuple[str, str, str, str]] = []
+    def _load_real_soundboard_pads(self) -> list[tuple[str, str, str, str, str, float]]:
+        pads: list[tuple[str, str, str, str, str, float]] = []
 
         for index, slot in enumerate(self._read_soundboard_slots(), start=1):
             path_text = str(slot.get("path") or "").strip()
@@ -5863,6 +6249,10 @@ QPushButton#pairOverlayButton:hover {
             icon = self._icon_for_soundboard_slot(slot, path_text)
             slot_key = str(slot.get("id") or "").strip() or str(index)
             background_path = str(slot.get("background_path") or "").strip()
+            try:
+                trim_db = max(-24.0, min(24.0, float(slot.get("trim_db", 0.0) or 0.0)))
+            except Exception:
+                trim_db = 0.0
 
             if path_text:
                 sound_path = Path(path_text).expanduser()
@@ -5872,15 +6262,15 @@ QPushButton#pairOverlayButton:hover {
             else:
                 meta = route
 
-            pads.append((label, icon, meta, slot_key, background_path))
+            pads.append((label, icon, meta, slot_key, background_path, trim_db))
 
         if pads:
             return pads
 
         if SOUNDBOARD_PATH.is_file():
-            return [("No saved sounds", "🎧", "soundboard.json empty", "", "")]
+            return [("No saved sounds", "🎧", "soundboard.json empty", "", "", 0.0)]
 
-        return [("No soundboard file", "🎧", "soundboard.json missing", "", "")]
+        return [("No soundboard file", "🎧", "soundboard.json missing", "", "", 0.0)]
 
 
     def _cleanup_soundboard_bus_players(self) -> None:
@@ -6098,17 +6488,22 @@ QPushButton#pairOverlayButton:hover {
         try:
             root = self._read_soundboard_document()
             global_volume = max(0, min(150, int(root.get("global_volume", 100) or 100)))
+            auto_level_enabled = bool(root.get("auto_level_enabled", False))
         except Exception:
             global_volume = 100
+            auto_level_enabled = False
 
         try:
             slot_volume = max(0, min(150, int(slot.get("volume", 100) or 100)))
         except Exception:
             slot_volume = 100
 
-        try:
-            auto_gain = max(0.05, min(1.5, float(slot.get("auto_gain", 1.0) or 1.0)))
-        except Exception:
+        if auto_level_enabled:
+            try:
+                auto_gain = max(0.05, min(1.5, float(slot.get("auto_gain", 1.0) or 1.0)))
+            except Exception:
+                auto_gain = 1.0
+        else:
             auto_gain = 1.0
 
         try:
@@ -6228,6 +6623,17 @@ QPushButton#pairOverlayButton:hover {
         self._write_soundboard_document(data)
         self._refresh_soundboard_after_edit()
 
+    def _set_card_trim_db(self, card: SoundPadCard, trim_db: float) -> None:
+        data, slots, index = self._ensure_slot_for_card(card)
+        slot = slots[index]
+        try:
+            numeric = float(trim_db)
+        except Exception:
+            numeric = 0.0
+        slot["trim_db"] = max(-24.0, min(24.0, numeric))
+        self._write_soundboard_document(data)
+        self._refresh_soundboard_after_edit()
+
     def _choose_pad_sound(self, card: SoundPadCard) -> None:
         data, slots, index = self._ensure_slot_for_card(card)
         slot = slots[index]
@@ -6304,13 +6710,14 @@ QPushButton#pairOverlayButton:hover {
 
         QTimer.singleShot(0, self._update_responsive_columns)
 
-    def _add_pad(self, name: str | None = None, icon: str = "🎧", meta: str = "new", slot_key: str = "", background_path: str = "") -> None:
+    def _add_pad(self, name: str | None = None, icon: str = "🎧", meta: str = "new", slot_key: str = "", background_path: str = "", trim_db: float = 0.0) -> None:
         if name is None or isinstance(name, bool):
             name = f"New pad {len(self.pad_cards) + 1}"
             icon = "+"
             meta = "empty"
             slot_key = ""
             background_path = ""
+            trim_db = 0.0
 
         card = SoundPadCard(
             name,
@@ -6323,6 +6730,8 @@ QPushButton#pairOverlayButton:hover {
             background_path=background_path,
             background_callback=self._choose_pad_background,
             sound_callback=self._choose_pad_sound,
+            trim_callback=self._set_card_trim_db,
+            trim_db=trim_db,
         )
         if hasattr(card, "set_always_show_meta"):
             card.set_always_show_meta(not bool(self._show_detach))
@@ -7007,6 +7416,7 @@ class PreviewWindow(QMainWindow):
         self.backend_controller = GlassBackendController(self)
         self._load_visual_settings_from_backend()
         self.backend_controller.channel_state_changed.connect(self._sync_channel_card_from_backend)
+        self._device_watch_signature: tuple = ()
 
         self.overlay = OverlayManager(self)
         self.overlay.set_enabled(bool(getattr(self.backend_controller.settings, "overlay_enabled", False)))
@@ -7142,6 +7552,22 @@ class PreviewWindow(QMainWindow):
         self._apply_visual_style()
         self._refresh_background()
         self._start_meter_simulation()
+        self._device_watch_debounce = QTimer(self)
+        self._device_watch_debounce.setSingleShot(True)
+        self._device_watch_debounce.setInterval(300)
+        self._device_watch_debounce.timeout.connect(lambda: self._refresh_device_selectors_if_needed(force=True))
+
+        self._device_watch_process = QProcess(self)
+        self._device_watch_process.setProgram("pactl")
+        self._device_watch_process.setArguments(["subscribe"])
+        self._device_watch_process.readyReadStandardOutput.connect(self._handle_device_watch_events)
+        self._device_watch_process.finished.connect(self._handle_device_watch_finished)
+        self._device_watch_process.errorOccurred.connect(
+            lambda _error: self.backend_controller.status_changed.emit("Audio device watcher unavailable")
+        )
+        if __import__("os").environ.get("KSH_DEVICE_WATCHER_DISABLED", "").strip() != "1":
+            QTimer.singleShot(0, self._start_device_watch_process)
+            QTimer.singleShot(0, lambda: self._refresh_device_selectors_if_needed(force=True))
         QTimer.singleShot(450, self.backend_controller.normalize_channel_playback_routes)
 
         # Glass is the future K-Sounds frontend, not a companion window.
@@ -7458,14 +7884,109 @@ QFrame#channelCard[muted="true"]:hover {{
         self.overlay.set_enabled(bool(getattr(self.backend_controller.settings, "overlay_enabled", False)))
         self.overlay.show_message(str(text or ""), muted_active=bool(muted_active))
 
-    def _channel_device_choices(self, channel_key: str, fallback_devices: list[str]) -> list[str]:
+    def _start_device_watch_process(self) -> None:
+        process = getattr(self, "_device_watch_process", None)
+        if process is None:
+            return
+        try:
+            if process.state() != QProcess.ProcessState.NotRunning:
+                return
+            process.start()
+        except Exception as exc:
+            self.backend_controller.status_changed.emit(f"Audio device watcher unavailable — {exc}")
+
+    def _handle_device_watch_finished(self, *_args) -> None:
+        # pactl subscribe should normally stay alive. If Pulse/PipeWire restarts,
+        # retry without falling back to periodic polling.
+        QTimer.singleShot(2000, self._start_device_watch_process)
+
+    def _handle_device_watch_events(self) -> None:
+        process = getattr(self, "_device_watch_process", None)
+        if process is None:
+            return
+
+        try:
+            data = bytes(process.readAllStandardOutput()).decode("utf-8", "replace")
+        except Exception:
+            return
+
+        interesting = False
+        for line in data.lower().splitlines():
+            # Keep this passive watcher focused on real device topology changes.
+            # Do not refresh selectors for sink-input/source-output app stream events.
+            if (
+                " on sink #" in line
+                or " on source #" in line
+                or " on card #" in line
+                or " on server" in line
+            ):
+                interesting = True
+                break
+
+        if interesting:
+            self._device_watch_debounce.start()
+
+    def _device_watch_current_signature(self) -> tuple:
+        output_pairs = tuple(self.backend_controller.available_output_targets())
+        input_pairs = tuple(self.backend_controller.available_input_targets())
+        channel_targets = tuple(
+            (str(channel[4]), self.backend_controller.channel_primary_target(str(channel[4])))
+            for channel in CHANNELS
+        )
+        return output_pairs, input_pairs, channel_targets
+
+    def _refresh_device_selectors_if_needed(self, force: bool = False) -> None:
+        if self.backend_controller is None or not getattr(self, "channel_cards", None):
+            return
+
+        try:
+            signature = self._device_watch_current_signature()
+        except Exception as exc:
+            self.backend_controller.status_changed.emit(f"Device watcher error — {exc}")
+            return
+
+        if not force and signature == self._device_watch_signature:
+            return
+
+        first_run = not bool(self._device_watch_signature)
+        self._device_watch_signature = signature
+
+        cards_by_key = {
+            str(getattr(card, "channel_key", "") or "").strip(): card
+            for card in self.channel_cards
+        }
+
+        for channel in CHANNELS:
+            _name, _icon, fallback_devices, _fallback_value, channel_key = channel
+            key = str(channel_key or "").strip()
+            card = cards_by_key.get(key)
+            if card is None:
+                continue
+            choices = self._channel_device_choices(key, fallback_devices)
+            current = self._channel_device_label(key, choices)
+            card.sync_device_choices(choices, current)
+
+        if not first_run:
+            self.backend_controller.status_changed.emit("Audio devices updated")
+
+    def _channel_device_pairs(self, channel_key: str) -> list[tuple[str, str]]:
         key = str(channel_key or "").strip()
         if key == "micro":
-            pairs = self.backend_controller.available_input_targets()
-        else:
-            pairs = self.backend_controller.available_output_targets()
+            return self.backend_controller.available_input_targets()
+        return self.backend_controller.available_output_targets()
 
+    def _channel_device_choices(self, channel_key: str, fallback_devices: list[str]) -> list[str]:
+        key = str(channel_key or "").strip()
+        pairs = self._channel_device_pairs(key)
         labels = [label for label, _name in pairs if str(label or "").strip()]
+
+        target = self.backend_controller.channel_primary_target(key)
+        if target and not any(name == target for _label, name in pairs):
+            label = self.backend_controller.label_for_target(target, input_device=(key == "micro")) or target
+            missing_label = _format_missing_device_label(label)
+            if missing_label not in labels:
+                labels.insert(0, missing_label)
+
         return labels or list(fallback_devices or [])
 
     def _channel_device_label(self, channel_key: str, fallback_devices: list[str]) -> str:
@@ -7473,15 +7994,21 @@ QFrame#channelCard[muted="true"]:hover {{
         target = self.backend_controller.channel_primary_target(key)
 
         if target:
-            label = self.backend_controller.label_for_target(target, input_device=(key == "micro"))
-            if label:
+            pairs = self._channel_device_pairs(key)
+            label = self.backend_controller.label_for_target(target, input_device=(key == "micro")) or target
+            if any(name == target for _label, name in pairs):
                 return label
+            return _format_missing_device_label(label)
 
         return fallback_devices[0] if fallback_devices else ""
 
     def _set_channel_device(self, channel_key: str, label: str) -> None:
         key = str(channel_key or "").strip()
         name = str(label or "").strip()
+
+        if _is_missing_device_label(name):
+            self.backend_controller.status_changed.emit(f"Device not found: {_plain_missing_device_label(name)}")
+            return
 
         if key == "micro":
             target = self.backend_controller.resolve_input_label(name)
@@ -7517,10 +8044,23 @@ QFrame#channelCard[muted="true"]:hover {{
         return self.backend_controller.set_channel_muted(channel_key, bool(muted))
 
     def _start_meter_simulation(self) -> None:
+        if __import__("os").environ.get("KSH_METERS_DISABLED", "").strip() == "1":
+            self.meter_timer = QTimer(self)
+            self.meter_timer.setInterval(1000000)
+            return
+
+        env = __import__("os").environ
+        try:
+            interval_ms = int(env.get("KSH_METER_INTERVAL_MS", "60") or "60")
+        except Exception:
+            interval_ms = 120
+        interval_ms = max(45, min(500, interval_ms))
+
         self.meter_timer = QTimer(self)
-        self.meter_timer.setInterval(45)
+        self.meter_timer.setInterval(interval_ms)
         self.meter_timer.timeout.connect(self._animate_meters)
         self.meter_timer.start()
+
 
     def _animate_meters(self) -> None:
         for card in self.channel_cards:

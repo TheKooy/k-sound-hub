@@ -350,13 +350,13 @@ class SourceMeterProbe:
             pass
 
     def _run(self) -> None:
-        # 960 frames @ 48 kHz ~= 20 ms.
-        # This probe is UI-only, not audio-path. The UI refreshes meters at a
-        # much lower rate, so avoid 5 ms polling that burns CPU during games.
-        # Old buffered data is still dropped so the meter stays current.
-        chunk_frames = 960
+        # UI-only meter probe, not audio-path. Keep it deliberately cheap:
+        # 2400 frames @ 48 kHz ~= 50 ms, while Glass refreshes at ~8 Hz.
+        # Old buffered data is dropped so the meter stays current without
+        # burning a CPU core during games.
+        chunk_frames = 2400
         chunk_bytes = chunk_frames * 2 * 4
-        max_buffer_bytes = chunk_bytes * 4
+        max_buffer_bytes = chunk_bytes * 2
 
         while not self._stop_event.is_set():
             current_left = 0.0
@@ -395,9 +395,9 @@ class SourceMeterProbe:
 
                     got_data = False
 
-                    # Drain all immediately available data. This prevents the UI
-                    # from displaying old chunks when PipeWire/Qt had a short hiccup.
-                    for _ in range(32):
+                    # Drain only a small amount per pass. This prevents a hot
+                    # Python loop when audio is continuously available.
+                    for _ in range(4):
                         try:
                             data = os.read(fd, 65536)
                         except BlockingIOError:
@@ -429,14 +429,15 @@ class SourceMeterProbe:
                             peak_left = float(np.max(np.abs(frames[:, 0])))
                             peak_right = float(np.max(np.abs(frames[:, 1])))
 
-                            current_left = max(min(1.0, peak_left), current_left * 0.62)
-                            current_right = max(min(1.0, peak_right), current_right * 0.62)
+                            current_left = max(min(1.0, peak_left), current_left * 0.55)
+                            current_right = max(min(1.0, peak_right), current_right * 0.55)
                             self._set_levels(current_left, current_right)
 
+                        time.sleep(0.035)
                         continue
 
-                    current_left *= 0.78
-                    current_right *= 0.78
+                    current_left *= 0.70
+                    current_right *= 0.70
 
                     if current_left < 0.002:
                         current_left = 0.0
@@ -444,7 +445,7 @@ class SourceMeterProbe:
                         current_right = 0.0
 
                     self._set_levels(current_left, current_right)
-                    time.sleep(0.012)
+                    time.sleep(0.05)
 
             except Exception:
                 self._set_levels(0.0, 0.0)
@@ -468,6 +469,13 @@ class PipeWireAudioEngine(AudioEngine):
             for key, logical_sink in PLAYBACK_EQ_CHANNELS.items()
         }
         self._meter_probes: dict[str, SourceMeterProbe] = {}
+        self._native_meter_runtime_dir = self.runtime_dir / "native-meter-engine"
+        self._native_meter_runtime_dir.mkdir(parents=True, exist_ok=True)
+        self._native_meter_levels_path = self._native_meter_runtime_dir / "levels.json"
+        self._native_meter_log_path = self._native_meter_runtime_dir / "native-meter-engine.log"
+        self._native_meter_proc: subprocess.Popen | None = None
+        self._native_meter_levels_cache_mtime_ns = 0
+        self._native_meter_levels_cache_payload: dict[str, object] = {}
         self._meter_source_name_cache: set[str] = set()
         self._meter_source_cache_at = 0.0
         self._micro_links: dict[str, LoopbackLink] = {}
@@ -546,13 +554,114 @@ class PipeWireAudioEngine(AudioEngine):
             self._unload_micro_link(key)
         self._disable_return_mic()
 
+    def _native_meter_engine_binary(self) -> Path:
+        return Path(__file__).resolve().parents[3] / "native_engine" / "build" / "ksound_native_meter_engine"
+
+    def _stop_native_meter_engine(self) -> None:
+        proc = self._native_meter_proc
+        self._native_meter_proc = None
+        if proc is None:
+            return
+        try:
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=1.2)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+        except Exception:
+            pass
+
+    def _ensure_native_meter_engine(self) -> bool:
+        binary = self._native_meter_engine_binary()
+        if not binary.is_file():
+            return False
+
+        if self._native_meter_proc is not None and self._native_meter_proc.poll() is None:
+            return True
+
+        self._stop_native_meter_engine()
+        self._native_meter_runtime_dir.mkdir(parents=True, exist_ok=True)
+
+        args = [
+            str(binary),
+            "--levels",
+            str(self._native_meter_levels_path),
+            "--log",
+            str(self._native_meter_log_path),
+            "--period-ms",
+            "80",
+        ]
+
+        for key, source_name in METER_SOURCE_BY_CHANNEL.items():
+            args.extend(["--source", f"{key}={source_name}"])
+
+        env = os.environ.copy()
+        env["KSH_RUNTIME_ROLE"] = "native_meter_engine"
+
+        log_file = self._native_meter_log_path.open("ab", buffering=0)
+        try:
+            self._native_meter_proc = subprocess.Popen(
+                args,
+                stdin=subprocess.DEVNULL,
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+                env=env,
+            )
+        except Exception:
+            try:
+                log_file.close()
+            except Exception:
+                pass
+            self._native_meter_proc = None
+            return False
+
+        return self._native_meter_proc is not None and self._native_meter_proc.poll() is None
+
+    def _read_native_meter_levels_payload(self) -> dict:
+        try:
+            stat = self._native_meter_levels_path.stat()
+            mtime_ns = int(stat.st_mtime_ns)
+            if mtime_ns == self._native_meter_levels_cache_mtime_ns:
+                payload = self._native_meter_levels_cache_payload
+                return payload if isinstance(payload, dict) else {}
+
+            payload = json.loads(self._native_meter_levels_path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                payload = {}
+
+            self._native_meter_levels_cache_mtime_ns = mtime_ns
+            self._native_meter_levels_cache_payload = payload
+            return payload
+        except Exception:
+            payload = self._native_meter_levels_cache_payload
+            return payload if isinstance(payload, dict) else {}
+
+    def _native_meter_levels(self, channel_key: str) -> tuple[float, float] | None:
+        if not self._ensure_native_meter_engine():
+            return None
+
+        payload = self._read_native_meter_levels_payload()
+        channels = payload.get("channels") if isinstance(payload, dict) else None
+        if not isinstance(channels, dict):
+            return (0.0, 0.0)
+
+        levels = channels.get(channel_key)
+        if not (isinstance(levels, list) and len(levels) >= 2):
+            return (0.0, 0.0)
+
+        try:
+            return (
+                max(0.0, min(1.0, float(levels[0]))),
+                max(0.0, min(1.0, float(levels[1]))),
+            )
+        except Exception:
+            return (0.0, 0.0)
+
     def stop_meter_probes(self) -> None:
-        """Stop UI-only meter capture processes.
+        """Stop UI-only meter capture processes."""
 
-        Meters are visual only. When the UI is hidden/minimized or meters are
-        disabled, keeping parec probes alive wastes CPU during games.
-        """
-
+        self._stop_native_meter_engine()
         for probe in list(self._meter_probes.values()):
             probe.stop()
         self._meter_probes.clear()
@@ -1458,6 +1567,10 @@ class PipeWireAudioEngine(AudioEngine):
         slot.status = f"failed ({tail or 'see log'})"
 
     def meter_levels(self, channel_key: str) -> tuple[float, float]:
+        native_levels = self._native_meter_levels(channel_key)
+        if native_levels is not None:
+            return native_levels
+
         source_name = METER_SOURCE_BY_CHANNEL.get(channel_key)
         if not source_name:
             return (0.0, 0.0)
