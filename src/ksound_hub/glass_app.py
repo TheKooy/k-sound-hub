@@ -3657,6 +3657,10 @@ class NoWheelSlider(QSlider):
         if event.button() == Qt.LeftButton and self.isSliderDown():
             self._apply_pointer_value(event)
             self.setSliderDown(False)
+            try:
+                self.sliderReleased.emit()
+            except Exception:
+                pass
             event.accept()
             return
         super().mouseReleaseEvent(event)
@@ -4123,6 +4127,19 @@ class ChannelCard(QFrame):
         self._mute_callback = mute_callback
         self._device_callback = device_callback
         self._syncing_controls = False
+
+        # UI-first slider model:
+        # - the thumb/label move immediately in the UI;
+        # - backend/audio receives the latest value through a short single-shot
+        #   timer only while the user is dragging;
+        # - release flushes immediately.
+        self._pending_volume_value: int | None = None
+        self._last_sent_volume_value: int | None = None
+        self._volume_apply_timer = QTimer(self)
+        self._volume_apply_timer.setSingleShot(True)
+        self._volume_apply_timer.setInterval(45)
+        self._volume_apply_timer.timeout.connect(self._flush_pending_volume_callback)
+
         self.value = int(value)
         self.setObjectName("channelCard")
         self.setProperty("muted", "false")
@@ -4166,6 +4183,7 @@ class ChannelCard(QFrame):
         self.slider.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
         self.slider.setTracking(False)
         self.slider.sliderMoved.connect(self._on_slider_moved)
+        self.slider.sliderReleased.connect(self._flush_pending_volume_callback)
         self.slider.valueChanged.connect(self._on_volume_changed)
         meter_row.addWidget(self.slider, 0, Qt.AlignHCenter)
 
@@ -4204,16 +4222,58 @@ class ChannelCard(QFrame):
         self.value = max(0, min(100, int(value)))
         self.value_label.setText(f"{self.value}%")
 
+    def _send_volume_callback_value(self, value: int) -> bool:
+        if self._syncing_controls or self._volume_callback is None or not self.channel_key:
+            return True
+
+        try:
+            volume = max(0, min(100, int(value)))
+        except Exception:
+            return False
+
+        if self._last_sent_volume_value == volume:
+            return True
+
+        self._last_sent_volume_value = volume
+        ok = bool(self._volume_callback(self.channel_key, volume))
+        if not ok:
+            self.setToolTip("K-Sounds real app IPC is not reachable.")
+        return ok
+
+    def _queue_volume_callback(self, value: int, *, immediate: bool = False) -> None:
+        if self._syncing_controls or self._volume_callback is None or not self.channel_key:
+            return
+
+        try:
+            self._pending_volume_value = max(0, min(100, int(value)))
+        except Exception:
+            return
+
+        if immediate or not self.slider.isSliderDown():
+            self._flush_pending_volume_callback()
+            return
+
+        # Active only during drag; no idle polling.
+        self._volume_apply_timer.start()
+
+    def _flush_pending_volume_callback(self) -> None:
+        if self._syncing_controls:
+            return
+
+        value = self._pending_volume_value
+        self._pending_volume_value = None
+        if value is None:
+            return
+
+        self._send_volume_callback_value(value)
+
     def _on_slider_moved(self, value: int) -> None:
         self._set_volume_label(value)
+        self._queue_volume_callback(value)
 
     def _on_volume_changed(self, value: int) -> None:
         self._set_volume_label(value)
-        if self._syncing_controls or self._volume_callback is None or not self.channel_key:
-            return
-        ok = bool(self._volume_callback(self.channel_key, self.value))
-        if not ok:
-            self.setToolTip("K-Sounds real app IPC is not reachable.")
+        self._queue_volume_callback(value, immediate=not self.slider.isSliderDown())
 
     def _apply_muted_style(self, checked: bool) -> None:
         self.setProperty("muted", "true" if checked else "false")
@@ -4255,12 +4315,13 @@ class ChannelCard(QFrame):
     def sync_from_saved_state(self, *, volume: int | None = None, muted: bool | None = None) -> None:
         self._syncing_controls = True
         try:
-            if volume is not None:
+            if volume is not None and not self.slider.isSliderDown():
                 value = max(0, min(100, int(volume)))
                 self.slider.blockSignals(True)
                 self.slider.setValue(value)
                 self.slider.blockSignals(False)
                 self._set_volume_label(value)
+                self._last_sent_volume_value = value
 
             if muted is not None:
                 checked = bool(muted)

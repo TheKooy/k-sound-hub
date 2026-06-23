@@ -491,6 +491,8 @@ class PipeWireAudioEngine(AudioEngine):
     def __init__(self) -> None:
         self.runtime_dir = CONFIG_DIR / "runtime"
         self.runtime_dir.mkdir(parents=True, exist_ok=True)
+        self._cleanup_stale_eq_filter_chain_processes()
+
 
         self.eq_slots: dict[str, EqRuntimeSlot] = {
             key: EqRuntimeSlot(key=key, logical_sink=logical_sink)
@@ -762,6 +764,76 @@ class PipeWireAudioEngine(AudioEngine):
                         proc.kill()
         except Exception:
             pass
+
+    def _cleanup_stale_eq_filter_chain_processes(self) -> None:
+        """Kill old K-Sounds EQ filter-chain processes from previous app runs.
+
+        Graceful shutdown stops tracked slots, but development restarts often use
+        pkill or crash paths. Those can leave pipewire -c filter-chain.conf
+        processes parented to systemd --user. Only kill processes whose
+        XDG_CONFIG_HOME points inside this app's EQ runtime directories.
+        """
+
+        runtime_root = self.runtime_dir.resolve()
+        candidates: list[int] = []
+
+        try:
+            result = subprocess.run(
+                ["pgrep", "-f", r"^pipewire -c filter-chain\.conf$"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+        except Exception:
+            return
+
+        for line in result.stdout.splitlines():
+            try:
+                pid = int(line.strip())
+            except Exception:
+                continue
+
+            env_path = Path(f"/proc/{pid}/environ")
+            try:
+                env_text = env_path.read_bytes().replace(b"\0", b"\n").decode(errors="ignore")
+            except Exception:
+                continue
+
+            marker = "XDG_CONFIG_HOME="
+            xdg_values = [
+                item[len(marker):].strip()
+                for item in env_text.splitlines()
+                if item.startswith(marker)
+            ]
+            if not xdg_values:
+                continue
+
+            try:
+                xdg_path = Path(xdg_values[-1]).resolve()
+            except Exception:
+                continue
+
+            if runtime_root not in xdg_path.parents:
+                continue
+            if not xdg_path.name.endswith("-eq-xdg"):
+                continue
+
+            candidates.append(pid)
+
+        if not candidates:
+            return
+
+        for signal_value in (signal.SIGTERM, signal.SIGKILL):
+            for pid in candidates:
+                try:
+                    os.kill(pid, signal_value)
+                except ProcessLookupError:
+                    pass
+                except Exception:
+                    pass
+            if signal_value == signal.SIGTERM:
+                time.sleep(0.25)
 
     def _find_channel(self, settings: AppSettings, key: str) -> ChannelConfig | None:
         for channel in settings.channels:
