@@ -7934,7 +7934,7 @@ class Drawer(QFrame):
         self.pads_panel.soundboard_analyze_button = self.pads_analyze_button
         header_layout.addWidget(self.pads_analyze_button, 0, Qt.AlignRight)
 
-        self.pads_pair_button = CenterGlyphButton("📱", y_offset=-1)
+        self.pads_pair_button = CenterGlyphButton("📡", y_offset=-1)
         self.pads_pair_button.setObjectName("soundboardAnalyzeButton")
         self.pads_pair_button.setCursor(Qt.PointingHandCursor)
         self.pads_pair_button.setToolTip("Pair Android remote")
