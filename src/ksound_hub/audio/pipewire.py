@@ -745,13 +745,21 @@ class PipeWireAudioEngine(AudioEngine):
         slot.signature = ""
         if proc is None:
             return
+
         try:
             if proc.poll() is None:
-                proc.terminate()
+                try:
+                    os.killpg(proc.pid, signal.SIGTERM)
+                except Exception:
+                    proc.terminate()
+
                 try:
                     proc.wait(timeout=2)
                 except subprocess.TimeoutExpired:
-                    proc.kill()
+                    try:
+                        os.killpg(proc.pid, signal.SIGKILL)
+                    except Exception:
+                        proc.kill()
         except Exception:
             pass
 
@@ -932,6 +940,7 @@ class PipeWireAudioEngine(AudioEngine):
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
                 env=env,
+                start_new_session=True,
             )
         slot.signature = signature
 
