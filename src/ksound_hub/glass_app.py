@@ -410,31 +410,32 @@ class GlassBackendController(QObject):
         return int(channel.volume), bool(channel.muted)
 
     def meter_levels(self, channel_key: str) -> tuple[float, float]:
-        key = self._normalize_channel_key(channel_key)
         try:
+            key = self._normalize_channel_key(channel_key)
             left, right = self.audio_engine.meter_levels(key)
-            left = max(0.0, min(1.0, float(left)))
-            right = max(0.0, min(1.0, float(right)))
 
-            if key == "micro":
-                channel = self._find_channel("micro")
-                if channel is None or not bool(getattr(channel, "enabled", True)) or bool(getattr(channel, "muted", False)):
-                    return 0.0, 0.0
+            # Display-only meter preview: use the current in-memory slider volume.
+            # This does not increase meter polling and does not touch PipeWire/pactl.
+            # It makes meters react immediately during live slider drag, including
+            # MICRO/MIC OUT visual feedback, while heavy audio commit can still wait
+            # for release on complex channels.
+            channel = self._find_channel(key)
+            if channel is not None:
+                if bool(getattr(channel, "muted", False)):
+                    left, right = 0.0, 0.0
+                else:
+                    try:
+                        scalar = max(0.0, min(1.0, float(int(channel.volume)) / 100.0))
+                    except Exception:
+                        scalar = 1.0
 
-                try:
-                    volume = int(getattr(channel, "volume", 100))
-                except Exception:
-                    volume = 100
+                    # Apply only as visual attenuation. This avoids fake boosting
+                    # above the actual meter signal when volume is high.
+                    if scalar < 1.0:
+                        left = float(left) * scalar
+                        right = float(right) * scalar
 
-                # The main MICRO meter should represent what K-Sounds sends to
-                # apps after the user-facing MICRO volume, not only raw bus
-                # activity. This is display-side only; routing/gain is still
-                # handled by the audio engine/native micro engine.
-                gain = max(0.0, min(1.5, float(volume) / 100.0))
-                left *= gain
-                right *= gain
-
-            return max(0.0, min(1.0, left)), max(0.0, min(1.0, right))
+            return max(0.0, min(1.0, float(left))), max(0.0, min(1.0, float(right)))
         except Exception as exc:
             self.status_changed.emit(f"Meter read error on {channel_key} — {exc}")
             return 0.0, 0.0
@@ -791,6 +792,35 @@ class GlassBackendController(QObject):
 
     def set_channel_volume(self, channel_key: str, value: int) -> bool:
         return self._apply_mixer_action(channel_key, "set-volume", volume=value)
+
+    def set_channel_volume_live(self, channel_key: str, value: int) -> bool:
+        """Update live volume state without overlay/status/save churn.
+
+        Playback channels also get a lightweight native audio apply. MICRO and
+        MIC OUT only get visual/in-memory preview during drag; their real audio
+        commit still happens on release because that path can run pactl and
+        return-mic/micro-link logic.
+        """
+        key = self._normalize_channel_key(channel_key)
+        channel = self._find_channel(key)
+        if channel is None:
+            return True
+
+        try:
+            channel.volume = max(0, min(100, int(value)))
+        except Exception:
+            return False
+
+        if key not in {"all", "game", "chat", "media", "more"}:
+            return True
+
+        if bool(channel.muted):
+            return True
+
+        self._pending_volume_fast_keys.add(channel.key)
+        if not self._volume_fast_timer.isActive():
+            self._volume_fast_timer.start()
+        return True
 
     def set_channel_muted(self, channel_key: str, muted: bool) -> bool:
         return self._apply_mixer_action(channel_key, "set-mute", muted=muted)
@@ -4117,6 +4147,7 @@ class ChannelCard(QFrame):
         value: int,
         channel_key: str = "",
         volume_callback=None,
+        volume_live_callback=None,
         mute_callback=None,
         device_callback=None,
         current_device: str | None = None,
@@ -4124,6 +4155,7 @@ class ChannelCard(QFrame):
         super().__init__()
         self.channel_key = str(channel_key or "").strip()
         self._volume_callback = volume_callback
+        self._volume_live_callback = volume_live_callback
         self._mute_callback = mute_callback
         self._device_callback = device_callback
         self._syncing_controls = False
@@ -4135,10 +4167,11 @@ class ChannelCard(QFrame):
         # - release flushes immediately.
         self._pending_volume_value: int | None = None
         self._last_sent_volume_value: int | None = None
+        self._last_live_volume_value: int | None = None
         self._volume_apply_timer = QTimer(self)
         self._volume_apply_timer.setSingleShot(True)
-        self._volume_apply_timer.setInterval(45)
-        self._volume_apply_timer.timeout.connect(self._flush_pending_volume_callback)
+        self._volume_apply_timer.setInterval(110)
+        self._volume_apply_timer.timeout.connect(self._flush_live_volume_callback)
 
         self.value = int(value)
         self.setObjectName("channelCard")
@@ -4246,16 +4279,46 @@ class ChannelCard(QFrame):
 
         self._pending_volume_value = max(0, min(100, int(value)))
 
-        # Keep slider dragging fully UI-local. Applying the audio backend while
-        # the pointer moves causes visible stutter; commit once on release.
         if self.slider.isSliderDown() and not immediate:
+            # Silent live apply only updates the audio path. It does not emit
+            # overlay/status/save churn while the pointer is moving.
+            if self._volume_live_callback is not None and not self._volume_apply_timer.isActive():
+                self._volume_apply_timer.start()
             return
 
         self._flush_pending_volume_callback()
 
+    def _flush_live_volume_callback(self) -> None:
+        if self._syncing_controls or self._volume_live_callback is None or not self.channel_key:
+            return
+        if not self.slider.isSliderDown():
+            return
+
+        value = self._pending_volume_value
+        if value is None:
+            return
+
+        try:
+            volume = max(0, min(100, int(value)))
+        except Exception:
+            return
+
+        if self._last_live_volume_value == volume:
+            return
+
+        self._last_live_volume_value = volume
+        try:
+            self._volume_live_callback(self.channel_key, volume)
+        except Exception:
+            pass
+
     def _flush_pending_volume_callback(self) -> None:
         if self._syncing_controls:
             return
+
+        timer = getattr(self, "_volume_apply_timer", None)
+        if timer is not None and timer.isActive():
+            timer.stop()
 
         value = self._pending_volume_value
         self._pending_volume_value = None
@@ -4263,6 +4326,7 @@ class ChannelCard(QFrame):
             return
 
         self._send_volume_callback_value(value)
+        self._last_live_volume_value = None
 
     def _on_slider_moved(self, value: int) -> None:
         self._set_volume_label(value)
@@ -4319,6 +4383,7 @@ class ChannelCard(QFrame):
                 self.slider.blockSignals(False)
                 self._set_volume_label(value)
                 self._last_sent_volume_value = value
+                self._last_live_volume_value = None
 
             if muted is not None:
                 checked = bool(muted)
@@ -8186,6 +8251,7 @@ class PreviewWindow(QMainWindow):
                 value,
                 channel_key,
                 volume_callback=self._send_channel_volume,
+                volume_live_callback=self._send_channel_volume_live,
                 mute_callback=self._set_channel_muted,
                 device_callback=self._set_channel_device,
                 current_device=self._channel_device_label(channel_key, card_devices),
@@ -8691,6 +8757,12 @@ QFrame#channelCard[muted="true"]:hover {{
 
     def _send_channel_volume(self, channel_key: str, value: int) -> bool:
         return self.backend_controller.set_channel_volume(
+            channel_key,
+            max(0, min(100, int(value))),
+        )
+
+    def _send_channel_volume_live(self, channel_key: str, value: int) -> bool:
+        return self.backend_controller.set_channel_volume_live(
             channel_key,
             max(0, min(100, int(value))),
         )
