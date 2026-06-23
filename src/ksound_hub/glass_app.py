@@ -4244,17 +4244,14 @@ class ChannelCard(QFrame):
         if self._syncing_controls or self._volume_callback is None or not self.channel_key:
             return
 
-        try:
-            self._pending_volume_value = max(0, min(100, int(value)))
-        except Exception:
+        self._pending_volume_value = max(0, min(100, int(value)))
+
+        # Keep slider dragging fully UI-local. Applying the audio backend while
+        # the pointer moves causes visible stutter; commit once on release.
+        if self.slider.isSliderDown() and not immediate:
             return
 
-        if immediate or not self.slider.isSliderDown():
-            self._flush_pending_volume_callback()
-            return
-
-        # Active only during drag; no idle polling.
-        self._volume_apply_timer.start()
+        self._flush_pending_volume_callback()
 
     def _flush_pending_volume_callback(self) -> None:
         if self._syncing_controls:
