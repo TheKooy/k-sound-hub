@@ -133,7 +133,7 @@ def _clean_slot(raw: dict[str, Any], fallback_index: int) -> dict[str, Any]:
         auto_gain = float(raw.get("auto_gain", 1.0))
     except Exception:
         auto_gain = 1.0
-    auto_gain = max(0.05, min(1.0, auto_gain))
+    auto_gain = max(0.05, min(1.5, auto_gain))
 
     analyzed_path = str(raw.get("analyzed_path") or "").strip()
 
@@ -2444,8 +2444,8 @@ class SoundboardDialog(QDialog):
         gain_db = SOUNDBOARD_TARGET_PEAK_DB - max_db
         gain = 10 ** (gain_db / 20.0)
 
-        # Sécurité: on atténue les sons trop forts, mais on ne booste pas au-dessus de 100%.
-        return max(0.05, min(1.0, gain))
+        # Safety: keep auto-level bounded, but allow quiet sounds to be boosted up to 150%.
+        return max(0.05, min(1.5, gain))
 
     def _auto_gain_for_slot(self, slot: dict[str, Any], path: Path) -> float:
         if not self.auto_level_enabled:
@@ -2458,7 +2458,7 @@ class SoundboardDialog(QDialog):
         except Exception:
             cached_gain = 1.0
 
-        if str(slot.get("analyzed_path", "")) == path_text and 0.05 <= cached_gain <= 1.0:
+        if str(slot.get("analyzed_path", "")) == path_text and 0.05 <= cached_gain <= 1.5:
             return cached_gain
 
         gain = self._analyze_auto_gain(path)
