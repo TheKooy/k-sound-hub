@@ -1030,7 +1030,7 @@ class GlassBackendController(QObject):
             "module-loopback",
             "source=soundboard.monitor",
             f"sink={output_sink}",
-            "latency_msec=20",
+            "latency_msec=32",
             "source_dont_move=true",
             "sink_dont_move=true",
             "channels=2",
@@ -1043,7 +1043,7 @@ class GlassBackendController(QObject):
                 "module-loopback",
                 "source=soundboard.monitor",
                 "sink=micro_bus",
-                "latency_msec=20",
+                "latency_msec=32",
                 "source_dont_move=true",
                 "sink_dont_move=true",
                 "channels=2",
@@ -1612,7 +1612,7 @@ class GlassBackendController(QObject):
             "module-loopback",
             "source=soundboard.monitor",
             f"sink={sink}",
-            "latency_msec=20",
+            "latency_msec=32",
             "source_dont_move=true",
             "channels=2",
             "sink_input_properties=media.name=K-Sound-Hub-Soundboard-To-Output",
@@ -1649,7 +1649,7 @@ class GlassBackendController(QObject):
                 "module-loopback",
                 "source=soundboard.monitor",
                 "sink=micro_bus",
-                "latency_msec=20",
+                "latency_msec=32",
                 "source_dont_move=true",
                 "sink_dont_move=true",
                 "channels=2",
@@ -6518,7 +6518,7 @@ QPushButton#pairOverlayButton:hover {
             + f" -filter:a volume={gain:.4f} "
             + " -f f32le -ac 2 -ar 48000 pipe:1 | "
             + "pacat --playback --device=soundboard --raw --format=float32le --rate=48000 --channels=2 "
-            + "--latency-msec=25 --process-time-msec=8 "
+            + "--latency-msec=42 --process-time-msec=12 "
             + "--property=media.name=K-Sounds-Hub-Soundboard-Player"
         )
 
