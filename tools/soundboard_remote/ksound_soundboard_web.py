@@ -150,14 +150,18 @@ def read_soundboard_settings() -> dict:
         "auto_level_enabled": False,
         "pad_scale": 100,
         "remote_columns": 0,
+        "remote_contrast": "normal",
+        "remote_background": "glass",
+        "remote_folder_size": "large",
+        "remote_folder_style": "pills",
     }
-
-    if not CONFIG_PATH.is_file():
-        return defaults
 
     try:
         data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
     except Exception:
+        return defaults
+
+    if not isinstance(data, dict):
         return defaults
 
     try:
@@ -178,10 +182,19 @@ def read_soundboard_settings() -> dict:
     except Exception:
         defaults["remote_columns"] = 0
 
+    contrast = str(data.get("remote_contrast") or defaults["remote_contrast"]).strip().lower()
+    defaults["remote_contrast"] = contrast if contrast in {"normal", "high", "soft"} else "normal"
+
+    background = str(data.get("remote_background") or defaults["remote_background"]).strip().lower()
+    defaults["remote_background"] = background if background in {"glass", "clean", "grid", "dark"} else "glass"
+
+    folder_size = str(data.get("remote_folder_size") or defaults["remote_folder_size"]).strip().lower()
+    defaults["remote_folder_size"] = folder_size if folder_size in {"normal", "large", "xl"} else "large"
+
+    folder_style = str(data.get("remote_folder_style") or defaults["remote_folder_style"]).strip().lower()
+    defaults["remote_folder_style"] = folder_style if folder_style in {"pills", "tabs"} else "pills"
+
     return defaults
-
-
-
 
 
 def soundboard_revision() -> str:
@@ -284,54 +297,56 @@ def read_soundboard_state() -> dict:
 
 
 def update_soundboard_setting(key: str, value) -> None:
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        loaded = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        loaded = {"slots": []}
 
-    data = {}
-    if CONFIG_PATH.is_file():
+    if isinstance(loaded, list):
+        data = {"slots": loaded}
+    elif isinstance(loaded, dict):
+        data = loaded
+    else:
+        data = {"slots": []}
+
+    if not isinstance(data.get("slots"), list):
+        data["slots"] = []
+
+    if key == "global_volume":
         try:
-            loaded = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-            if isinstance(loaded, dict):
-                data = loaded
+            data[key] = max(0, min(100, int(value)))
         except Exception:
-            data = {}
-
-    data[key] = value
-
-    if "slots" not in data:
-        data["slots"] = read_slots()
-
-    tmp = CONFIG_PATH.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    tmp.replace(CONFIG_PATH)
-
-def send_ipc(payload: dict) -> tuple[bool, str]:
-    # Keep the APK bridge compatible with both historical socket names.
-    # Current K-Sounds Hub app uses /tmp/ksounds_hub_audio_<uid>.sock.
-    # Older V2 builds used /tmp/ksound_hub_audio_v2_<uid>.sock.
-    candidates = [
-        os.environ.get("KSH_IPC_SOCKET_PATH", ""),
-        f"/tmp/ksounds_hub_audio_{os.getuid()}.sock",
-        f"/tmp/ksound_hub_audio_v2_{os.getuid()}.sock",
-        f"/tmp/ksound_hub_audio_{os.getuid()}.sock",
-    ]
-
-    seen: set[str] = set()
-    last_error = ""
-    for socket_path in [x for x in candidates if x]:
-        if socket_path in seen:
-            continue
-        seen.add(socket_path)
-
+            data[key] = 100
+    elif key == "auto_level_enabled":
+        data[key] = bool(value)
+    elif key == "pad_scale":
         try:
-            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-                sock.settimeout(0.45)
-                sock.connect(socket_path)
-                sock.sendall((json.dumps(payload) + "\n").encode())
-            return True, "OK"
-        except Exception as exc:
-            last_error = f"{socket_path}: {exc}"
+            data[key] = max(35, min(130, int(value)))
+        except Exception:
+            data[key] = 100
+    elif key == "remote_columns":
+        try:
+            raw_columns = int(value)
+            data[key] = max(1, min(8, raw_columns)) if raw_columns else 0
+        except Exception:
+            data[key] = 0
+    elif key == "remote_contrast":
+        cleaned = str(value or "").strip().lower()
+        data[key] = cleaned if cleaned in {"normal", "high", "soft"} else "normal"
+    elif key == "remote_background":
+        cleaned = str(value or "").strip().lower()
+        data[key] = cleaned if cleaned in {"glass", "clean", "grid", "dark"} else "glass"
+    elif key == "remote_folder_size":
+        cleaned = str(value or "").strip().lower()
+        data[key] = cleaned if cleaned in {"normal", "large", "xl"} else "large"
+    elif key == "remote_folder_style":
+        cleaned = str(value or "").strip().lower()
+        data[key] = cleaned if cleaned in {"pills", "tabs"} else "pills"
+    else:
+        return
 
-    return False, last_error or "IPC unavailable"
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    CONFIG_PATH.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
 def read_valid_pairing() -> dict | None:
@@ -401,6 +416,32 @@ def page(status: str = "") -> bytes:
 
     pad_scale = max(35, min(130, int(settings.get("pad_scale", 100))))
     remote_columns = max(0, min(8, int(settings.get("remote_columns", 0))))
+    remote_contrast = str(settings.get("remote_contrast", "normal")).strip().lower()
+    remote_background = str(settings.get("remote_background", "glass")).strip().lower()
+    remote_folder_size = str(settings.get("remote_folder_size", "large")).strip().lower()
+    remote_folder_style = str(settings.get("remote_folder_style", "pills")).strip().lower()
+
+    if remote_contrast not in {"normal", "high", "soft"}:
+        remote_contrast = "normal"
+    if remote_background not in {"glass", "clean", "grid", "dark"}:
+        remote_background = "glass"
+    if remote_folder_size not in {"normal", "large", "xl"}:
+        remote_folder_size = "large"
+    if remote_folder_style not in {"pills", "tabs"}:
+        remote_folder_style = "pills"
+
+    body_classes = " ".join(
+        [
+            f"contrast-{remote_contrast}",
+            f"remote-bg-{remote_background}",
+            f"folder-size-{remote_folder_size}",
+            f"folder-style-{remote_folder_style}",
+        ]
+    )
+
+    def option_selected(current: str, wanted: str) -> str:
+        return " selected" if str(current).lower() == wanted else ""
+
     pad_factor = pad_scale / 100.0
     pad_min_width = max(92, int(126 * pad_factor))
     pad_min_height = max(86, int(108 * pad_factor))
@@ -415,15 +456,17 @@ def page(status: str = "") -> bytes:
     escaped_token = html.escape(TOKEN, quote=True)
 
     folder_buttons = [
-        '<button type="button" class="folder-pill active" data-folder="">All</button>'
+        '<button type="button" class="folder-pill active" data-folder="__all__">All</button>'
     ]
     for folder in folders:
         folder_label = clean_folder_label(folder)
         if not folder_label:
             continue
         escaped_folder = html.escape(folder_label, quote=True)
+        folder_filter = "" if folder_label.casefold() == "main" else folder_label
+        escaped_filter = html.escape(folder_filter, quote=True)
         folder_buttons.append(
-            f'<button type="button" class="folder-pill" data-folder="{escaped_folder}">{escaped_folder}</button>'
+            f'<button type="button" class="folder-pill" data-folder="{escaped_filter}">{escaped_folder}</button>'
         )
 
     folder_bar_html = (
@@ -610,6 +653,14 @@ def page(status: str = "") -> bytes:
           position: relative;
           z-index: 1;
         }}
+        body.visible-few .grid {{
+          grid-template-columns: repeat(auto-fill, minmax(min(142px, 100%), 170px));
+          justify-content: start;
+        }}
+        body.visible-one .grid {{
+          grid-template-columns: minmax(min(142px, 100%), 170px);
+          justify-content: start;
+        }}
         .pad-wrap {{
           position: relative;
           min-width: 0;
@@ -740,7 +791,7 @@ def page(status: str = "") -> bytes:
           bottom: 10px;
           z-index: 50;
           display: grid;
-          grid-template-columns: 54px minmax(0, 1fr) 54px;
+          grid-template-columns: 54px 54px minmax(0, 1fr) 54px;
           gap: 10px;
           align-items: center;
           padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
@@ -782,7 +833,7 @@ def page(status: str = "") -> bytes:
           overflow: hidden;
           text-overflow: ellipsis;
         }}
-        .edit-mini, .stop-mini {{
+        .edit-mini, .options-mini, .stop-mini {{
           width: 54px;
           height: 54px;
           border-radius: 18px;
@@ -806,7 +857,7 @@ def page(status: str = "") -> bytes:
           background: rgba(35, 9, 28, .92);
           font-size: 24px;
         }}
-        .edit-mini:active, .stop-mini:active {{
+        .edit-mini:active, .options-mini:active, .stop-mini:active {{
           transform: scale(.96);
         }}
 
@@ -838,35 +889,165 @@ def page(status: str = "") -> bytes:
 
         .folder-bar {{
           display: flex;
-          gap: 7px;
+          gap: 9px;
           overflow-x: auto;
-          padding: 0 14px 10px;
-          margin-top: -2px;
+          padding: 2px 4px 12px;
+          margin: 2px 0 12px;
           scrollbar-width: thin;
+          position: relative;
+          z-index: 2;
         }}
         .folder-pill {{
-          border: 1px solid rgba(255,255,255,0.14);
-          background: rgba(255,255,255,0.07);
-          color: rgba(255,255,255,0.88);
+          min-height: 40px;
+          border: 1px solid rgba(142,225,255,0.22);
+          background:
+            linear-gradient(135deg, rgba(255,255,255,.075), rgba(255,255,255,.035)),
+            rgba(5, 10, 18, .58);
+          color: rgba(236,247,255,0.90);
           border-radius: 999px;
-          padding: 7px 12px;
-          font-weight: 800;
-          letter-spacing: .01em;
+          padding: 9px 15px;
+          font-size: 13px;
+          font-weight: 850;
+          letter-spacing: .015em;
           white-space: nowrap;
-          box-shadow: inset 0 1px 0 rgba(255,255,255,.08);
+          box-shadow: inset 0 1px 0 rgba(255,255,255,.09), 0 10px 24px rgba(0,0,0,.18);
+          backdrop-filter: blur(12px) saturate(1.2);
         }}
         .folder-pill.active {{
-          border-color: rgba(106,214,255,0.55);
-          background: linear-gradient(135deg, rgba(37,197,255,.25), rgba(184,92,255,.18));
-          color: #fff;
+          border-color: rgba(106,214,255,0.78);
+          background:
+            linear-gradient(135deg, rgba(62,216,255,.34), rgba(184,92,255,.22)),
+            rgba(5, 12, 22, .74);
+          color: #ffffff;
+          box-shadow: inset 0 1px 0 rgba(255,255,255,.14), 0 12px 30px rgba(62,216,255,.12);
         }}
         .pad-wrap[hidden] {{
           display: none !important;
         }}
 
+        body.contrast-high {{
+          --text: #ffffff;
+          --muted: rgba(225, 238, 255, .86);
+          --line: rgba(142, 225, 255, .38);
+          --card: rgba(8, 14, 26, .90);
+          --card-hover: rgba(16, 32, 54, .94);
+        }}
+        body.contrast-soft {{
+          --muted: rgba(204, 218, 235, .62);
+          --line: rgba(142, 225, 255, .14);
+          --card: rgba(13, 20, 34, .62);
+          --card-hover: rgba(18, 30, 48, .70);
+        }}
+        body.remote-bg-clean {{
+          background: linear-gradient(135deg, #040711, #07101d 52%, #040711);
+        }}
+        body.remote-bg-clean::before {{
+          display: none;
+        }}
+        body.remote-bg-grid {{
+          background:
+            radial-gradient(circle at 16% -8%, rgba(62,216,255,.24), transparent 34%),
+            radial-gradient(circle at 92% 8%, rgba(255,92,199,.18), transparent 30%),
+            linear-gradient(135deg, #02040a, #07101d 48%, #05070d);
+        }}
+        body.remote-bg-dark {{
+          background: #02040a;
+        }}
+        body.remote-bg-dark::before {{
+          display: none;
+        }}
+
+        .options-panel {{
+          position: relative;
+          z-index: 12;
+          border: 1px solid rgba(142, 225, 255, .18);
+          border-radius: 24px;
+          padding: 13px;
+          margin: 0 0 14px;
+          background:
+            linear-gradient(135deg, rgba(10,16,29,.84), rgba(7,11,20,.68)),
+            radial-gradient(circle at top left, rgba(62,216,255,.13), transparent 38%),
+            radial-gradient(circle at top right, rgba(255,92,199,.10), transparent 34%);
+          box-shadow: 0 18px 48px rgba(0,0,0,.30);
+          backdrop-filter: blur(18px) saturate(1.25);
+        }}
+        .options-title {{
+          font-size: 12px;
+          font-weight: 900;
+          letter-spacing: .14em;
+          text-transform: uppercase;
+          color: var(--cyan);
+          margin-bottom: 10px;
+        }}
+        .options-grid {{
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(138px, 1fr));
+          gap: 10px;
+        }}
+        .options-grid label {{
+          display: grid;
+          gap: 5px;
+          color: var(--muted);
+          font-size: 11px;
+          font-weight: 800;
+          letter-spacing: .06em;
+          text-transform: uppercase;
+        }}
+        .options-grid select {{
+          width: 100%;
+          min-height: 42px;
+          border: 1px solid rgba(142, 225, 255, .22);
+          border-radius: 14px;
+          color: var(--text);
+          background: rgba(2, 6, 12, .86);
+          padding: 0 10px;
+          font-weight: 800;
+          outline: none;
+        }}
+        .options-grid select:focus {{
+          border-color: rgba(62,216,255,.70);
+          box-shadow: 0 0 0 2px rgba(62,216,255,.12);
+        }}
+
+        .options-mini {{
+          border: 1px solid rgba(142,225,255,.42);
+          background: rgba(9, 26, 35, .78);
+        }}
+        body.options-open .options-mini {{
+          border-color: rgba(62,216,255,.95);
+          background: rgba(14, 42, 62, .92);
+        }}
+
+        body.folder-size-large .folder-pill {{
+          min-height: 48px;
+          padding: 11px 18px;
+          font-size: 15px;
+        }}
+        body.folder-size-xl .folder-pill {{
+          min-height: 54px;
+          padding: 12px 22px;
+          font-size: 16px;
+          letter-spacing: .025em;
+        }}
+        body.folder-style-tabs .folder-bar {{
+          gap: 8px;
+          padding: 3px 4px 13px;
+          border-bottom: 1px solid rgba(142,225,255,.10);
+        }}
+        body.folder-style-tabs .folder-pill {{
+          border-radius: 15px;
+          background:
+            linear-gradient(180deg, rgba(255,255,255,.075), rgba(255,255,255,.025)),
+            rgba(5, 10, 18, .60);
+        }}
+        body.folder-style-tabs .folder-pill.active {{
+          border-color: rgba(62,216,255,.82);
+          box-shadow: inset 0 -2px 0 rgba(62,216,255,.72), 0 12px 30px rgba(62,216,255,.10);
+        }}
+
 </style>
     </head>
-    <body>
+    <body class="{html.escape(body_classes, quote=True)}">
       <header>
         <div class="brand-row">
           <div class="brand-mark">K</div>
@@ -880,6 +1061,44 @@ def page(status: str = "") -> bytes:
         <div id="remoteStatus" class="status">{initial_status}</div>
       </header>
 
+      <section id="remoteOptionsPanel" class="options-panel" hidden>
+        <div class="options-title">Remote Options</div>
+        <div class="options-grid">
+          <label>
+            <span>Contrast</span>
+            <select onchange="saveRemoteOption('remote_contrast', this.value)">
+              <option value="normal"{option_selected(remote_contrast, "normal")}>Normal</option>
+              <option value="high"{option_selected(remote_contrast, "high")}>High</option>
+              <option value="soft"{option_selected(remote_contrast, "soft")}>Soft</option>
+            </select>
+          </label>
+          <label>
+            <span>Background</span>
+            <select onchange="saveRemoteOption('remote_background', this.value)">
+              <option value="glass"{option_selected(remote_background, "glass")}>Glass</option>
+              <option value="clean"{option_selected(remote_background, "clean")}>Clean</option>
+              <option value="grid"{option_selected(remote_background, "grid")}>Grid</option>
+              <option value="dark"{option_selected(remote_background, "dark")}>Dark</option>
+            </select>
+          </label>
+          <label>
+            <span>Folders</span>
+            <select onchange="saveRemoteOption('remote_folder_size', this.value)">
+              <option value="normal"{option_selected(remote_folder_size, "normal")}>Normal</option>
+              <option value="large"{option_selected(remote_folder_size, "large")}>Large</option>
+              <option value="xl"{option_selected(remote_folder_size, "xl")}>XL</option>
+            </select>
+          </label>
+          <label>
+            <span>Folder style</span>
+            <select onchange="saveRemoteOption('remote_folder_style', this.value)">
+              <option value="pills"{option_selected(remote_folder_style, "pills")}>Pills</option>
+              <option value="tabs"{option_selected(remote_folder_style, "tabs")}>Tabs</option>
+            </select>
+          </label>
+        </div>
+      </section>
+
       {folder_bar_html}
 
       <main id="padsGrid" class="grid">
@@ -888,6 +1107,7 @@ def page(status: str = "") -> bytes:
 
       <section class="bottom-bar" aria-label="Soundboard controls">
         <button id="editButton" class="edit-mini" type="button" onclick="toggleEditMode()" title="Edit" aria-label="Edit">✎</button>
+        <button id="optionsButton" class="options-mini" type="button" onclick="toggleOptionsPanel()" title="Options" aria-label="Options">⚙</button>
         <div class="bottom-volume">
           <div class="volume-line">
             <span class="vol-icon">🔊</span>
@@ -1755,6 +1975,52 @@ def page(status: str = "") -> bytes:
             refreshInFlight = false;
           }}
         }}
+        function toggleOptionsPanel() {{
+          const panel = document.getElementById("remoteOptionsPanel");
+          if (!panel) return;
+          const open = panel.hasAttribute("hidden");
+          if (open) {{
+            panel.removeAttribute("hidden");
+          }} else {{
+            panel.setAttribute("hidden", "");
+          }}
+          document.body.classList.toggle("options-open", open);
+          window.sessionStorage.setItem("ksoundRemoteOptionsOpen", open ? "1" : "0");
+        }}
+
+        function restoreOptionsPanelState() {{
+          const panel = document.getElementById("remoteOptionsPanel");
+          if (!panel) return;
+          const open = window.sessionStorage.getItem("ksoundRemoteOptionsOpen") === "1";
+          if (open) {{
+            panel.removeAttribute("hidden");
+            document.body.classList.add("options-open");
+          }}
+        }}
+
+        function saveRemoteOption(key, value) {{
+          setRemoteStatus("Saving option...");
+          fetch("/settings?token={escaped_token}", {{
+            method: "POST",
+            headers: {{
+              "Content-Type": "application/x-www-form-urlencoded",
+              "X-Requested-With": "fetch"
+            }},
+            body: "key=" + encodeURIComponent(key) + "&value=" + encodeURIComponent(value)
+          }})
+          .then(response => {{
+            if (!response.ok) throw new Error("HTTP " + response.status);
+            return response.json();
+          }})
+          .then(() => {{
+            setRemoteStatus("Option saved");
+            window.location.replace("/?token={escaped_token}&v=" + Date.now());
+          }})
+          .catch(() => {{
+            setRemoteStatus("Option save error");
+          }});
+        }}
+
         function stopAllSounds() {{
           postAction("/stop", "", "Stop all sent");
         }}
@@ -1809,7 +2075,8 @@ def page(status: str = "") -> bytes:
           }});
         }}
 
-        let activeFolder = window.sessionStorage.getItem("ksoundSoundboardFolder") || "";
+        let storedFolder = window.sessionStorage.getItem("ksoundSoundboardFolderV2");
+        let activeFolder = storedFolder === null ? "__all__" : storedFolder;
 
         function normalizeFolderValue(value) {{
           return String(value || "").trim().toLowerCase();
@@ -1819,30 +2086,48 @@ def page(status: str = "") -> bytes:
           return padWraps().filter(node => !node.hidden).length;
         }}
 
+        function updateVisiblePadDensity() {{
+          const count = currentVisiblePadCount();
+          document.body.classList.toggle("visible-one", count === 1);
+          document.body.classList.toggle("visible-few", count > 0 && count <= 2);
+        }}
+
         function applyFolderFilter() {{
           const active = normalizeFolderValue(activeFolder);
+          const showAll = active === "__all__";
+
           document.querySelectorAll(".folder-pill").forEach(button => {{
-            const value = normalizeFolderValue(button.dataset.folder || "");
-            button.classList.toggle("active", value === active);
+            const rawValue = button.dataset.folder || "";
+            const value = normalizeFolderValue(rawValue);
+            const isAllButton = value === "__all__";
+
+            button.classList.toggle("active", showAll ? isAllButton : value === active);
           }});
 
-          padWraps().forEach(node => {{
-            const folder = normalizeFolderValue(node.dataset.folder || "");
-            node.hidden = Boolean(active && folder !== active);
+          padWraps().forEach(wrap => {{
+            const folder = normalizeFolderValue(wrap.dataset.folder || "");
+            wrap.hidden = !showAll && folder !== active;
           }});
 
-          if (active) {{
-            const label = activeFolder || "All";
-            const count = currentVisiblePadCount();
-            setRemoteStatus("Folder: " + label + " · " + count + " pad" + (count === 1 ? "" : "s"));
+          updateVisiblePadDensity();
+
+          const count = currentVisiblePadCount();
+          if (count === 0) {{
+            setRemoteStatus("No sounds in this folder");
+          }} else if (editMode) {{
+            setRemoteStatus("Edit mode: drag, tap source then target, or pinch to resize");
+          }} else {{
+            setRemoteStatus("Ready");
           }}
         }}
 
         function selectFolder(value) {{
           activeFolder = String(value || "").trim();
-          window.sessionStorage.setItem("ksoundSoundboardFolder", activeFolder);
-          padWraps().forEach(node => node.classList.remove("click-source", "drag-source", "drop-target"));
+          window.sessionStorage.setItem("ksoundSoundboardFolderV2", activeFolder);
           applyFolderFilter();
+
+          const label = activeFolder === "__all__" ? "All" : (activeFolder || "Main");
+          setRemoteStatus("Folder: " + label);
         }}
 
         function initFolderButtons() {{
@@ -1854,6 +2139,7 @@ def page(status: str = "") -> bytes:
         refreshPadIndexes();
         initFolderButtons();
         applyFolderFilter();
+        restoreOptionsPanelState();
         if (currentColumns) {{
           applyColumns(currentColumns);
         }} else {{
@@ -2008,6 +2294,14 @@ class Handler(BaseHTTPRequestHandler):
                 "direction": direction,
             })
             self._send_page(f"Move {slot}: {msg if not ok else 'sent'}")
+            return
+
+        if parsed.path == "/settings":
+            key = form.get("key", [""])[0]
+            value = form.get("value", [""])[0]
+            update_soundboard_setting(key, value)
+            settings = read_soundboard_settings()
+            json_response(self, 200, {"ok": True, **settings})
             return
 
         if parsed.path == "/volume":
