@@ -3297,6 +3297,15 @@ QLabel#soundboardVolumeLabel {
     font-weight: 720;
 }
 
+QLabel#soundboardVolumeSign {
+    color: rgba(215, 232, 246, 190);
+    font-size: 12px;
+    font-weight: 850;
+    min-width: 10px;
+    max-width: 10px;
+    padding: 0px;
+}
+
 QSlider#soundboardVolumeSlider::groove:horizontal {
     min-height: 6px;
     max-height: 6px;
@@ -3320,6 +3329,20 @@ QSlider#soundboardVolumeSlider::sub-page:horizontal {
 QSlider#soundboardVolumeSlider::add-page:horizontal {
     border-radius: 3px;
     background: rgba(12, 24, 36, 150);
+}
+
+/* compact soundboard auto-level toggle v2 */
+QCheckBox#soundboardAutoLevelToggle {
+    padding: 2px 5px;
+    min-height: 22px;
+    max-height: 22px;
+    font-size: 10px;
+    font-weight: 760;
+}
+
+QCheckBox#soundboardAutoLevelToggle::indicator {
+    width: 11px;
+    height: 11px;
 }
 
 
@@ -5751,7 +5774,7 @@ class PadsPanel(QWidget):
 
         check = getattr(self, "soundboard_auto_level_check", None)
         if check is not None:
-            check.setText("Auto-level ON" if self._soundboard_auto_level_enabled else "Auto-level OFF")
+            check.setText("Auto-level")
             check.setToolTip(
                 "Auto-level is enabled. Manual dB trim still applies."
                 if self._soundboard_auto_level_enabled
@@ -5895,12 +5918,13 @@ class PadsPanel(QWidget):
         volume_row = QFrame()
         volume_row.setObjectName("soundboardVolumeControls")
         volume_layout = QHBoxLayout(volume_row)
-        volume_layout.setContentsMargins(9, 5, 9, 5)
+        volume_layout.setContentsMargins(7, 4, 7, 4)
         volume_layout.setSpacing(8)
 
-        volume_label = QLabel("Soundboard volume")
-        volume_label.setObjectName("soundboardVolumeLabel")
-        volume_layout.addWidget(volume_label)
+        soundboard_volume_minus = QLabel("-")
+        soundboard_volume_minus.setObjectName("soundboardVolumeSign")
+        soundboard_volume_minus.setAlignment(Qt.AlignCenter)
+        volume_layout.addWidget(soundboard_volume_minus)
 
         self.soundboard_volume_slider = NoWheelSlider(Qt.Horizontal)
         self.soundboard_volume_slider.setObjectName("soundboardVolumeSlider")
@@ -5910,16 +5934,19 @@ class PadsPanel(QWidget):
         self.soundboard_volume_slider.valueChanged.connect(lambda value: self._queue_soundboard_volume(int(value)))
         volume_layout.addWidget(self.soundboard_volume_slider, 1)
 
+        soundboard_volume_plus = QLabel("+")
+        soundboard_volume_plus.setObjectName("soundboardVolumeSign")
+        soundboard_volume_plus.setAlignment(Qt.AlignCenter)
+        volume_layout.addWidget(soundboard_volume_plus)
+
         self.soundboard_auto_level_check = QCheckBox("Auto-level")
         self.soundboard_auto_level_check.setObjectName("soundboardAutoLevelToggle")
-        self.soundboard_auto_level_check.setMinimumWidth(142)
-        self.soundboard_auto_level_check.setMinimumHeight(30)
-        self.soundboard_auto_level_check.setMaximumHeight(30)
+        self.soundboard_auto_level_check.setMinimumWidth(96)
+        self.soundboard_auto_level_check.setMinimumHeight(24)
+        self.soundboard_auto_level_check.setMaximumHeight(24)
         self.soundboard_auto_level_check.setCursor(Qt.PointingHandCursor)
         self.soundboard_auto_level_check.setChecked(bool(self._soundboard_auto_level_enabled))
-        self.soundboard_auto_level_check.setText(
-            "Auto-level ON" if self._soundboard_auto_level_enabled else "Auto-level OFF"
-        )
+        self.soundboard_auto_level_check.setText("Auto-level")
         self.soundboard_auto_level_check.setToolTip(
             "Auto-level is enabled. Manual dB trim still applies."
             if self._soundboard_auto_level_enabled
