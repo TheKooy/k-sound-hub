@@ -23,6 +23,19 @@ PAIRING_PATH = CONFIG_DIR / "soundboard_pairing.json"
 HOST = "0.0.0.0"
 HTTP_PORT = int(os.environ.get("KSOUND_SOUNDBOARD_WEB_PORT", "8765"))
 DISCOVERY_PORT = int(os.environ.get("KSOUND_SOUNDBOARD_DISCOVERY_PORT", "8766"))
+REMOTE_IDLE_TIMEOUT_SECONDS = max(0, int(os.environ.get("KSOUND_SOUNDBOARD_IDLE_TIMEOUT_SECONDS", "600")))
+REMOTE_IDLE_CHECK_SECONDS = max(5, int(os.environ.get("KSOUND_SOUNDBOARD_IDLE_CHECK_SECONDS", "30")))
+
+_REMOTE_LAST_ACTIVITY = time.monotonic()
+_REMOTE_ACTIVITY_LOCK = threading.Lock()
+
+
+def mark_remote_activity(reason: str = "") -> None:
+    global _REMOTE_LAST_ACTIVITY
+    with _REMOTE_ACTIVITY_LOCK:
+        _REMOTE_LAST_ACTIVITY = time.monotonic()
+
+
 
 SERVICE_NAME = "K-Sounds Remote"
 DISCOVERY_REQUEST = b"KSH_DISCOVER_V2"
@@ -1879,6 +1892,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
+        mark_remote_activity(parsed.path)
 
         # Pairing must be reachable without the normal web token.
         # Always answer JSON so the Android app never tries to parse plain
@@ -1949,6 +1963,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
     def do_POST(self) -> None:
+        mark_remote_activity("POST")
         if not self._token_ok():
             self.send_response(403)
             self.end_headers()
@@ -2063,6 +2078,29 @@ def discovery_loop(stop_event: threading.Event) -> None:
                 pass
 
 
+def start_idle_shutdown_watch(server: ThreadingHTTPServer) -> None:
+    if REMOTE_IDLE_TIMEOUT_SECONDS <= 0:
+        print("Remote idle auto-stop disabled", flush=True)
+        return
+
+    def run() -> None:
+        while True:
+            time.sleep(REMOTE_IDLE_CHECK_SECONDS)
+            with _REMOTE_ACTIVITY_LOCK:
+                idle_for = time.monotonic() - _REMOTE_LAST_ACTIVITY
+
+            if idle_for >= REMOTE_IDLE_TIMEOUT_SECONDS:
+                print(
+                    f"Remote idle for {int(idle_for)}s; stopping HTTP/discovery server",
+                    flush=True,
+                )
+                server.shutdown()
+                return
+
+    thread = threading.Thread(target=run, name="soundboard-remote-idle-stop", daemon=True)
+    thread.start()
+
+
 def main() -> int:
     ip = local_ip()
     stop_event = threading.Event()
@@ -2083,6 +2121,7 @@ def main() -> int:
     print()
 
     server = ThreadingHTTPServer((HOST, HTTP_PORT), Handler)
+    start_idle_shutdown_watch(server)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
