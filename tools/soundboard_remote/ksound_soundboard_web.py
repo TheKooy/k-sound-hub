@@ -75,6 +75,47 @@ def read_slots() -> list[dict]:
     return [slot for slot in slots if isinstance(slot, dict)]
 
 
+def clean_folder_label(value) -> str:
+    label = " ".join(str(value or "").strip().split())
+    if not label:
+        return ""
+    if label.casefold() == "main":
+        return "Main"
+    return label[:48]
+
+
+def slot_folder_label(slot: dict) -> str:
+    if not isinstance(slot, dict):
+        return ""
+    return clean_folder_label(slot.get("folder"))
+
+
+def available_soundboard_folders(data: dict) -> list[str]:
+    folders: list[str] = []
+
+    def add_folder(value) -> None:
+        label = clean_folder_label(value)
+        if not label:
+            return
+        if all(existing.casefold() != label.casefold() for existing in folders):
+            folders.append(label)
+
+    add_folder("Main")
+
+    raw_folders = data.get("folders", []) if isinstance(data, dict) else []
+    if isinstance(raw_folders, list):
+        for folder in raw_folders:
+            add_folder(folder)
+
+    raw_slots = data.get("slots", []) if isinstance(data, dict) else []
+    if isinstance(raw_slots, list):
+        for slot in raw_slots:
+            if isinstance(slot, dict):
+                add_folder(slot.get("folder"))
+
+    return folders
+
+
 def background_file_version(path_text: str) -> str:
     path_text = str(path_text or "").strip()
     if not path_text:
@@ -137,7 +178,16 @@ def soundboard_revision() -> str:
         return "missing"
 
     slots = data.get("slots", []) if isinstance(data, dict) else []
-    payload = json.dumps(slots, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    folders = data.get("folders", []) if isinstance(data, dict) else []
+    payload = json.dumps(
+        {
+            "slots": slots,
+            "folders": folders,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
     return hashlib.sha1(payload.encode("utf-8")).hexdigest()
 
 
@@ -166,6 +216,7 @@ def read_soundboard_state() -> dict:
         path = str(raw_slot.get("path") or "").strip()
         background_path = str(raw_slot.get("background_path") or "").strip()
         background_version = background_file_version(background_path)
+        folder_label = slot_folder_label(raw_slot)
 
         try:
             volume = max(0, min(100, int(raw_slot.get("volume", 80))))
@@ -188,11 +239,14 @@ def read_soundboard_state() -> dict:
                 "volume": volume,
                 "shortcut": str(raw_slot.get("shortcut") or "").strip(),
                 "output_channel": output_channel,
+                "folder": folder_label,
             }
         )
 
+    folders = available_soundboard_folders(data)
     revision_payload = {
         "slots": slots,
+        "folders": folders,
         "slot_count": len(slots),
     }
     revision = hashlib.sha1(
@@ -210,9 +264,11 @@ def read_soundboard_state() -> dict:
         "auto_level_enabled": bool(data.get("auto_level_enabled", False)),
         "pad_scale": int(data.get("pad_scale", 100)),
         "remote_columns": read_soundboard_settings().get("remote_columns", 0),
+        "folders": folders,
         "slot_count": len(slots),
         "slots": slots,
     }
+
 
 def update_soundboard_setting(key: str, value) -> None:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
@@ -322,9 +378,11 @@ def json_response(handler: BaseHTTPRequestHandler, status: int, payload: dict) -
 
 
 def page(status: str = "") -> bytes:
-    slots = read_slots()
+    state = read_soundboard_state()
+    slots = state.get("slots", [])
+    folders = state.get("folders", ["Main"])
     settings = read_soundboard_settings()
-    config_revision = html.escape(str(read_soundboard_state().get("revision", "")), quote=True)
+    config_revision = html.escape(str(state.get("revision", "")), quote=True)
     global_volume = int(settings.get("global_volume", 100))
     auto_level_text = "ON" if settings.get("auto_level_enabled") else "OFF"
 
@@ -342,11 +400,31 @@ def page(status: str = "") -> bytes:
     pad_title_margin = max(4, int(8 * pad_factor))
 
     escaped_token = html.escape(TOKEN, quote=True)
+
+    folder_buttons = [
+        '<button type="button" class="folder-pill active" data-folder="">All</button>'
+    ]
+    for folder in folders:
+        folder_label = clean_folder_label(folder)
+        if not folder_label:
+            continue
+        escaped_folder = html.escape(folder_label, quote=True)
+        folder_buttons.append(
+            f'<button type="button" class="folder-pill" data-folder="{escaped_folder}">{escaped_folder}</button>'
+        )
+
+    folder_bar_html = (
+        '<section class="folder-bar" aria-label="Sound folders">'
+        + "".join(folder_buttons)
+        + "</section>"
+    )
+
     buttons = []
 
     for index, slot in enumerate(slots):
         slot_id = str(slot.get("id") or f"sb{index + 1}")
         label = str(slot.get("label") or slot_id)
+        folder_label = clean_folder_label(slot.get("folder"))
         path_text = str(slot.get("path") or "")
         background_path = str(slot.get("background_path") or "").strip()
         background_version = background_file_version(background_path)
@@ -371,6 +449,7 @@ def page(status: str = "") -> bytes:
             <div
               class="pad-wrap"
               data-slot="{html.escape(slot_id, quote=True)}"
+              data-folder="{html.escape(folder_label, quote=True)}"
               data-label="{html.escape(label, quote=True)}"
               data-index="{index}"
             >
@@ -744,6 +823,34 @@ def page(status: str = "") -> bytes:
           text-transform: uppercase;
         }}
 
+        .folder-bar {{
+          display: flex;
+          gap: 7px;
+          overflow-x: auto;
+          padding: 0 14px 10px;
+          margin-top: -2px;
+          scrollbar-width: thin;
+        }}
+        .folder-pill {{
+          border: 1px solid rgba(255,255,255,0.14);
+          background: rgba(255,255,255,0.07);
+          color: rgba(255,255,255,0.88);
+          border-radius: 999px;
+          padding: 7px 12px;
+          font-weight: 800;
+          letter-spacing: .01em;
+          white-space: nowrap;
+          box-shadow: inset 0 1px 0 rgba(255,255,255,.08);
+        }}
+        .folder-pill.active {{
+          border-color: rgba(106,214,255,0.55);
+          background: linear-gradient(135deg, rgba(37,197,255,.25), rgba(184,92,255,.18));
+          color: #fff;
+        }}
+        .pad-wrap[hidden] {{
+          display: none !important;
+        }}
+
 </style>
     </head>
     <body>
@@ -759,6 +866,8 @@ def page(status: str = "") -> bytes:
         <div class="hint">Local Android remote. Secure LAN pairing.</div>
         <div id="remoteStatus" class="status">{initial_status}</div>
       </header>
+
+      {folder_bar_html}
 
       <main id="padsGrid" class="grid">
         {''.join(buttons)}
@@ -1687,7 +1796,51 @@ def page(status: str = "") -> bytes:
           }});
         }}
 
+        let activeFolder = window.sessionStorage.getItem("ksoundSoundboardFolder") || "";
+
+        function normalizeFolderValue(value) {{
+          return String(value || "").trim().toLowerCase();
+        }}
+
+        function currentVisiblePadCount() {{
+          return padWraps().filter(node => !node.hidden).length;
+        }}
+
+        function applyFolderFilter() {{
+          const active = normalizeFolderValue(activeFolder);
+          document.querySelectorAll(".folder-pill").forEach(button => {{
+            const value = normalizeFolderValue(button.dataset.folder || "");
+            button.classList.toggle("active", value === active);
+          }});
+
+          padWraps().forEach(node => {{
+            const folder = normalizeFolderValue(node.dataset.folder || "");
+            node.hidden = Boolean(active && folder !== active);
+          }});
+
+          if (active) {{
+            const label = activeFolder || "All";
+            const count = currentVisiblePadCount();
+            setRemoteStatus("Folder: " + label + " · " + count + " pad" + (count === 1 ? "" : "s"));
+          }}
+        }}
+
+        function selectFolder(value) {{
+          activeFolder = String(value || "").trim();
+          window.sessionStorage.setItem("ksoundSoundboardFolder", activeFolder);
+          padWraps().forEach(node => node.classList.remove("click-source", "drag-source", "drop-target"));
+          applyFolderFilter();
+        }}
+
+        function initFolderButtons() {{
+          document.querySelectorAll(".folder-pill").forEach(button => {{
+            button.addEventListener("click", () => selectFolder(button.dataset.folder || ""));
+          }});
+        }}
+
         refreshPadIndexes();
+        initFolderButtons();
+        applyFolderFilter();
         if (currentColumns) {{
           applyColumns(currentColumns);
         }} else {{

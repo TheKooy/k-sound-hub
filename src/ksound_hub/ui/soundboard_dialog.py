@@ -143,6 +143,8 @@ def _clean_slot(raw: dict[str, Any], fallback_index: int) -> dict[str, Any]:
         trim_db = SOUNDBOARD_TRIM_DB_DEFAULT
     trim_db = max(SOUNDBOARD_TRIM_DB_MIN, min(SOUNDBOARD_TRIM_DB_MAX, trim_db))
 
+    folder = " ".join(str(raw.get("folder") or "").strip().split())[:48]
+
     return {
         "id": slot_id,
         "label": label,
@@ -155,6 +157,7 @@ def _clean_slot(raw: dict[str, Any], fallback_index: int) -> dict[str, Any]:
         "auto_gain": auto_gain,
         "analyzed_path": analyzed_path,
         "trim_db": trim_db,
+        "folder": folder,
     }
 
 
@@ -1642,18 +1645,70 @@ class SoundboardDialog(QDialog):
         self._sync_slots_from_pad_widgets()
         self.slots = _ensure_unique_slot_ids(self.slots)
         self._rebind_pad_widgets_to_slots()
+
+        # Preserve Glass/Remote root fields. This dialog is still used as a
+        # remote/Android command helper, so saving here must not erase folders
+        # or future remote appearance options stored in soundboard.json.
+        payload: dict[str, Any] = {}
+        existing_folders: list[str] = []
+
+        try:
+            if SOUNDBOARD_PATH.is_file():
+                existing_data = json.loads(SOUNDBOARD_PATH.read_text(encoding="utf-8"))
+                if isinstance(existing_data, dict):
+                    payload.update(existing_data)
+                    if isinstance(existing_data.get("folders"), list):
+                        existing_folders = [
+                            " ".join(str(item or "").strip().split())[:48]
+                            for item in existing_data.get("folders", [])
+                            if " ".join(str(item or "").strip().split())
+                        ]
+                elif isinstance(existing_data, list):
+                    payload["slots"] = existing_data
+        except Exception:
+            payload = {}
+
+        folders: list[str] = []
+        seen_folders: set[str] = set()
+
+        def remember_folder(value) -> None:
+            label = " ".join(str(value or "").strip().split())[:48]
+            if not label or label.casefold() in {"all", "main"}:
+                return
+            key = label.casefold()
+            if key in seen_folders:
+                return
+            seen_folders.add(key)
+            folders.append(label)
+
+        for folder in existing_folders:
+            remember_folder(folder)
+
+        for slot in self.slots:
+            if isinstance(slot, dict):
+                remember_folder(slot.get("folder"))
+
+        payload.update(
+            {
+                "global_volume": int(getattr(self, "global_volume", SOUNDBOARD_GLOBAL_VOLUME_DEFAULT)),
+                "auto_level_enabled": bool(getattr(self, "auto_level_enabled", SOUNDBOARD_AUTO_LEVEL_DEFAULT)),
+                "pad_scale": int(getattr(self, "pad_scale", SOUNDBOARD_PAD_SCALE_DEFAULT)),
+                "show_shortcuts": bool(getattr(self, "show_shortcuts", SOUNDBOARD_SHOW_SHORTCUTS_DEFAULT)),
+                "monitor_to_mic_out": bool(getattr(self, "monitor_to_mic_out", SOUNDBOARD_MONITOR_TO_MIC_OUT_DEFAULT)),
+                "send_to_micro": bool(getattr(self, "send_to_micro", SOUNDBOARD_SEND_TO_MICRO_DEFAULT)),
+                "slots": self.slots,
+            }
+        )
+
+        if folders:
+            payload["folders"] = folders
+        elif "folders" in payload:
+            payload.pop("folders", None)
+
         SOUNDBOARD_PATH.parent.mkdir(parents=True, exist_ok=True)
         SOUNDBOARD_PATH.write_text(
             json.dumps(
-                {
-                    "global_volume": int(getattr(self, "global_volume", SOUNDBOARD_GLOBAL_VOLUME_DEFAULT)),
-                    "auto_level_enabled": bool(getattr(self, "auto_level_enabled", SOUNDBOARD_AUTO_LEVEL_DEFAULT)),
-                    "pad_scale": int(getattr(self, "pad_scale", SOUNDBOARD_PAD_SCALE_DEFAULT)),
-                    "show_shortcuts": bool(getattr(self, "show_shortcuts", SOUNDBOARD_SHOW_SHORTCUTS_DEFAULT)),
-                    "monitor_to_mic_out": bool(getattr(self, "monitor_to_mic_out", SOUNDBOARD_MONITOR_TO_MIC_OUT_DEFAULT)),
-                    "send_to_micro": bool(getattr(self, "send_to_micro", SOUNDBOARD_SEND_TO_MICRO_DEFAULT)),
-                    "slots": self.slots,
-                },
+                payload,
                 indent=2,
                 ensure_ascii=False,
             )
@@ -1664,28 +1719,11 @@ class SoundboardDialog(QDialog):
         if rebuild_shortcuts:
             self._rebuild_shortcuts()
 
-        timer = getattr(self, "_cache_warmup_timer", None)
-        if timer is not None and bool(getattr(self, "auto_level_enabled", False)):
-            timer.start(700)
-
-    def _request_debounced_save(self, delay_ms: int = 250) -> None:
-        timer = getattr(self, "_save_debounce_timer", None)
-        if timer is None:
-            self.save()
-            return
-
-        try:
-            delay = max(50, int(delay_ms))
-        except Exception:
-            delay = 250
-
-        timer.start(delay)
-
     def _flush_debounced_save(self) -> None:
         timer = getattr(self, "_save_debounce_timer", None)
         if timer is not None and timer.isActive():
             timer.stop()
-            self.save(rebuild_shortcuts=False)
+        self.save()
 
     def add_one_slot(self) -> None:
         self.slots = _ensure_unique_slot_ids(self.slots)
