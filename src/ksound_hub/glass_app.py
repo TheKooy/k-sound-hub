@@ -18,8 +18,10 @@ import re
 import math
 import secrets
 import socket
+import queue
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -3355,6 +3357,8 @@ QCheckBox#soundboardAutoLevelToggle {
     padding: 2px 5px;
     min-height: 22px;
     max-height: 22px;
+    border: none;
+    background: transparent;
     font-size: 10px;
     font-weight: 760;
 }
@@ -3362,6 +3366,28 @@ QCheckBox#soundboardAutoLevelToggle {
 QCheckBox#soundboardAutoLevelToggle::indicator {
     width: 11px;
     height: 11px;
+}
+
+QPushButton#soundboardAnalyzeButton {
+    padding: 0px;
+    min-height: 28px;
+    max-height: 28px;
+    min-width: 30px;
+    max-width: 30px;
+    border: none;
+    background: transparent;
+    color: rgba(226, 242, 255, 235);
+    font-size: 15px;
+    font-weight: 760;
+}
+
+QPushButton#soundboardAnalyzeButton:hover {
+    background: rgba(35, 82, 112, 90);
+}
+
+QPushButton#soundboardAnalyzeButton:disabled {
+    color: rgba(185, 205, 220, 130);
+    background: transparent;
 }
 
 
@@ -5825,6 +5851,175 @@ class PadsPanel(QWidget):
         if persist:
             self._save_soundboard_auto_level_enabled(self._soundboard_auto_level_enabled)
 
+    def _analyze_soundboard_auto_level(self) -> None:
+        if bool(getattr(self, "_soundboard_auto_level_analyzing", False)):
+            return
+
+        self._soundboard_auto_level_analyzing = True
+        result_queue = queue.Queue(maxsize=1)
+        self._soundboard_auto_level_result_queue = result_queue
+
+        button = getattr(self, "soundboard_analyze_button", None)
+        if button is not None:
+            button.setEnabled(False)
+            button.setText("…")
+
+        worker = threading.Thread(
+            target=self._analyze_soundboard_auto_level_worker,
+            args=(result_queue,),
+            name="KSoundsAutoLevelAnalyze",
+            daemon=True,
+        )
+        self._soundboard_auto_level_worker = worker
+        worker.start()
+        QTimer.singleShot(150, self._poll_soundboard_auto_level_analysis)
+
+    def _analyze_soundboard_auto_level_worker(self, result_queue) -> None:
+        try:
+            result = self._analyze_soundboard_auto_level_now()
+        except Exception as exc:
+            result = {"ok": False, "message": f"Analyze failed: {exc}"}
+
+        try:
+            result_queue.put_nowait(result)
+        except Exception:
+            pass
+
+    def _poll_soundboard_auto_level_analysis(self) -> None:
+        result_queue = getattr(self, "_soundboard_auto_level_result_queue", None)
+        if result_queue is None:
+            return
+
+        try:
+            result = result_queue.get_nowait()
+        except queue.Empty:
+            if bool(getattr(self, "_soundboard_auto_level_analyzing", False)):
+                QTimer.singleShot(150, self._poll_soundboard_auto_level_analysis)
+            return
+
+        self._soundboard_auto_level_analyzing = False
+
+        button = getattr(self, "soundboard_analyze_button", None)
+        if button is not None:
+            button.setEnabled(True)
+            button.setText("↻")
+
+        message = str(result.get("message") or "Analyze finished.")
+        if bool(result.get("ok")):
+            QMessageBox.information(self, "Analyze Auto-level", message)
+        else:
+            QMessageBox.warning(self, "Analyze Auto-level", message)
+
+    def _analyze_soundboard_auto_level_now(self) -> dict:
+        if not SOUNDBOARD_PATH.is_file():
+            return {"ok": False, "message": "soundboard.json not found."}
+
+        raw_bytes = SOUNDBOARD_PATH.read_bytes()
+        data = json.loads(raw_bytes.decode("utf-8"))
+        slots = data.get("slots", [])
+        if not isinstance(slots, list):
+            return {"ok": False, "message": "soundboard.json has no valid slots list."}
+
+        backup_path = SOUNDBOARD_PATH.with_name(
+            f"soundboard.json.backup-before-analyze-{time.strftime('%Y%m%d-%H%M%S')}"
+        )
+        backup_path.write_bytes(raw_bytes)
+
+        target_peak_db = -3.0
+        min_gain = 0.05
+        max_gain = 1.5
+
+        changed = 0
+        present = 0
+        missing = 0
+        failed = 0
+        values: list[float] = []
+
+        for slot in slots:
+            if not isinstance(slot, dict):
+                continue
+
+            path_text = str(slot.get("path") or "").strip()
+            if not path_text:
+                continue
+
+            sound_path = Path(path_text).expanduser()
+            if not sound_path.is_file():
+                missing += 1
+                continue
+
+            present += 1
+
+            try:
+                proc = subprocess.run(
+                    [
+                        "ffmpeg",
+                        "-hide_banner",
+                        "-nostats",
+                        "-i",
+                        str(sound_path),
+                        "-filter:a",
+                        "volumedetect",
+                        "-f",
+                        "null",
+                        "-",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=20,
+                )
+            except FileNotFoundError:
+                return {
+                    "ok": False,
+                    "message": "ffmpeg was not found. Auto-level analysis could not run.",
+                }
+            except Exception:
+                failed += 1
+                continue
+
+            output = f"{proc.stdout}\n{proc.stderr}"
+            match = re.search(r"max_volume:\s*(-?\d+(?:\.\d+)?)\s*dB", output)
+            if not match:
+                failed += 1
+                continue
+
+            try:
+                max_db = float(match.group(1))
+            except Exception:
+                failed += 1
+                continue
+
+            gain = 10 ** ((target_peak_db - max_db) / 20.0)
+            gain = round(max(min_gain, min(max_gain, gain)), 4)
+
+            if slot.get("auto_gain") != gain or str(slot.get("analyzed_path") or "") != str(sound_path):
+                slot["auto_gain"] = gain
+                slot["analyzed_path"] = str(sound_path)
+                changed += 1
+
+            values.append(gain)
+
+        SOUNDBOARD_PATH.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+        if values:
+            values_sorted = sorted(values)
+            median = values_sorted[len(values_sorted) // 2]
+            message = (
+                f"Analyzed {present} sound(s).\n"
+                f"Changed: {changed} · Missing: {missing} · Failed: {failed}\n"
+                f"Gain min/median/max: {min(values):.4g} / {median:.4g} / {max(values):.4g}\n"
+                f"> 1.0: {sum(1 for value in values if value > 1.0)} · capped at 1.5: {sum(1 for value in values if abs(value - 1.5) < 0.0001)}\n"
+                f"Backup: {backup_path}"
+            )
+        else:
+            message = (
+                f"No present sound files were analyzed.\n"
+                f"Missing: {missing} · Failed: {failed}\n"
+                f"Backup: {backup_path}"
+            )
+
+        return {"ok": failed == 0, "message": message}
+
     def _queue_soundboard_volume(self, value: int) -> None:
         self._pending_soundboard_volume = int(value)
         self._soundboard_volume_timer.start()
@@ -7273,11 +7468,28 @@ class Drawer(QFrame):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(10)
 
+        header = QFrame()
+        header.setObjectName("sectionHeader")
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(8)
+
         title = QLabel("Soundboard")
         title.setObjectName("sectionTitle")
-        root.addWidget(title)
+        header_layout.addWidget(title)
+        header_layout.addStretch(1)
 
         self.pads_panel = PadsPanel(detach_callback=self._detach_pads, columns=3)
+
+        self.pads_analyze_button = QPushButton("↻")
+        self.pads_analyze_button.setObjectName("soundboardAnalyzeButton")
+        self.pads_analyze_button.setCursor(Qt.PointingHandCursor)
+        self.pads_analyze_button.setToolTip("Refresh auto-level analysis for all present soundboard files.")
+        self.pads_analyze_button.clicked.connect(self.pads_panel._analyze_soundboard_auto_level)
+        self.pads_panel.soundboard_analyze_button = self.pads_analyze_button
+        header_layout.addWidget(self.pads_analyze_button, 0, Qt.AlignRight)
+
+        root.addWidget(header)
         root.addWidget(self.pads_panel, 1)
 
         return content
