@@ -3010,6 +3010,25 @@ QPushButton#padCancelButton {
     font-weight: 760;
 }
 
+
+QFrame#soundPadCard[missingSound="true"] {
+    border: 1px solid rgba(255, 182, 84, 190);
+    background: rgba(75, 35, 18, 105);
+}
+
+QFrame#soundPadCard[missingSound="true"] QLabel#soundPadName {
+    color: rgba(255, 224, 178, 245);
+}
+
+QFrame#soundPadCard[missingSound="true"] QLabel#soundPadMeta {
+    color: rgba(255, 190, 96, 235);
+    font-weight: 800;
+}
+
+QFrame#soundPadCard[missingSound="true"] QPushButton#soundPadEmoji {
+    color: rgba(255, 201, 96, 245);
+}
+
 QFrame#soundPadCard[bulkSelected="true"] {
     background: rgba(40, 130, 92, 205);
     border: none;
@@ -5201,6 +5220,7 @@ class SoundPadCard(QFrame):
         self.setObjectName("soundPadCard")
         self.setProperty("edit", "false")
         self.setProperty("bulkSelected", "false")
+        self.setProperty("missingSound", "false")
         self.setMinimumHeight(70)
         self.setMinimumWidth(0)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
@@ -5325,6 +5345,21 @@ class SoundPadCard(QFrame):
 
     def set_slot_key(self, slot_key: str) -> None:
         self._slot_key = str(slot_key or "").strip()
+
+    def set_missing_sound(self, missing: bool, path_text: str = "") -> None:
+        missing = bool(missing)
+        self.setProperty("missingSound", "true" if missing else "false")
+        if missing:
+            self.icon_button.setText("⚠")
+            self.meta_label.setText("File missing")
+            self.meta_label.setVisible(True)
+            self.meta_label.setToolTip(str(path_text or "Missing sound file"))
+            self.setToolTip(str(path_text or "Missing sound file"))
+        else:
+            self.setToolTip("")
+        self.style().unpolish(self)
+        self.style().polish(self)
+        self.update()
 
     def set_display_name(self, name: str) -> None:
         clean = str(name or "").strip() or "Unnamed"
@@ -5959,8 +5994,8 @@ class PadsPanel(QWidget):
 
         root.addWidget(volume_row)
 
-        for name, icon, meta, slot_key, background_path, trim_db in self._load_real_soundboard_pads():
-            self._add_pad(name, icon, meta, slot_key=slot_key, background_path=background_path, trim_db=trim_db)
+        for name, icon, meta, slot_key, background_path, trim_db, sound_path in self._load_real_soundboard_pads():
+            self._add_pad(name, icon, meta, slot_key=slot_key, background_path=background_path, trim_db=trim_db, sound_path=sound_path)
 
         self.emoji_overlay = QFrame(self)
         self.emoji_overlay.setObjectName("emojiPalette")
@@ -6257,8 +6292,8 @@ QPushButton#pairOverlayButton:hover {
         }
         return names.get(key, key.upper() if key else "MEDIA")
 
-    def _load_real_soundboard_pads(self) -> list[tuple[str, str, str, str, str, float]]:
-        pads: list[tuple[str, str, str, str, str, float]] = []
+    def _load_real_soundboard_pads(self) -> list[tuple[str, str, str, str, str, float, str]]:
+        pads: list[tuple[str, str, str, str, str, float, str]] = []
 
         for index, slot in enumerate(self._read_soundboard_slots(), start=1):
             path_text = str(slot.get("path") or "").strip()
@@ -6287,15 +6322,15 @@ QPushButton#pairOverlayButton:hover {
             else:
                 meta = route
 
-            pads.append((label, icon, meta, slot_key, background_path, trim_db))
+            pads.append((label, icon, meta, slot_key, background_path, trim_db, path_text))
 
         if pads:
             return pads
 
         if SOUNDBOARD_PATH.is_file():
-            return [("No saved sounds", "🎧", "soundboard.json empty", "", "", 0.0)]
+            return [("No saved sounds", "🎧", "soundboard.json empty", "", "", 0.0, "")]
 
-        return [("No soundboard file", "🎧", "soundboard.json missing", "", "", 0.0)]
+        return [("No soundboard file", "🎧", "soundboard.json missing", "", "", 0.0, "")]
 
 
     def _cleanup_soundboard_bus_players(self) -> None:
@@ -6735,7 +6770,7 @@ QPushButton#pairOverlayButton:hover {
 
         QTimer.singleShot(0, self._update_responsive_columns)
 
-    def _add_pad(self, name: str | None = None, icon: str = "🎧", meta: str = "new", slot_key: str = "", background_path: str = "", trim_db: float = 0.0) -> None:
+    def _add_pad(self, name: str | None = None, icon: str = "🎧", meta: str = "new", slot_key: str = "", background_path: str = "", trim_db: float = 0.0, sound_path: str = "") -> None:
         if name is None or isinstance(name, bool):
             name = f"New pad {len(self.pad_cards) + 1}"
             icon = "+"
@@ -6743,6 +6778,7 @@ QPushButton#pairOverlayButton:hover {
             slot_key = ""
             background_path = ""
             trim_db = 0.0
+            sound_path = ""
 
         card = SoundPadCard(
             name,
@@ -6764,6 +6800,8 @@ QPushButton#pairOverlayButton:hover {
             card.set_pad_background_darkness(self._pad_bg_darkness)
         if background_path:
             card.set_background_path(background_path)
+        if str(meta or "").startswith("missing ·") and hasattr(card, "set_missing_sound"):
+            card.set_missing_sound(True, sound_path)
         card.set_edit_mode(self._edit_mode)
         card.set_bulk_select_enabled(self._bulk_delete_mode)
         self.pad_cards.append(card)
