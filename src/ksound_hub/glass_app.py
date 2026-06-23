@@ -410,9 +410,31 @@ class GlassBackendController(QObject):
         return int(channel.volume), bool(channel.muted)
 
     def meter_levels(self, channel_key: str) -> tuple[float, float]:
+        key = self._normalize_channel_key(channel_key)
         try:
-            left, right = self.audio_engine.meter_levels(self._normalize_channel_key(channel_key))
-            return max(0.0, min(1.0, float(left))), max(0.0, min(1.0, float(right)))
+            left, right = self.audio_engine.meter_levels(key)
+            left = max(0.0, min(1.0, float(left)))
+            right = max(0.0, min(1.0, float(right)))
+
+            if key == "micro":
+                channel = self._find_channel("micro")
+                if channel is None or not bool(getattr(channel, "enabled", True)) or bool(getattr(channel, "muted", False)):
+                    return 0.0, 0.0
+
+                try:
+                    volume = int(getattr(channel, "volume", 100))
+                except Exception:
+                    volume = 100
+
+                # The main MICRO meter should represent what K-Sounds sends to
+                # apps after the user-facing MICRO volume, not only raw bus
+                # activity. This is display-side only; routing/gain is still
+                # handled by the audio engine/native micro engine.
+                gain = max(0.0, min(1.5, float(volume) / 100.0))
+                left *= gain
+                right *= gain
+
+            return max(0.0, min(1.0, left)), max(0.0, min(1.0, right))
         except Exception as exc:
             self.status_changed.emit(f"Meter read error on {channel_key} — {exc}")
             return 0.0, 0.0
@@ -3305,6 +3327,40 @@ QSlider#padBgDarknessSlider::add-page:horizontal {
 
 
 STYLE += """
+
+/* Glass soundboard folder pills */
+QFrame#soundboardFolderBar {
+    background: rgba(255, 255, 255, 16);
+    border: 1px solid rgba(255, 255, 255, 26);
+    border-radius: 16px;
+}
+QPushButton#soundboardFolderPill,
+QPushButton#soundboardFolderAddButton {
+    min-height: 24px;
+    max-height: 24px;
+    padding: 2px 10px;
+    border-radius: 12px;
+    color: rgba(245, 248, 255, 218);
+    background: rgba(255, 255, 255, 16);
+    border: 1px solid rgba(255, 255, 255, 22);
+}
+QPushButton#soundboardFolderPill:hover,
+QPushButton#soundboardFolderAddButton:hover {
+    background: rgba(255, 255, 255, 28);
+    border: 1px solid rgba(255, 255, 255, 42);
+}
+QPushButton#soundboardFolderPill:checked {
+    color: rgba(255, 255, 255, 245);
+    background: rgba(120, 170, 255, 76);
+    border: 1px solid rgba(170, 205, 255, 120);
+}
+QPushButton#soundboardFolderAddButton {
+    min-width: 28px;
+    max-width: 34px;
+    padding-left: 0;
+    padding-right: 0;
+}
+
 /* Glass soundboard volume slider */
 QFrame#soundboardVolumeControls {
     background: rgba(0, 0, 0, 105);
@@ -5226,6 +5282,7 @@ class SoundPadCard(QFrame):
         background_callback=None,
         sound_callback=None,
         trim_callback=None,
+        folder_callback=None,
         trim_db: float = 0.0,
     ):
         super().__init__()
@@ -5238,6 +5295,7 @@ class SoundPadCard(QFrame):
         self._background_callback = background_callback
         self._sound_callback = sound_callback
         self._trim_callback = trim_callback
+        self._folder_callback = folder_callback
         self._slot_key = str(slot_key or "").strip()
         self._always_show_meta = False
         self._background_path = str(background_path or "").strip()
@@ -5303,6 +5361,12 @@ class SoundPadCard(QFrame):
         sound_button.setToolTip("Edit sound")
         sound_button.clicked.connect(self._request_sound)
         actions_layout.addWidget(sound_button)
+
+        folder_button = QPushButton("📁")
+        folder_button.setObjectName("padIconButton")
+        folder_button.setToolTip("Move to folder")
+        folder_button.clicked.connect(self._request_folder)
+        actions_layout.addWidget(folder_button)
 
         delete_button = CenterGlyphButton("🗑")
         delete_button.setObjectName("padDeleteButton")
@@ -5518,6 +5582,10 @@ QFrame#soundPadCard QPushButton#soundPadEmoji {
     def _request_sound(self) -> None:
         if self._edit_enabled and self._sound_callback is not None:
             self._sound_callback(self)
+
+    def _request_folder(self) -> None:
+        if self._edit_enabled and self._folder_callback is not None:
+            self._folder_callback(self)
 
     def trim_db(self) -> float:
         return float(getattr(self, "_trim_db", 0.0))
@@ -6039,6 +6107,7 @@ class PadsPanel(QWidget):
         self.pad_cards: list[SoundPadCard] = []
         self._soundboard_volume = self._read_soundboard_volume_setting()
         self._soundboard_auto_level_enabled = self._read_soundboard_auto_level_enabled()
+        self._active_soundboard_folder: str | None = None
         self._pending_soundboard_volume = self._soundboard_volume
         self._soundboard_volume_timer = QTimer(self)
         self._soundboard_volume_timer.setSingleShot(True)
@@ -6071,12 +6140,7 @@ class PadsPanel(QWidget):
         self.stop_all_button.clicked.connect(self._stop_all_sounds)
         top_layout.addWidget(self.stop_all_button)
 
-        connect = QPushButton("Pair Android")
-        connect.setObjectName("padTopButton")
-        connect.setToolTip("Show Android pairing code")
-        connect.clicked.connect(self._pair_android_remote)
-        top_layout.addWidget(connect)
-
+        # Pair Android lives next to the Soundboard refresh/analyze icon.
         if self._show_detach:
             detach = QPushButton("Detach")
             detach.setObjectName("padTopButton")
@@ -6101,12 +6165,29 @@ class PadsPanel(QWidget):
         self.bulk_delete.clicked.connect(self._bulk_delete_clicked)
         top_layout.addWidget(self.bulk_delete)
 
+        self.options_button = CenterGlyphButton("▾", y_offset=-1)
+        self.options_button.setObjectName("padTopButton")
+        self.options_button.setCheckable(True)
+        self.options_button.setMinimumWidth(34)
+        self.options_button.setMaximumWidth(34)
+        self.options_button.setToolTip("Show soundboard visual options")
+        self.options_button.toggled.connect(self._set_options_visible)
+        top_layout.addWidget(self.options_button)
+
         top_layout.addStretch(1)
         root.addWidget(top_bar)
 
-        pad_dark_row = QFrame()
-        pad_dark_row.setObjectName("padBgDarknessControls")
-        pad_dark_layout = QHBoxLayout(pad_dark_row)
+        self.folder_bar = QFrame()
+        self.folder_bar.setObjectName("soundboardFolderBar")
+        self.folder_layout = QHBoxLayout(self.folder_bar)
+        self.folder_layout.setContentsMargins(7, 5, 7, 5)
+        self.folder_layout.setSpacing(6)
+        root.addWidget(self.folder_bar)
+        self._refresh_folder_bar()
+
+        self.options_panel = QFrame()
+        self.options_panel.setObjectName("padBgDarknessControls")
+        pad_dark_layout = QHBoxLayout(self.options_panel)
         pad_dark_layout.setContentsMargins(9, 5, 9, 5)
         pad_dark_layout.setSpacing(8)
 
@@ -6122,7 +6203,8 @@ class PadsPanel(QWidget):
         self.pad_bg_darkness_slider.valueChanged.connect(lambda value: self._queue_pad_bg_darkness(int(value)))
         pad_dark_layout.addWidget(self.pad_bg_darkness_slider, 1)
 
-        root.addWidget(pad_dark_row)
+        root.addWidget(self.options_panel)
+        self.options_panel.setVisible(False)
 
         self.grid_scroll = AdaptiveScrollArea()
         self.grid_scroll.setObjectName("padsGridScroll")
@@ -6487,6 +6569,216 @@ QPushButton#pairOverlayButton:hover {
         }
         return names.get(key, key.upper() if key else "MEDIA")
 
+    def _clean_soundboard_folder_label(self, value) -> str:
+        text = str(value or "").strip()
+        text = re.sub(r"\s+", " ", text)
+        if not text:
+            return "Main"
+        if text.casefold() == "all":
+            return "All"
+        return text[:32]
+
+    def _folder_storage_value(self, label) -> str:
+        cleaned = self._clean_soundboard_folder_label(label)
+        if cleaned.casefold() in {"main", "all"}:
+            return ""
+        return cleaned
+
+    def _slot_folder_label(self, slot: dict) -> str:
+        return self._clean_soundboard_folder_label(slot.get("folder") if isinstance(slot, dict) else "")
+
+    def _slot_matches_active_folder(self, slot: dict) -> bool:
+        active = getattr(self, "_active_soundboard_folder", None)
+        if active is None:
+            return True
+        return self._slot_folder_label(slot).casefold() == str(active).casefold()
+
+    def _available_soundboard_folders(self) -> list[str]:
+        data = self._read_soundboard_document()
+        seen: set[str] = set()
+        folders: list[str] = []
+
+        def add_folder(value) -> None:
+            label = self._clean_soundboard_folder_label(value)
+            if label.casefold() == "all":
+                return
+            key = label.casefold()
+            if key in seen:
+                return
+            seen.add(key)
+            folders.append(label)
+
+        add_folder("Main")
+
+        for folder in data.get("folders", []):
+            add_folder(folder)
+
+        for slot in data.get("slots", []):
+            if isinstance(slot, dict):
+                add_folder(slot.get("folder"))
+
+        return folders
+
+    def _remember_soundboard_folder(self, data: dict, label: str) -> None:
+        storage = self._folder_storage_value(label)
+        if not storage:
+            return
+        folders = data.setdefault("folders", [])
+        if not isinstance(folders, list):
+            folders = []
+            data["folders"] = folders
+        if all(str(item).casefold() != storage.casefold() for item in folders):
+            folders.append(storage)
+
+    def _clear_layout_widgets(self, layout) -> None:
+        while layout.count():
+            item = layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+    def _refresh_folder_bar(self) -> None:
+        if not hasattr(self, "folder_layout"):
+            return
+
+        self._clear_layout_widgets(self.folder_layout)
+
+        def add_button(label: str, folder_value) -> None:
+            button = QPushButton(label)
+            button.setObjectName("soundboardFolderPill")
+            button.setCheckable(True)
+            button.setCursor(Qt.PointingHandCursor)
+            active = getattr(self, "_active_soundboard_folder", None)
+            button.setChecked(
+                (folder_value is None and active is None)
+                or (
+                    folder_value is not None
+                    and active is not None
+                    and str(folder_value).casefold() == str(active).casefold()
+                )
+            )
+            button.clicked.connect(lambda _checked=False, value=folder_value: self._set_active_soundboard_folder(value))
+            self.folder_layout.addWidget(button)
+
+        add_button("All", None)
+        for folder in self._available_soundboard_folders():
+            add_button(folder, folder)
+
+        add_folder = QPushButton("+")
+        add_folder.setObjectName("soundboardFolderAddButton")
+        add_folder.setToolTip("Create folder")
+        add_folder.setCursor(Qt.PointingHandCursor)
+        add_folder.clicked.connect(self._create_soundboard_folder)
+        self.folder_layout.addWidget(add_folder)
+
+        self.folder_layout.addStretch(1)
+
+    def _set_active_soundboard_folder(self, folder) -> None:
+        self._active_soundboard_folder = None if folder is None else self._clean_soundboard_folder_label(folder)
+        self._refresh_folder_bar()
+        self._reload_soundboard_pads()
+
+    def _create_soundboard_folder(self) -> None:
+        name, ok = QInputDialog.getText(
+            self,
+            "Create sound folder",
+            "Folder name:",
+            QLineEdit.Normal,
+            "",
+        )
+        if not ok:
+            return
+
+        label = self._clean_soundboard_folder_label(name)
+        if label.casefold() in {"all", "main"}:
+            label = "Main"
+
+        data = self._read_soundboard_document()
+        self._remember_soundboard_folder(data, label)
+        self._write_soundboard_document(data)
+
+        self._active_soundboard_folder = label
+        self._refresh_folder_bar()
+        self._reload_soundboard_pads()
+
+    def _choose_pad_folder(self, card: SoundPadCard) -> None:
+        data, slots, index = self._ensure_slot_for_card(card)
+        slot = slots[index]
+
+        current = self._slot_folder_label(slot)
+        folders = self._available_soundboard_folders()
+        if all(folder.casefold() != current.casefold() for folder in folders):
+            folders.insert(0, current)
+
+        choices = folders + ["New folder…"]
+        try:
+            current_index = next(i for i, item in enumerate(choices) if item.casefold() == current.casefold())
+        except Exception:
+            current_index = 0
+
+        selected, ok = QInputDialog.getItem(
+            self,
+            "Move sound to folder",
+            "Folder:",
+            choices,
+            current_index,
+            False,
+        )
+        if not ok:
+            return
+
+        if selected == "New folder…":
+            name, ok = QInputDialog.getText(
+                self,
+                "Create sound folder",
+                "Folder name:",
+                QLineEdit.Normal,
+                "",
+            )
+            if not ok:
+                return
+            selected = self._clean_soundboard_folder_label(name)
+
+        label = self._clean_soundboard_folder_label(selected)
+        storage = self._folder_storage_value(label)
+        if storage:
+            slot["folder"] = storage
+            self._remember_soundboard_folder(data, storage)
+        else:
+            slot["folder"] = ""
+
+        self._write_soundboard_document(data)
+        self._refresh_folder_bar()
+        self._reload_soundboard_pads()
+
+    def _reload_soundboard_pads(self) -> None:
+        if not hasattr(self, "grid"):
+            return
+
+        self.grid_host.setUpdatesEnabled(False)
+        self.grid_scroll.setUpdatesEnabled(False)
+        try:
+            for card in list(self.pad_cards):
+                self.grid.removeWidget(card)
+                card.deleteLater()
+            self.pad_cards.clear()
+
+            for name, icon, meta, slot_key, background_path, trim_db, sound_path in self._load_real_soundboard_pads():
+                self._add_pad(
+                    name,
+                    icon,
+                    meta,
+                    slot_key=slot_key,
+                    background_path=background_path,
+                    trim_db=trim_db,
+                    sound_path=sound_path,
+                )
+        finally:
+            self.grid_host.setUpdatesEnabled(True)
+            self.grid_scroll.setUpdatesEnabled(True)
+
+        QTimer.singleShot(0, self._update_responsive_columns)
+
     def _load_real_soundboard_pads(self) -> list[tuple[str, str, str, str, str, float, str]]:
         pads: list[tuple[str, str, str, str, str, float, str]] = []
 
@@ -6495,6 +6787,9 @@ QPushButton#pairOverlayButton:hover {
             label = str(slot.get("label") or "").strip()
 
             if not path_text and not label:
+                continue
+
+            if not self._slot_matches_active_folder(slot):
                 continue
 
             if not label or label.upper() in {"SOUND", "EMPTY"}:
@@ -6521,6 +6816,10 @@ QPushButton#pairOverlayButton:hover {
 
         if pads:
             return pads
+
+        active_folder = getattr(self, "_active_soundboard_folder", None)
+        if active_folder is not None:
+            return [(f"No sounds in {active_folder}", "📁", "empty folder", "", "", 0.0, "")]
 
         if SOUNDBOARD_PATH.is_file():
             return [("No saved sounds", "🎧", "soundboard.json empty", "", "", 0.0, "")]
@@ -6852,6 +7151,7 @@ QPushButton#pairOverlayButton:hover {
                 "label": card.display_name() if not card.display_name().startswith("New pad") else "New sound",
                 "path": "",
                 "background_path": "",
+                "folder": self._folder_storage_value(getattr(self, "_active_soundboard_folder", None)),
                 "volume": 80,
                 "shortcut": "",
                 "output_channel": "media",
@@ -6860,6 +7160,7 @@ QPushButton#pairOverlayButton:hover {
                 "analyzed_path": "",
                 "trim_db": 0.0,
             }
+            self._remember_soundboard_folder(data, slot.get("folder", ""))
             slots.append(slot)
             index = len(slots) - 1
             card.set_slot_key(str(slot["id"]))
@@ -6946,6 +7247,15 @@ QPushButton#pairOverlayButton:hover {
         if self._detach_callback is not None:
             self._detach_callback()
 
+    def _set_options_visible(self, enabled: bool) -> None:
+        if hasattr(self, "options_panel"):
+            self.options_panel.setVisible(bool(enabled))
+        if hasattr(self, "options_button"):
+            self.options_button.setText("▴" if enabled else "▾")
+            self.options_button.setToolTip(
+                "Hide soundboard visual options" if enabled else "Show soundboard visual options"
+            )
+
     def _set_edit_mode(self, enabled: bool) -> None:
         self._edit_mode = enabled
         self.edit.setText("Done" if enabled else "Edit")
@@ -6991,6 +7301,7 @@ QPushButton#pairOverlayButton:hover {
             background_callback=self._choose_pad_background,
             sound_callback=self._choose_pad_sound,
             trim_callback=self._set_card_trim_db,
+            folder_callback=self._choose_pad_folder,
             trim_db=trim_db,
         )
         if hasattr(card, "set_always_show_meta"):
@@ -7492,6 +7803,13 @@ class Drawer(QFrame):
         self.pads_analyze_button.clicked.connect(self.pads_panel._analyze_soundboard_auto_level)
         self.pads_panel.soundboard_analyze_button = self.pads_analyze_button
         header_layout.addWidget(self.pads_analyze_button, 0, Qt.AlignRight)
+
+        self.pads_pair_button = CenterGlyphButton("📱", y_offset=-1)
+        self.pads_pair_button.setObjectName("soundboardAnalyzeButton")
+        self.pads_pair_button.setCursor(Qt.PointingHandCursor)
+        self.pads_pair_button.setToolTip("Pair Android remote")
+        self.pads_pair_button.clicked.connect(self.pads_panel._pair_android_remote)
+        header_layout.addWidget(self.pads_pair_button, 0, Qt.AlignRight)
 
         root.addWidget(header)
         root.addWidget(self.pads_panel, 1)

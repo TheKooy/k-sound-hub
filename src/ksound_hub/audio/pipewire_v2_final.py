@@ -411,7 +411,7 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
             "version\t2",
             f"enabled\t{'1' if channel.enabled else '0'}",
             f"muted\t{'1' if channel.muted else '0'}",
-            f"volume\t{int(channel.volume)}",
+            "volume\t100",
             f"source\t{source_name}",
         ]
 
@@ -792,14 +792,15 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
 
             # Fallback PipeWire loopback path:
             # physical mic source -> KSH_MIC_PHYSICAL sink-input -> micro_bus -> micro source.
-            # Keep it light, but make mute apply to the full exported virtual mic.
-            volume = max(0, min(150, int(channel.volume)))
+            # Keep the physical/EasyEffects feed at unity. The user-facing
+            # MICRO slider is applied to the exported virtual source "micro"
+            # by _apply_micro_endpoint_controls().
             muted = "1" if self._micro_channel_is_muted(channel) else "0"
 
             sink_input_ids = self._find_sink_input_ids_by_media_name("KSH_MIC_PHYSICAL")
             if sink_input_ids:
                 for sink_input_id in sink_input_ids:
-                    self._run_no_fail(["pactl", "set-sink-input-volume", sink_input_id, f"{volume}%"])
+                    self._run_no_fail(["pactl", "set-sink-input-volume", sink_input_id, "100%"])
                     self._run_no_fail(["pactl", "set-sink-input-mute", sink_input_id, muted])
                 self._apply_micro_endpoint_controls(channel)
                 self._apply_return_mic(settings)
@@ -948,30 +949,8 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
             return self._native_micro_levels_cache_payload
 
     def meter_levels(self, channel_key: str) -> tuple[float, float]:
-        def boost_micro_meter(pair: tuple[float, float]) -> tuple[float, float]:
-            if channel_key != "micro":
-                return pair
-
-            try:
-                scale = float(os.environ.get("KSH_MIC_METER_BOOST", "1.0"))
-            except Exception:
-                scale = 4.0
-
-            try:
-                floor = float(os.environ.get("KSH_MIC_METER_FLOOR", "0.0025"))
-            except Exception:
-                floor = 0.0015
-
-            def one(value: float) -> float:
-                raw = max(0.0, min(1.0, float(value)))
-                if raw < floor:
-                    return 0.0
-                return max(0.0, min(1.0, raw * scale))
-
-            return one(pair[0]), one(pair[1])
-
         if not self._native_playback_enabled():
-            return boost_micro_meter(super().meter_levels(channel_key))
+            return super().meter_levels(channel_key)
 
         if channel_key in PLAYBACK_KEYS:
             payload = self._read_v2_levels_payload()
@@ -987,16 +966,16 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
 
         if channel_key in {"micro", "return-mic"}:
             if not self._native_micro_enabled():
-                return boost_micro_meter(super().meter_levels(channel_key))
+                return super().meter_levels(channel_key)
 
             payload = self._read_native_micro_levels_payload()
             levels = payload.get("channels", {}).get(channel_key)
             if isinstance(levels, list) and len(levels) >= 2:
                 try:
-                    return boost_micro_meter((float(levels[0]), float(levels[1])))
+                    return float(levels[0]), float(levels[1])
                 except Exception:
                     return (0.0, 0.0)
 
-            return boost_micro_meter(super().meter_levels(channel_key))
+            return super().meter_levels(channel_key)
 
         return super().meter_levels(channel_key)

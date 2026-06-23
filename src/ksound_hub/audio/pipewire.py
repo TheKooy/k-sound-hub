@@ -4,6 +4,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import threading
 import time
@@ -301,6 +302,11 @@ def _build_eq_slot_status(*, profile_name: str, target_label: str, muted: bool, 
 
 
 class SourceMeterProbe:
+    # Process-wide guard: after suspend/resume or UI rebuilds, old meter
+    # threads must not keep spawning duplicate parec clients for the same source.
+    _active_lock = threading.Lock()
+    _active_by_source: dict[str, "SourceMeterProbe"] = {}
+
     def __init__(self, source_name: str) -> None:
         self.source_name = source_name
         self._stop_event = threading.Event()
@@ -314,6 +320,19 @@ class SourceMeterProbe:
         )
 
     def start(self) -> None:
+        previous: SourceMeterProbe | None = None
+
+        with SourceMeterProbe._active_lock:
+            current = SourceMeterProbe._active_by_source.get(self.source_name)
+            if current is not None and current is not self:
+                previous = current
+                previous._stop_event.set()
+                previous._terminate_proc()
+            SourceMeterProbe._active_by_source[self.source_name] = self
+
+        if previous is not None:
+            previous.stop()
+
         if not self._thread.is_alive():
             self._thread.start()
 
@@ -322,6 +341,11 @@ class SourceMeterProbe:
         self._terminate_proc()
         if self._thread.is_alive():
             self._thread.join(timeout=1.2)
+
+        with SourceMeterProbe._active_lock:
+            if SourceMeterProbe._active_by_source.get(self.source_name) is self:
+                SourceMeterProbe._active_by_source.pop(self.source_name, None)
+
         self._set_levels(0.0, 0.0)
 
     def levels(self) -> tuple[float, float]:
@@ -456,6 +480,10 @@ class SourceMeterProbe:
             if not self._stop_event.is_set():
                 time.sleep(0.08)
 
+        with SourceMeterProbe._active_lock:
+            if SourceMeterProbe._active_by_source.get(self.source_name) is self:
+                SourceMeterProbe._active_by_source.pop(self.source_name, None)
+
         self._set_levels(0.0, 0.0)
 
 
@@ -468,6 +496,7 @@ class PipeWireAudioEngine(AudioEngine):
             key: EqRuntimeSlot(key=key, logical_sink=logical_sink)
             for key, logical_sink in PLAYBACK_EQ_CHANNELS.items()
         }
+        self._cleanup_stale_meter_parec_processes()
         self._meter_probes: dict[str, SourceMeterProbe] = {}
         self._native_meter_runtime_dir = self.runtime_dir / "native-meter-engine"
         self._native_meter_runtime_dir.mkdir(parents=True, exist_ok=True)
@@ -493,6 +522,29 @@ class PipeWireAudioEngine(AudioEngine):
             self._run(args)
         except Exception:
             pass
+
+    def _cleanup_stale_meter_parec_processes(self) -> None:
+        # Old native meter engines can survive a killed Glass process, suspend,
+        # or a session restore. Each orphan can spawn one parec per channel and
+        # exhaust pipewire-pulse client slots, making real devices look missing.
+        native_pattern = r"ksound_native_meter_engine --levels .*/native-meter-engine/levels\.json"
+        parec_pattern = (
+            r"parec --device=(all|game|chat|media|more|retour|micro|micro_bus|soundboard)\.monitor "
+            r"--raw --format=float32le --rate=48000 --channels=2 --latency-msec=(40|80)"
+        )
+        for signal_name in ("-TERM", "-KILL"):
+            for pattern in (native_pattern, parec_pattern):
+                try:
+                    subprocess.run(
+                        ["pkill", signal_name, "-f", pattern],
+                        check=False,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                except Exception:
+                    pass
+            if signal_name == "-TERM":
+                time.sleep(0.2)
 
     def _pw_link_available(self) -> bool:
         return shutil.which("pw-link") is not None
@@ -562,13 +614,24 @@ class PipeWireAudioEngine(AudioEngine):
         self._native_meter_proc = None
         if proc is None:
             return
+
         try:
             if proc.poll() is None:
-                proc.terminate()
                 try:
-                    proc.wait(timeout=1.2)
+                    os.killpg(proc.pid, signal.SIGTERM)
+                except Exception:
+                    proc.terminate()
+                try:
+                    proc.wait(timeout=1.5)
                 except subprocess.TimeoutExpired:
-                    proc.kill()
+                    try:
+                        os.killpg(proc.pid, signal.SIGKILL)
+                    except Exception:
+                        proc.kill()
+                    try:
+                        proc.wait(timeout=1.0)
+                    except Exception:
+                        pass
         except Exception:
             pass
 
@@ -607,6 +670,7 @@ class PipeWireAudioEngine(AudioEngine):
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
                 env=env,
+                start_new_session=True,
             )
         except Exception:
             try:
@@ -980,7 +1044,15 @@ class PipeWireAudioEngine(AudioEngine):
             self._run_no_fail(["pactl", "set-sink-mute", "micro_bus", muted])
 
         if self._source_exists("micro"):
-            self._run_no_fail(["pactl", "set-source-volume", "micro", "100%"])
+            # Discord/Steam/etc. capture the exported virtual source named
+            # "micro". Apply the user-facing MICRO volume here so the app gets
+            # the same level the UI slider shows.
+            exported_volume = _resolved_channel_node_volume(
+                channel.volume,
+                node_type="source",
+                node_name="micro",
+            )
+            self._run_no_fail(["pactl", "set-source-volume", "micro", f"{exported_volume}%"])
             self._run_no_fail(["pactl", "set-source-mute", "micro", muted])
 
     def _unload_micro_link(self, channel_key: str) -> None:
@@ -1483,7 +1555,12 @@ class PipeWireAudioEngine(AudioEngine):
             node_names = [self._resolved_micro_source_name(channel)]
 
         for node_name in node_names:
-            self._apply_node_controls(channel, node_type="source", node_name=node_name)
+            # Keep the selected input source at unity. The MICRO slider controls
+            # the exported K-Sounds virtual mic, not the physical/EasyEffects
+            # input node directly.
+            if self._source_exists(node_name):
+                self._run_no_fail(["pactl", "set-source-volume", node_name, "100%"])
+                self._run_no_fail(["pactl", "set-source-mute", node_name, "0"])
 
         self._ensure_physical_micro_loopbacks(channel)
         self._run_no_fail(["pactl", "set-default-source", "micro"])
@@ -1567,28 +1644,23 @@ class PipeWireAudioEngine(AudioEngine):
         slot.status = f"failed ({tail or 'see log'})"
 
     def meter_levels(self, channel_key: str) -> tuple[float, float]:
-        native_levels = self._native_meter_levels(channel_key)
-        if native_levels is not None:
-            return native_levels
-
         source_name = METER_SOURCE_BY_CHANNEL.get(channel_key)
         if not source_name:
             return (0.0, 0.0)
 
-        probe = self._meter_probes.get(channel_key)
-        if probe is not None:
-            if probe.source_name == source_name:
-                return probe.levels()
-            probe.stop()
-            self._meter_probes.pop(channel_key, None)
+        # Prefer the native meter engine. Do not fall back to legacy parec
+        # probes anymore: after suspend/resume or UI rebuilds, those probes can
+        # multiply until pipewire-pulse refuses new client connections, which
+        # makes real sources such as easyeffects_source look "not found".
+        native = self._native_meter_levels(channel_key)
+        if native is not None:
+            return native
 
-        if source_name not in self._cached_source_names():
-            return (0.0, 0.0)
+        # Defensive cleanup in case an older runtime left legacy probes alive.
+        if getattr(self, "_meter_probes", None):
+            self.stop_meter_probes()
 
-        probe = SourceMeterProbe(source_name)
-        probe.start()
-        self._meter_probes[channel_key] = probe
-        return probe.levels()
+        return (0.0, 0.0)
 
     def apply_channel(self, settings: AppSettings, channel_key: str) -> None:
         if channel_key in PLAYBACK_EQ_CHANNELS:
