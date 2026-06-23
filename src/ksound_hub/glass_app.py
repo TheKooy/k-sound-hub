@@ -811,6 +811,13 @@ class GlassBackendController(QObject):
         except Exception:
             return False
 
+        # Keep the overlay alive during slider drag, but do not save, do not
+        # emit full channel-state refreshes, and do not run heavy audio paths.
+        try:
+            self.overlay_message_requested.emit(self._overlay_text(channel, "volume"), False)
+        except Exception:
+            pass
+
         if key not in {"all", "game", "chat", "media", "more"}:
             return True
 
