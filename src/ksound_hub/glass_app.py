@@ -6914,6 +6914,10 @@ QPushButton#pairOverlayButton:hover {
 
         route = self._format_soundboard_route(str(slot.get("output_channel") or "media"))
         card.set_meta(f"{route} · {sound_path.name}")
+        if hasattr(card, "set_missing_sound"):
+            card.set_missing_sound(False)
+        if hasattr(card, "icon_button"):
+            card.icon_button.setText(self._icon_for_soundboard_slot(slot, str(sound_path)))
         self._write_soundboard_document(data)
         self._refresh_soundboard_after_edit()
 
