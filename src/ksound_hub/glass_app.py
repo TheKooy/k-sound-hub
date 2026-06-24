@@ -253,9 +253,17 @@ GLASS_CHANNEL_OVERLAY_META = {
 
 
 GLASS_METER_INPUT_SCALE = {
-    # MICRO tends to look too hot after the global visual meter boost.
-    # This is display-only; it does not change the exported mic volume.
-    "micro": 0.28,
+    # Display-only calibration.
+    # The native meter reads internal monitor sources, which are hotter than
+    # what the user perceives after channel volume/EQ/headset routing.
+    # Keep the meters useful, but reserve red for truly loud/clipping content.
+    "all": 0.48,
+    "game": 0.48,
+    "chat": 0.48,
+    "media": 0.48,
+    "more": 0.48,
+    "return-mic": 0.48,
+    "micro": 0.22,
 }
 
 
@@ -434,6 +442,14 @@ class GlassBackendController(QObject):
                     if scalar < 1.0:
                         left = float(left) * scalar
                         right = float(right) * scalar
+
+            try:
+                display_scale = max(0.0, min(1.0, float(GLASS_METER_INPUT_SCALE.get(key, 1.0))))
+            except Exception:
+                display_scale = 1.0
+            if display_scale < 1.0:
+                left = float(left) * display_scale
+                right = float(right) * display_scale
 
             return max(0.0, min(1.0, float(left))), max(0.0, min(1.0, float(right)))
         except Exception as exc:
