@@ -465,8 +465,12 @@ def _meter_visual_level(value: float) -> float:
     raw = max(0.0, min(1.0, float(value)))
     if raw <= 0.0:
         return 0.0
-    boosted = raw ** 0.48
-    if boosted < 0.02:
+
+    # Display-only calibration.
+    # The backend already applies the current channel volume before this point.
+    # Keep quiet details visible, but avoid pushing normal playback into red too early.
+    boosted = raw ** 0.72
+    if boosted < 0.018:
         return 0.0
     return max(0.0, min(1.0, boosted))
 
@@ -512,9 +516,9 @@ class StereoLevelMeterWidget(QWidget):
             active = i < lit
             if not active:
                 color = QColor("#1a2430")
-            elif i < 8:
+            elif i < 9:
                 color = QColor("#48d66b")
-            elif i < 11:
+            elif i < 12:
                 color = QColor("#f2cf5b")
             else:
                 color = QColor("#ff6666")
