@@ -349,6 +349,36 @@ def update_soundboard_setting(key: str, value) -> None:
     CONFIG_PATH.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
+def send_ipc(payload: dict) -> tuple[bool, str]:
+    # Bridge remote web actions to the running Glass IPC server.
+    # Keep compatibility with current and historical socket names.
+    candidates = [
+        os.environ.get("KSH_IPC_SOCKET_PATH", ""),
+        os.environ.get("KSOUND_HUB_IPC_SOCKET", ""),
+        f"/tmp/ksounds_hub_audio_{os.getuid()}.sock",
+        f"/tmp/ksound_hub_audio_v2_{os.getuid()}.sock",
+        f"/tmp/ksound_hub_audio_{os.getuid()}.sock",
+    ]
+
+    seen: set[str] = set()
+    last_error = ""
+    for socket_path in [candidate for candidate in candidates if candidate]:
+        if socket_path in seen:
+            continue
+        seen.add(socket_path)
+
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+                sock.settimeout(0.45)
+                sock.connect(socket_path)
+                sock.sendall((json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8"))
+            return True, "OK"
+        except Exception as exc:
+            last_error = f"{socket_path}: {exc}"
+
+    return False, last_error or "IPC unavailable"
+
+
 def read_valid_pairing() -> dict | None:
     if not PAIRING_PATH.is_file():
         return None
