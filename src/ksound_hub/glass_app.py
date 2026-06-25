@@ -280,6 +280,14 @@ class GlassBackendController(QObject):
         self.audio_engine = PipeWireAudioEngine()
         self._android_soundboard_dialog: SoundboardDialog | None = None
 
+        self._micro_gate_stop = threading.Event()
+        self._micro_gate_thread: threading.Thread | None = None
+        self._micro_gate_process: subprocess.Popen | None = None
+        self._micro_gate_source_name: str = ""
+        self._micro_gate_open: bool = True
+        self._micro_gate_last_above: float = 0.0
+        self._micro_gate_last_apply: float = 0.0
+
         self._pending_volume_fast_keys: set[str] = set()
         self._pending_apply_keys: set[str] = set()
 
@@ -387,6 +395,11 @@ class GlassBackendController(QObject):
 
         try:
             self.ipc_server.stop()
+        except Exception:
+            pass
+
+        try:
+            self._stop_micro_hard_gate_monitor()
         except Exception:
             pass
 
@@ -805,6 +818,44 @@ class GlassBackendController(QObject):
         if hint == "mute":
             return f"{icon} {label} {'🔇' if channel.muted else '🔊'}"
         return f"{icon} {label} {int(channel.volume)}%"
+
+    def micro_hard_gate_enabled(self) -> bool:
+        channel = self._find_channel("micro")
+        return bool(getattr(channel, "hard_gate_enabled", False)) if channel is not None else False
+
+    def micro_hard_gate_threshold(self) -> int:
+        channel = self._find_channel("micro")
+        if channel is None:
+            return 12
+        try:
+            value = int(getattr(channel, "hard_gate_threshold", 12))
+        except Exception:
+            value = 12
+        return max(0, min(100, value))
+
+    def set_micro_hard_gate_enabled(self, enabled: bool) -> bool:
+        channel = self._find_channel("micro")
+        if channel is None:
+            return False
+        channel.hard_gate_enabled = bool(enabled)
+        self.settings_store.save(self.settings)
+        self._apply_micro_hard_gate_runtime()
+        self.status_changed.emit(f"MICRO input hard gate: {'ON' if bool(enabled) else 'OFF'}")
+        return True
+
+    def set_micro_hard_gate_threshold(self, value: int) -> bool:
+        channel = self._find_channel("micro")
+        if channel is None:
+            return False
+        try:
+            channel.hard_gate_threshold = max(0, min(100, int(value)))
+        except Exception:
+            channel.hard_gate_threshold = 12
+        self.settings_store.save(self.settings)
+        if bool(getattr(channel, "hard_gate_enabled", False)):
+            self._apply_micro_hard_gate_runtime()
+        self.status_changed.emit(f"MICRO input gate threshold: {int(channel.hard_gate_threshold)}%")
+        return True
 
     def set_channel_volume(self, channel_key: str, value: int) -> bool:
         return self._apply_mixer_action(channel_key, "set-volume", volume=value)
@@ -1880,6 +1931,175 @@ class GlassBackendController(QObject):
 
         self._write_settings_document(settings)
 
+    def _ksh_mic_physical_source_name(self) -> str:
+        for line in self._pulse_modules():
+            lowered = line.lower()
+            if (
+                "module-loopback" not in lowered
+                or "sink=micro_bus" not in lowered
+                or "ksh_mic_physical" not in lowered
+            ):
+                continue
+            for part in line.split():
+                if part.startswith("source="):
+                    return part.split("=", 1)[1].strip()
+        return ""
+
+    def _set_ksh_mic_physical_gate_open(self, open_gate: bool) -> None:
+        channel = self._find_channel("micro")
+        user_muted = bool(getattr(channel, "muted", False)) if channel is not None else False
+        wanted_mute = "1" if (user_muted or not bool(open_gate)) else "0"
+
+        for sink_input_id in self._sink_inputs_by_media_name("KSH_MIC_PHYSICAL"):
+            self._pactl("set-sink-input-mute", str(sink_input_id), wanted_mute)
+
+        self._micro_gate_open = bool(open_gate)
+
+    def _micro_gate_effective_threshold(self) -> float:
+        value = self.micro_hard_gate_threshold()
+        return 0.0015 + ((float(value) / 100.0) ** 2.0) * 0.18
+
+    def _micro_channel_volume_scalar(self) -> float:
+        channel = self._find_channel("micro")
+        if channel is None:
+            return 1.0
+        try:
+            value = int(getattr(channel, "volume", 100))
+        except Exception:
+            value = 100
+        return max(0.0, min(1.5, float(value) / 100.0))
+
+    def _stop_micro_hard_gate_monitor(self) -> None:
+        self._micro_gate_stop.set()
+
+        process = self._micro_gate_process
+        self._micro_gate_process = None
+        if process is not None:
+            try:
+                process.terminate()
+            except Exception:
+                pass
+
+        thread = self._micro_gate_thread
+        self._micro_gate_thread = None
+        if thread is not None and thread.is_alive():
+            try:
+                thread.join(timeout=0.35)
+            except Exception:
+                pass
+
+        self._micro_gate_source_name = ""
+        self._micro_gate_stop = threading.Event()
+
+    def _apply_micro_hard_gate_runtime(self) -> None:
+        if not self.micro_hard_gate_enabled():
+            self._stop_micro_hard_gate_monitor()
+            self._set_ksh_mic_physical_gate_open(True)
+            return
+
+        source_name = self._ksh_mic_physical_source_name()
+        if not source_name:
+            self._set_ksh_mic_physical_gate_open(False)
+            return
+
+        if (
+            self._micro_gate_thread is not None
+            and self._micro_gate_thread.is_alive()
+            and self._micro_gate_source_name == source_name
+        ):
+            return
+
+        self._stop_micro_hard_gate_monitor()
+        self._micro_gate_source_name = source_name
+        self._micro_gate_stop.clear()
+        self._micro_gate_open = False
+        self._set_ksh_mic_physical_gate_open(False)
+
+        self._micro_gate_thread = threading.Thread(
+            target=self._micro_hard_gate_worker,
+            args=(source_name, self._micro_gate_stop),
+            name="KSHMicroHardGate",
+            daemon=True,
+        )
+        self._micro_gate_thread.start()
+
+    def _micro_hard_gate_worker(self, source_name: str, stop_event: threading.Event) -> None:
+        import struct
+
+        cmd = [
+            "parec",
+            f"--device={source_name}",
+            "--format=s16le",
+            "--rate=48000",
+            "--channels=1",
+            "--latency-msec=25",
+        ]
+
+        process = None
+        try:
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                bufsize=0,
+            )
+            self._micro_gate_process = process
+            self._micro_gate_last_above = 0.0
+            self._micro_gate_last_apply = 0.0
+            self._set_ksh_mic_physical_gate_open(False)
+
+            while not stop_event.is_set():
+                if process.stdout is None:
+                    break
+
+                data = process.stdout.read(2048)
+                if not data:
+                    break
+
+                sample_count = len(data) // 2
+                if sample_count <= 0:
+                    continue
+
+                try:
+                    samples = struct.unpack("<" + ("h" * sample_count), data[: sample_count * 2])
+                    raw_peak = max(abs(sample) for sample in samples) / 32768.0
+                except Exception:
+                    raw_peak = 0.0
+
+                # Gate follows the user-facing MICRO input volume.
+                # Only KSH_MIC_PHYSICAL is muted/unmuted: soundboard and
+                # MICRO Injection routes into micro_bus are not gated.
+                peak = raw_peak * self._micro_channel_volume_scalar()
+
+                now = time.monotonic()
+                threshold = self._micro_gate_effective_threshold()
+                open_threshold = threshold
+                close_threshold = max(0.0005, threshold * 0.58)
+
+                if peak >= open_threshold:
+                    self._micro_gate_last_above = now
+                    if not self._micro_gate_open and (now - self._micro_gate_last_apply) >= 0.030:
+                        self._set_ksh_mic_physical_gate_open(True)
+                        self._micro_gate_last_apply = now
+                elif self._micro_gate_open and peak < close_threshold:
+                    if (now - self._micro_gate_last_above) >= 0.145 and (now - self._micro_gate_last_apply) >= 0.060:
+                        self._set_ksh_mic_physical_gate_open(False)
+                        self._micro_gate_last_apply = now
+
+        except Exception as exc:
+            try:
+                self.status_changed.emit(f"MICRO hard gate monitor stopped — {exc}")
+            except Exception:
+                pass
+        finally:
+            if process is not None:
+                try:
+                    process.terminate()
+                except Exception:
+                    pass
+            if self._micro_gate_process is process:
+                self._micro_gate_process = None
+
     def micro_injection_channels(self) -> set[str]:
         allowed = {"all", "game", "chat", "media", "more"}
         raw = getattr(self.settings, "glass_micro_injection_channels", None)
@@ -2065,6 +2285,7 @@ class GlassBackendController(QObject):
         self._load_soundboard_output_loopback(self._soundboard_output_config())
         self._load_soundboard_micro_loopback(self._soundboard_send_to_micro_config())
         self._load_return_mic_micro_loopback(bool(self._return_mic_source_config()))
+        self._apply_micro_hard_gate_runtime()
         self.apply_micro_injection_runtime_routes()
         self.normalize_channel_playback_routes()
 
@@ -3016,6 +3237,89 @@ QComboBox {
 QComboBox::drop-down {
     border: none;
     width: 18px;
+}
+
+
+
+
+
+
+
+
+QFrame#channelCard[hardGate="true"] {
+    background: rgba(92, 34, 190, 70);
+    border: none;
+}
+
+QFrame#channelCard[hardGate="true"]:hover {
+    background: rgba(116, 44, 220, 86);
+    border: none;
+}
+
+QLabel#valueLabel {
+    min-height: 19px;
+    max-height: 19px;
+    font-size: 11px;
+}
+
+QPushButton#gateButton {
+    min-width: 39px;
+    max-width: 39px;
+    min-height: 18px;
+    max-height: 18px;
+    border-radius: 7px;
+    border: none;
+    background: rgba(235, 250, 255, 14);
+    color: rgba(238, 250, 255, 192);
+    font-size: 8px;
+    font-weight: 700;
+    padding: 0px;
+    margin: 0px;
+}
+
+QPushButton#gateButton:hover {
+    background: rgba(235, 250, 255, 24);
+    border: none;
+}
+
+QPushButton#gateButton[gateActive="true"] {
+    background: rgba(255, 178, 24, 54);
+    border: none;
+    color: rgba(255, 250, 232, 220);
+}
+
+QPushButton#gateButton[gateActive="true"]:hover {
+    background: rgba(255, 196, 48, 70);
+    border: none;
+}
+
+/* Same geometry as the normal Mute button.
+   Only the icon font and colors change in Gate edit mode. */
+QPushButton#muteButton[gateToggle="true"] {
+    border: none;
+    background: rgba(235, 250, 255, 14);
+    color: rgba(238, 250, 255, 192);
+    font-size: 13px;
+    font-weight: 750;
+}
+
+QPushButton#muteButton[gateToggle="true"]:hover {
+    background: rgba(235, 250, 255, 24);
+    border: none;
+}
+
+QPushButton#muteButton[gateToggle="true"]:checked,
+QPushButton#muteButton[gateToggle="true"][gateActive="true"] {
+    background: rgba(72, 255, 142, 58);
+    border: none;
+    color: rgba(232, 255, 242, 225);
+    font-size: 13px;
+    font-weight: 750;
+}
+
+QPushButton#muteButton[gateToggle="true"][gateActive="true"]:hover {
+    background: rgba(92, 255, 162, 76);
+    border: none;
 }
 
 QSlider::groove:vertical {
@@ -4280,6 +4584,11 @@ class ChannelCard(QFrame):
         mute_callback=None,
         device_callback=None,
         current_device: str | None = None,
+        hard_gate_available: bool = False,
+        hard_gate_enabled: bool = False,
+        hard_gate_threshold: int = 12,
+        hard_gate_toggle_callback=None,
+        hard_gate_threshold_callback=None,
     ):
         super().__init__()
         self.channel_key = str(channel_key or "").strip()
@@ -4287,6 +4596,15 @@ class ChannelCard(QFrame):
         self._volume_live_callback = volume_live_callback
         self._mute_callback = mute_callback
         self._device_callback = device_callback
+        self._hard_gate_available = bool(hard_gate_available and self.channel_key == "micro")
+        self._hard_gate_enabled = bool(hard_gate_enabled and self._hard_gate_available)
+        self._hard_gate_threshold = max(0, min(100, int(hard_gate_threshold)))
+        self._hard_gate_edit_mode = False
+        self._hard_gate_toggle_callback = hard_gate_toggle_callback
+        self._hard_gate_threshold_callback = hard_gate_threshold_callback
+        self._normal_volume_value = int(value)
+        self._normal_muted_value = False
+        self._last_sent_gate_threshold: int | None = None
         self._syncing_controls = False
 
         # UI-first slider model:
@@ -4305,6 +4623,7 @@ class ChannelCard(QFrame):
         self.value = int(value)
         self.setObjectName("channelCard")
         self.setProperty("muted", "false")
+        self.setProperty("hardGate", "false")
         self.setMinimumWidth(78)
         self.setMaximumWidth(168)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -4323,6 +4642,14 @@ class ChannelCard(QFrame):
         name_label.setObjectName("channelName")
         name_label.setAlignment(Qt.AlignCenter)
         root.addWidget(name_label)
+
+        self.gate_btn = QPushButton("Gate", self)
+        self.gate_btn.setObjectName("gateButton")
+        self.gate_btn.setFixedSize(39, 18)
+        self.gate_btn.setVisible(self._hard_gate_available)
+        self.gate_btn.setToolTip("Edit MICRO input hard gate. Gate only affects the physical MICRO input.")
+        self.gate_btn.clicked.connect(self._toggle_hard_gate_edit_mode)
+        self.gate_btn.raise_()
 
         self.device_select = SelectButton(devices, current_device or (devices[0] if devices else ""), self._device_changed)
         self.device_select.setMinimumWidth(0)
@@ -4356,13 +4683,46 @@ class ChannelCard(QFrame):
         self.value_label = QLabel(f"{value}%")
         self.value_label.setObjectName("volumeValue")
         self.value_label.setAlignment(Qt.AlignCenter)
+        self.value_label.setFixedHeight(19)
+        self.value_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
         root.addWidget(self.value_label)
+
+        self.gate_enable_btn = QPushButton("Gate OFF")
+        self.gate_enable_btn.setObjectName("gateEnableButton")
+        self.gate_enable_btn.setCheckable(True)
+        self.gate_enable_btn.setVisible(False)
+        self.gate_enable_btn.toggled.connect(self._on_hard_gate_enabled_changed)
 
         self.mute_btn = QPushButton("Mute")
         self.mute_btn.setObjectName("muteButton")
         self.mute_btn.setCheckable(True)
+        self.mute_btn.setFixedHeight(28)
         self.mute_btn.toggled.connect(self._on_muted_changed)
         root.addWidget(self.mute_btn)
+
+        if self._hard_gate_available:
+            self.gate_enable_btn.setChecked(self._hard_gate_enabled)
+            self._apply_hard_gate_visual_state(sync_slider=True)
+
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._position_gate_button()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self._position_gate_button()
+
+    def _position_gate_button(self) -> None:
+        button = getattr(self, "gate_btn", None)
+        if button is None:
+            return
+        try:
+            button.move(max(0, self.width() - button.width() - 7), 7)
+            button.raise_()
+        except Exception:
+            pass
+
 
     def _set_icon(self, icon_label: QLabel, icon: str) -> None:
         icon_path = Path(str(icon or ""))
@@ -4380,35 +4740,64 @@ class ChannelCard(QFrame):
         self.left_meter.setVisible(visible)
         self.right_meter.setVisible(visible)
 
+
     def _set_volume_label(self, value: int) -> None:
-        self.value = max(0, min(100, int(value)))
+        clamped = max(0, min(100, int(value)))
+        if self._hard_gate_available and self._hard_gate_edit_mode:
+            self._hard_gate_threshold = clamped
+            self.value_label.setText(f"Gate {self._hard_gate_threshold}%")
+            return
+
+        self.value = clamped
+        self._normal_volume_value = clamped
         self.value_label.setText(f"{self.value}%")
 
     def _send_volume_callback_value(self, value: int) -> bool:
-        if self._syncing_controls or self._volume_callback is None or not self.channel_key:
+        if self._syncing_controls or not self.channel_key:
             return True
 
         try:
-            volume = max(0, min(100, int(value)))
+            clamped = max(0, min(100, int(value)))
         except Exception:
             return False
 
-        if self._last_sent_volume_value == volume:
+        if self._hard_gate_available and self._hard_gate_edit_mode:
+            if self._hard_gate_threshold_callback is None:
+                return True
+            if self._last_sent_gate_threshold == clamped:
+                return True
+            self._last_sent_gate_threshold = clamped
+            ok = bool(self._hard_gate_threshold_callback(clamped))
+            if not ok:
+                self.setToolTip("K-Sounds hard gate control is not reachable.")
+            return ok
+
+        if self._volume_callback is None:
             return True
 
-        self._last_sent_volume_value = volume
-        ok = bool(self._volume_callback(self.channel_key, volume))
+        if self._last_sent_volume_value == clamped:
+            return True
+
+        self._last_sent_volume_value = clamped
+        ok = bool(self._volume_callback(self.channel_key, clamped))
         if not ok:
             self.setToolTip("K-Sounds real app IPC is not reachable.")
         return ok
 
+
     def _queue_volume_callback(self, value: int, *, immediate: bool = False) -> None:
-        if self._syncing_controls or self._volume_callback is None or not self.channel_key:
+        if self._syncing_controls or not self.channel_key:
+            return
+        if not (self._hard_gate_available and self._hard_gate_edit_mode) and self._volume_callback is None:
             return
 
         self._pending_volume_value = max(0, min(100, int(value)))
 
         if self.slider.isSliderDown() and not immediate:
+            # Gate edit mode: the slider edits a saved threshold, not live volume.
+            if self._hard_gate_available and self._hard_gate_edit_mode:
+                return
+
             # Silent live apply only updates the audio path. It does not emit
             # overlay/status/save churn while the pointer is moving.
             if self._volume_live_callback is not None and not self._volume_apply_timer.isActive():
@@ -4472,13 +4861,135 @@ class ChannelCard(QFrame):
         self.style().polish(self)
         self.update()
 
+
+    def _gate_button_text(self) -> str:
+        return "Gate"
+
+
+
+    def _apply_hard_gate_visual_state(self, *, sync_slider: bool = False) -> None:
+        if not self._hard_gate_available:
+            return
+
+        # Full card yellow only while editing Gate.
+        self.setProperty("hardGate", "true" if self._hard_gate_edit_mode else "false")
+        if self._hard_gate_edit_mode:
+            self.setStyleSheet("""
+                QFrame#channelCard {
+                    background: rgba(92, 34, 190, 70);
+                    border: none;
+                    border-radius: 15px;
+                }
+                QFrame#channelCard:hover {
+                    background: rgba(116, 44, 220, 86);
+                    border: none;
+                }
+            """)
+        else:
+            self.setStyleSheet("")
+
+        self.gate_btn.setProperty("gateActive", "true" if self._hard_gate_enabled else "false")
+        self.gate_btn.setText("Gate")
+
+        self.gate_enable_btn.setVisible(False)
+
+        if self._hard_gate_edit_mode:
+            self.slider.setToolTip("MICRO hard gate threshold")
+            value = self._hard_gate_threshold
+            label = f"Gate {value}%"
+
+            self.mute_btn.setProperty("gateToggle", "true")
+            self.mute_btn.setProperty("gateActive", "true" if self._hard_gate_enabled else "false")
+            self.mute_btn.blockSignals(True)
+            self.mute_btn.setChecked(bool(self._hard_gate_enabled))
+            self.mute_btn.blockSignals(False)
+            self.mute_btn.setText("⏻")
+            self.mute_btn.setToolTip("Enable or disable the MICRO input hard gate.")
+        else:
+            self.slider.setToolTip("MICRO input volume")
+            value = self._normal_volume_value
+            label = f"{value}%"
+
+            self.mute_btn.setProperty("gateToggle", "false")
+            self.mute_btn.setProperty("gateActive", "false")
+            self.mute_btn.blockSignals(True)
+            self.mute_btn.setChecked(bool(self._normal_muted_value))
+            self.mute_btn.blockSignals(False)
+            self.mute_btn.setText("Muted" if self._normal_muted_value else "Mute")
+            self.mute_btn.setToolTip("Mute MICRO.")
+            self.setProperty("muted", "true" if self._normal_muted_value else "false")
+
+        if sync_slider:
+            self._syncing_controls = True
+            try:
+                self.slider.blockSignals(True)
+                self.slider.setValue(max(0, min(100, int(value))))
+                self.slider.blockSignals(False)
+                self.value_label.setText(label)
+            finally:
+                self._syncing_controls = False
+        else:
+            self.value_label.setText(label)
+
+        for widget in (self, self.gate_btn, self.mute_btn):
+            widget.style().unpolish(widget)
+            widget.style().polish(widget)
+            widget.update()
+        self._position_gate_button()
+
+
+    def _toggle_hard_gate_edit_mode(self) -> None:
+        if not self._hard_gate_available:
+            return
+
+        if self._hard_gate_edit_mode:
+            self._flush_pending_volume_callback()
+            self._hard_gate_edit_mode = False
+        else:
+            self._normal_volume_value = int(self.value)
+            self._normal_muted_value = bool(self.mute_btn.isChecked())
+            self._last_sent_gate_threshold = None
+            self._hard_gate_edit_mode = True
+
+        self._apply_hard_gate_visual_state(sync_slider=True)
+
+
+    def _on_hard_gate_enabled_changed(self, checked: bool) -> None:
+        if self._syncing_controls or not self._hard_gate_available:
+            return
+
+        self._hard_gate_enabled = bool(checked)
+        self._apply_hard_gate_visual_state(sync_slider=False)
+
+        if self._hard_gate_toggle_callback is not None:
+            ok = bool(self._hard_gate_toggle_callback(bool(checked)))
+            if not ok:
+                self.setToolTip("K-Sounds hard gate toggle is not reachable.")
+
+
+
     def _on_muted_changed(self, checked: bool) -> None:
+        if self._hard_gate_available and self._hard_gate_edit_mode:
+            if self._syncing_controls:
+                return
+
+            self._hard_gate_enabled = bool(checked)
+            self._apply_hard_gate_visual_state(sync_slider=False)
+
+            if self._hard_gate_toggle_callback is not None:
+                ok = bool(self._hard_gate_toggle_callback(bool(checked)))
+                if not ok:
+                    self.setToolTip("K-Sounds hard gate toggle is not reachable.")
+            return
+
+        self._normal_muted_value = bool(checked)
         self._apply_muted_style(bool(checked))
         if self._syncing_controls or self._mute_callback is None or not self.channel_key:
             return
         ok = bool(self._mute_callback(self.channel_key, bool(checked)))
         if not ok:
             self.setToolTip("K-Sounds real app IPC is not reachable.")
+
 
     def _device_changed(self, label: str) -> None:
         if getattr(self, "_syncing_controls", False):
@@ -4502,26 +5013,59 @@ class ChannelCard(QFrame):
         finally:
             self._syncing_controls = False
 
-    def sync_from_saved_state(self, *, volume: int | None = None, muted: bool | None = None) -> None:
+
+
+    def sync_from_saved_state(
+        self,
+        *,
+        volume: int | None = None,
+        muted: bool | None = None,
+        hard_gate_enabled: bool | None = None,
+        hard_gate_threshold: int | None = None,
+    ) -> None:
         self._syncing_controls = True
         try:
-            if volume is not None and not self.slider.isSliderDown():
-                value = max(0, min(100, int(volume)))
-                self.slider.blockSignals(True)
-                self.slider.setValue(value)
-                self.slider.blockSignals(False)
-                self._set_volume_label(value)
+            if hard_gate_threshold is not None and self._hard_gate_available:
+                try:
+                    self._hard_gate_threshold = max(0, min(100, int(hard_gate_threshold)))
+                except Exception:
+                    self._hard_gate_threshold = 12
+
+            if hard_gate_enabled is not None and self._hard_gate_available:
+                self._hard_gate_enabled = bool(hard_gate_enabled)
+
+            if volume is not None:
+                try:
+                    value = max(0, min(100, int(volume)))
+                except Exception:
+                    value = self.value
+                self.value = value
+                self._normal_volume_value = value
                 self._last_sent_volume_value = value
                 self._last_live_volume_value = None
 
             if muted is not None:
-                checked = bool(muted)
+                self._normal_muted_value = bool(muted)
+
+            current = self._hard_gate_threshold if (
+                self._hard_gate_available and self._hard_gate_edit_mode
+            ) else self._normal_volume_value
+
+            self.slider.blockSignals(True)
+            self.slider.setValue(max(0, min(100, int(current))))
+            self.slider.blockSignals(False)
+
+            if self._hard_gate_available:
+                self._apply_hard_gate_visual_state(sync_slider=False)
+            else:
                 self.mute_btn.blockSignals(True)
-                self.mute_btn.setChecked(checked)
+                self.mute_btn.setChecked(bool(self._normal_muted_value))
                 self.mute_btn.blockSignals(False)
-                self._apply_muted_style(checked)
+                self._apply_muted_style(bool(self._normal_muted_value))
+                self.value_label.setText(f"{self.value}%")
         finally:
             self._syncing_controls = False
+
 
     def set_meter_levels(self, left: float, right: float) -> None:
         self.left_meter.set_level(left)
@@ -8445,6 +8989,7 @@ class PreviewWindow(QMainWindow):
             name, icon, devices, fallback_value, channel_key = channel
             value, muted = self._channel_state_for_card(channel_key, fallback_value)
             card_devices = self._channel_device_choices(channel_key, devices)
+            hard_gate_available = channel_key == "micro"
             card = ChannelCard(
                 name,
                 icon,
@@ -8456,8 +9001,18 @@ class PreviewWindow(QMainWindow):
                 mute_callback=self._set_channel_muted,
                 device_callback=self._set_channel_device,
                 current_device=self._channel_device_label(channel_key, card_devices),
+                hard_gate_available=hard_gate_available,
+                hard_gate_enabled=self.backend_controller.micro_hard_gate_enabled() if hard_gate_available else False,
+                hard_gate_threshold=self.backend_controller.micro_hard_gate_threshold() if hard_gate_available else 12,
+                hard_gate_toggle_callback=self._set_micro_hard_gate_enabled if hard_gate_available else None,
+                hard_gate_threshold_callback=self._set_micro_hard_gate_threshold if hard_gate_available else None,
             )
-            card.sync_from_saved_state(volume=value, muted=muted)
+            card.sync_from_saved_state(
+                volume=value,
+                muted=muted,
+                hard_gate_enabled=self.backend_controller.micro_hard_gate_enabled() if hard_gate_available else None,
+                hard_gate_threshold=self.backend_controller.micro_hard_gate_threshold() if hard_gate_available else None,
+            )
             self.channel_cards.append(card)
             cards_row.addWidget(card)
 
@@ -8967,6 +9522,12 @@ QFrame#channelCard[muted="true"]:hover {{
             channel_key,
             max(0, min(100, int(value))),
         )
+
+    def _set_micro_hard_gate_enabled(self, enabled: bool) -> bool:
+        return self.backend_controller.set_micro_hard_gate_enabled(bool(enabled))
+
+    def _set_micro_hard_gate_threshold(self, value: int) -> bool:
+        return self.backend_controller.set_micro_hard_gate_threshold(max(0, min(100, int(value))))
 
     def _set_channel_muted(self, channel_key: str, muted: bool) -> bool:
         return self.backend_controller.set_channel_muted(channel_key, bool(muted))
