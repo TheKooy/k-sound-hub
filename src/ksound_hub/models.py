@@ -191,6 +191,8 @@ class AppSettings:
     glass_background_saturation: int = 72
     glass_background_darkness: int = 55
     glass_opacity: int = 70
+    glass_micro_injection_channels: list[str] = field(default_factory=list)
+    glass_micro_injection_volume: int = 125
     channels: list[ChannelConfig] = field(default_factory=list)
 
     @classmethod
@@ -231,6 +233,22 @@ class AppSettings:
         if close_to_tray is None:
             close_to_tray = True
 
+        allowed_micro_injection = {"all", "game", "chat", "media", "more"}
+        raw_micro_injection = data.get("glass_micro_injection_channels", [])
+        if not isinstance(raw_micro_injection, list):
+            raw_micro_injection = []
+        glass_micro_injection_channels = sorted({
+            str(item).strip().lower()
+            for item in raw_micro_injection
+            if str(item).strip().lower() in allowed_micro_injection
+        })
+
+        try:
+            glass_micro_injection_volume = int(data.get("glass_micro_injection_volume", 125))
+        except Exception:
+            glass_micro_injection_volume = 125
+        glass_micro_injection_volume = max(0, min(200, glass_micro_injection_volume))
+
         return cls(
             overlay_enabled=bool(data.get("overlay_enabled", False)),
             visualizer_enabled=bool(data.get("visualizer_enabled", True)),
@@ -243,6 +261,8 @@ class AppSettings:
             glass_background_saturation=max(0, min(100, int(data.get("glass_background_saturation", 72)))),
             glass_background_darkness=max(0, min(100, int(data.get("glass_background_darkness", 55)))),
             glass_opacity=max(0, min(100, int(data.get("glass_opacity", 70)))),
+            glass_micro_injection_channels=glass_micro_injection_channels,
+            glass_micro_injection_volume=glass_micro_injection_volume,
             channels=channels,
         )
 
@@ -259,5 +279,7 @@ class AppSettings:
             "glass_background_saturation": self.glass_background_saturation,
             "glass_background_darkness": self.glass_background_darkness,
             "glass_opacity": self.glass_opacity,
+            "glass_micro_injection_channels": list(self.glass_micro_injection_channels),
+            "glass_micro_injection_volume": max(0, min(200, int(self.glass_micro_injection_volume))),
             "channels": [channel.to_dict() for channel in self.channels],
         }

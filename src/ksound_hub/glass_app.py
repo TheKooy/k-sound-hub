@@ -263,7 +263,7 @@ GLASS_METER_INPUT_SCALE = {
     "media": 0.48,
     "more": 0.48,
     "return-mic": 0.48,
-    "micro": 0.22,
+    "micro": 0.32,
 }
 
 
@@ -1881,12 +1881,108 @@ class GlassBackendController(QObject):
         self._write_settings_document(settings)
 
     def micro_injection_channels(self) -> set[str]:
-        data = self._read_settings_document()
-        raw = data.get("glass_micro_injection_channels", [])
+        allowed = {"all", "game", "chat", "media", "more"}
+        raw = getattr(self.settings, "glass_micro_injection_channels", None)
+        if raw is None:
+            data = self._read_settings_document()
+            raw = data.get("glass_micro_injection_channels", [])
         if not isinstance(raw, list):
             raw = []
-        allowed = {"all", "game", "chat", "media", "more"}
         return {str(item).strip().lower() for item in raw if str(item).strip().lower() in allowed}
+
+    def micro_injection_volume(self) -> int:
+        raw = getattr(self.settings, "glass_micro_injection_volume", None)
+        if raw is None:
+            data = self._read_settings_document()
+            raw = data.get("glass_micro_injection_volume", 125)
+        try:
+            value = int(raw)
+        except Exception:
+            value = 125
+        return max(0, min(200, value))
+
+    def set_micro_injection_volume(self, volume: int) -> bool:
+        try:
+            value = int(volume)
+        except Exception:
+            return False
+        value = max(0, min(200, value))
+
+        self.settings.glass_micro_injection_volume = value
+        self.settings_store.save(self.settings)
+
+        self.apply_micro_injection_runtime_routes()
+        self.status_changed.emit(f"MICRO injection volume: {value}%")
+        return True
+
+    def _micro_inject_sink_input_ids(self, channel_key: str) -> list[str]:
+        key = str(channel_key or "").strip().lower()
+        if not key:
+            return []
+        return self._sink_inputs_matching_tokens([f"k-sound-hub-micro-inject-{key}"])
+
+    def _sink_input_volume_percent(self, sink_input_id: str) -> int | None:
+        wanted = str(sink_input_id).strip()
+        if not wanted:
+            return None
+
+        result = self._pactl("list", "sink-inputs")
+        if result.returncode != 0:
+            return None
+
+        current = ""
+        in_target = False
+        for raw_line in result.stdout.splitlines():
+            line = raw_line.strip()
+            if line.startswith("Sink Input #"):
+                current = line.split("#", 1)[1].strip()
+                in_target = current == wanted
+                continue
+
+            if not in_target:
+                continue
+
+            if line.startswith("Volume:"):
+                import re
+                match = re.search(r"/\s*(\d+)%\s*/", line)
+                if match:
+                    try:
+                        return int(match.group(1))
+                    except Exception:
+                        return None
+        return None
+
+    def _set_micro_inject_live_volume(self, channel_key: str, volume_percent: int, *, smooth: bool = True) -> None:
+        target = max(0, min(200, int(volume_percent)))
+
+        for sink_input_id in self._micro_inject_sink_input_ids(channel_key):
+            if not smooth:
+                self._pactl("set-sink-input-volume", str(sink_input_id), f"{target}%")
+                continue
+
+            current = self._sink_input_volume_percent(str(sink_input_id))
+            if current is None:
+                current = 0 if target > 0 else target
+
+            delta = target - current
+            if abs(delta) <= 2:
+                # Idempotent refresh: do not re-apply the same Pulse/PipeWire
+                # sink-input volume. Some loopback paths can pop even when the
+                # requested value is identical to the current value.
+                continue
+
+            steps = max(6, min(24, int(abs(delta) / 7) + 1))
+            for index in range(1, steps + 1):
+                t = index / steps
+                # Smoothstep easing avoids a hard first/last jump.
+                eased = t * t * (3.0 - 2.0 * t)
+                value = int(round(current + (delta * eased)))
+                self._pactl("set-sink-input-volume", str(sink_input_id), f"{value}%")
+                time.sleep(0.012)
+
+    def _silence_micro_inject_before_unload(self, channel_key: str) -> None:
+        self._set_micro_inject_live_volume(channel_key, 0, smooth=True)
+        time.sleep(0.08)
 
     def set_micro_injection_channel_state(self, channel_key: str, enabled: bool) -> bool:
         key = str(channel_key or "").strip().lower()
@@ -1900,9 +1996,8 @@ class GlassBackendController(QObject):
         else:
             current.discard(key)
 
-        data = self._read_settings_document()
-        data["glass_micro_injection_channels"] = sorted(current)
-        self._write_settings_document(data)
+        self.settings.glass_micro_injection_channels = sorted(current)
+        self.settings_store.save(self.settings)
 
         # Immediate and stable: only add/remove the changed channel loopback state.
         self.apply_micro_injection_runtime_routes()
@@ -1912,8 +2007,11 @@ class GlassBackendController(QObject):
     def apply_micro_injection_runtime_routes(self) -> None:
         enabled = self.micro_injection_channels()
         allowed = {"all", "game", "chat", "media", "more"}
+        volume = self.micro_injection_volume()
 
         existing: dict[str, str] = {}
+        duplicate_ids: list[tuple[str, str]] = []
+
         for line in self._pulse_modules():
             lowered = line.lower()
             parts = line.split("\t", 2)
@@ -1932,26 +2030,34 @@ class GlassBackendController(QObject):
             if not matched_key:
                 continue
 
-            if matched_key in enabled and matched_key not in existing:
+            if matched_key not in existing:
                 existing[matched_key] = parts[0]
             else:
-                self._pactl("unload-module", parts[0])
+                duplicate_ids.append((matched_key, parts[0]))
 
-        for key in sorted(enabled):
-            if key in existing:
-                continue
+        # Remove only duplicates/stale clones. Normal OFF state keeps the one
+        # valid loopback alive at 0%, avoiding load/unload pops on every toggle.
+        for key, module_id in duplicate_ids:
+            self._silence_micro_inject_before_unload(key)
+            self._pactl("unload-module", module_id)
 
-            self._pactl(
-                "load-module",
-                "module-loopback",
-                f"source={key}.monitor",
-                "sink=micro_bus",
-                "latency_msec=20",
-                "source_dont_move=true",
-                "sink_dont_move=true",
-                "channels=2",
-                f"sink_input_properties=media.name=K-Sound-Hub-Micro-Inject-{key}",
-            )
+        for key in sorted(allowed):
+            if key not in existing:
+                self._pactl(
+                    "load-module",
+                    "module-loopback",
+                    f"source={key}.monitor",
+                    "sink=micro_bus",
+                    "latency_msec=40",
+                    "source_dont_move=true",
+                    "sink_dont_move=true",
+                    "channels=2",
+                    f"sink_input_properties=media.name=K-Sound-Hub-Micro-Inject-{key}",
+                )
+                time.sleep(0.04)
+
+            target_volume = volume if key in enabled else 0
+            self._set_micro_inject_live_volume(key, target_volume)
 
     def apply_glass_runtime_routes(self) -> None:
         self._sync_legacy_linked_channels_off()
@@ -4577,6 +4683,7 @@ class PermanentRouteCard(QFrame):
         meta: str,
         *,
         checks: list[tuple[str, bool, object]] | None = None,
+        sliders: list[tuple[str, int, int, int, object]] | None = None,
         select_items: list[str] | None = None,
         select_current: str | None = None,
         select_callback=None,
@@ -4646,6 +4753,61 @@ class PermanentRouteCard(QFrame):
 
             self.setMinimumHeight(max(self.minimumHeight(), 132 if len(checks) > 2 else 78))
             root.addLayout(checks_grid)
+
+        if sliders:
+            for label_text, value, minimum, maximum, callback in sliders:
+                slider_row = QHBoxLayout()
+                slider_row.setContentsMargins(0, 0, 0, 0)
+                slider_row.setSpacing(8)
+
+                label = QLabel(label_text)
+                label.setObjectName("appRouteMeta")
+                slider_row.addWidget(label)
+
+                value_label = QLabel(f"{int(value)}%")
+                value_label.setObjectName("appRouteMeta")
+                value_label.setMinimumWidth(42)
+                value_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+
+                slider = QSlider(Qt.Horizontal)
+                slider.setMinimum(int(minimum))
+                slider.setMaximum(int(maximum))
+                slider.setValue(max(int(minimum), min(int(maximum), int(value))))
+                slider.setToolTip(label_text)
+
+                apply_timer = QTimer(slider)
+                apply_timer.setSingleShot(True)
+                apply_timer.setInterval(260)
+
+                def apply_value(sl=slider, cb=callback):
+                    if cb is not None:
+                        cb(int(sl.value()))
+
+                apply_timer.timeout.connect(apply_value)
+
+                def on_value_changed(raw, sl=slider, value_node=value_label, timer=apply_timer):
+                    value_node.setText(f"{int(raw)}%")
+                    # Avoid hammering PipeWire/pactl with many overlapping volume ramps
+                    # while the user drags quickly. The label remains live; audio applies
+                    # when the slider is released, or after a short debounce for non-drag
+                    # changes such as keyboard/page clicks.
+                    if sl.isSliderDown():
+                        timer.stop()
+                    else:
+                        timer.start()
+
+                def on_slider_released(timer=apply_timer):
+                    timer.stop()
+                    timer.start()
+
+                slider.valueChanged.connect(on_value_changed)
+                slider.sliderReleased.connect(on_slider_released)
+
+                slider_row.addWidget(slider, 1)
+                slider_row.addWidget(value_label)
+                root.addLayout(slider_row)
+
+            self.setMinimumHeight(max(self.minimumHeight(), 166))
 
 
 
@@ -4797,12 +4959,23 @@ class AppsPanel(QWidget):
             ("MORE", "more" in injected, lambda value, key="more": self._set_micro_injection_channel(key, value)),
         ]
 
+        injection_volume = self.backend_controller.micro_injection_volume()
+
         self.permanent_layout.addWidget(
             PermanentRouteCard(
                 "🎙",
                 "MICRO Injection",
                 "Send selected channels into the MICRO output.",
                 checks=injection_checks,
+                sliders=[
+                    (
+                        "Inject volume",
+                        injection_volume,
+                        0,
+                        200,
+                        self._set_micro_injection_volume,
+                    ),
+                ],
             )
         )
 
@@ -4860,6 +5033,11 @@ class AppsPanel(QWidget):
             return
         self.backend_controller.set_micro_injection_channel_state(channel_key, bool(enabled))
         self._build_permanent_routes()
+
+    def _set_micro_injection_volume(self, volume: int) -> None:
+        if self.backend_controller is None:
+            return
+        self.backend_controller.set_micro_injection_volume(int(volume))
 
     def _clear_streams(self) -> None:
         while self.streams_layout.count():
