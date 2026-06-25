@@ -3247,12 +3247,12 @@ QComboBox::drop-down {
 
 
 QFrame#channelCard[hardGate="true"] {
-    background: rgba(92, 34, 190, 70);
+    background: rgba(56, 18, 128, 78);
     border: none;
 }
 
 QFrame#channelCard[hardGate="true"]:hover {
-    background: rgba(116, 44, 220, 86);
+    background: rgba(76, 28, 166, 96);
     border: none;
 }
 
@@ -4876,12 +4876,12 @@ class ChannelCard(QFrame):
         if self._hard_gate_edit_mode:
             self.setStyleSheet("""
                 QFrame#channelCard {
-                    background: rgba(92, 34, 190, 70);
+                    background: rgba(56, 18, 128, 78);
                     border: none;
                     border-radius: 15px;
                 }
                 QFrame#channelCard:hover {
-                    background: rgba(116, 44, 220, 86);
+                    background: rgba(76, 28, 166, 96);
                     border: none;
                 }
             """)
