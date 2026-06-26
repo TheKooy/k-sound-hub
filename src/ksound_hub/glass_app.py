@@ -3175,6 +3175,24 @@ QLabel#appRouteArrow {
     font-weight: 900;
 }
 
+QPushButton#appRouteCollapseButton {
+    min-width: 26px;
+    max-width: 26px;
+    min-height: 24px;
+    max-height: 24px;
+    background: rgba(60, 145, 210, 45);
+    border: none;
+    border-radius: 12px;
+    color: rgba(135, 210, 255, 220);
+    font-size: 14px;
+    font-weight: 900;
+    padding: 0px;
+}
+
+QPushButton#appRouteCollapseButton:hover {
+    background: rgba(70, 170, 235, 75);
+}
+
 QPushButton#soundPadEmoji {
     min-width: 32px;
     max-width: 32px;
@@ -4152,6 +4170,47 @@ def _plain_missing_device_label(label: str) -> str:
         text = text[: -len(DEVICE_NOT_FOUND_SUFFIX)]
     return text.strip()
 
+
+
+STYLE += """
+/* Soundboard simple dashboard v2 */
+QPushButton#soundboardPanicButton {
+    min-height: 43px;
+    max-height: 43px;
+    min-width: 220px;
+    max-width: 340px;
+    border-radius: 14px;
+    border: 1px solid rgba(255, 90, 120, 125);
+    background: rgba(150, 28, 45, 92);
+    color: rgba(255, 235, 238, 245);
+    font-size: 14px;
+    font-weight: 900;
+    padding: 3px 12px;
+}
+
+QPushButton#soundboardPanicButton:hover {
+    background: rgba(190, 38, 58, 125);
+    border: 1px solid rgba(255, 125, 145, 170);
+}
+
+QPushButton#soundboardSmallIconButton {
+    min-width: 34px;
+    max-width: 34px;
+    min-height: 32px;
+    max-height: 32px;
+    border-radius: 13px;
+    background: rgba(60, 145, 210, 45);
+    border: 1px solid rgba(135, 210, 255, 70);
+    color: rgba(220, 245, 255, 235);
+    font-size: 15px;
+    font-weight: 900;
+    padding: 0px;
+}
+
+QPushButton#soundboardSmallIconButton:hover {
+    background: rgba(70, 170, 235, 75);
+}
+"""
 
 class SelectButton(QPushButton):
     def __init__(self, items: list[str], current: str | None = None, on_change=None, parent=None):
@@ -5231,11 +5290,20 @@ class PermanentRouteCard(QFrame):
         select_items: list[str] | None = None,
         select_current: str | None = None,
         select_callback=None,
+        collapsible: bool = False,
+        expanded: bool = True,
+        expanded_changed=None,
     ):
         super().__init__()
         self.setObjectName("appsRouteCard")
         self.setMinimumHeight(66)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+
+        self._collapsible = bool(collapsible)
+        self._expanded = bool(expanded) if self._collapsible else True
+        self._expanded_changed = expanded_changed
+        self._open_minimum_height = 66
+        self._collapse_button = None
 
         root = QVBoxLayout(self)
         root.setContentsMargins(9, 8, 9, 8)
@@ -5264,7 +5332,20 @@ class PermanentRouteCard(QFrame):
         text_col.addWidget(meta_label)
 
         header.addLayout(text_col, 1)
+
+        if self._collapsible:
+            self._collapse_button = QPushButton()
+            self._collapse_button.setObjectName("appRouteCollapseButton")
+            self._collapse_button.setCursor(Qt.PointingHandCursor)
+            self._collapse_button.clicked.connect(self._toggle_expanded)
+            header.addWidget(self._collapse_button)
+
         root.addLayout(header)
+
+        self._body = QWidget()
+        body = QVBoxLayout(self._body)
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(7)
 
         if select_items:
             select_row = QHBoxLayout()
@@ -5278,7 +5359,7 @@ class PermanentRouteCard(QFrame):
             self.select = SelectButton(select_items, select_current or select_items[0], select_callback)
             self.select.setMinimumWidth(150)
             select_row.addWidget(self.select, 1)
-            root.addLayout(select_row)
+            body.addLayout(select_row)
 
         if checks:
             checks_grid = QGridLayout()
@@ -5295,8 +5376,8 @@ class PermanentRouteCard(QFrame):
                 box.toggled.connect(lambda value, cb=callback: cb(bool(value)) if cb is not None else None)
                 checks_grid.addWidget(box, index // 2, index % 2)
 
-            self.setMinimumHeight(max(self.minimumHeight(), 132 if len(checks) > 2 else 78))
-            root.addLayout(checks_grid)
+            self._open_minimum_height = max(self._open_minimum_height, 132 if len(checks) > 2 else 78)
+            body.addLayout(checks_grid)
 
         if sliders:
             for label_text, value, minimum, maximum, callback in sliders:
@@ -5349,9 +5430,26 @@ class PermanentRouteCard(QFrame):
 
                 slider_row.addWidget(slider, 1)
                 slider_row.addWidget(value_label)
-                root.addLayout(slider_row)
+                body.addLayout(slider_row)
 
-            self.setMinimumHeight(max(self.minimumHeight(), 166))
+            self._open_minimum_height = max(self._open_minimum_height, 166)
+
+        root.addWidget(self._body)
+        self._apply_expanded_state()
+
+    def _toggle_expanded(self) -> None:
+        self._expanded = not self._expanded
+        self._apply_expanded_state()
+        if self._expanded_changed is not None:
+            self._expanded_changed(bool(self._expanded))
+
+    def _apply_expanded_state(self) -> None:
+        if hasattr(self, "_body"):
+            self._body.setVisible(bool(self._expanded))
+        if self._collapse_button is not None:
+            self._collapse_button.setText("▴" if self._expanded else "▾")
+            self._collapse_button.setToolTip("Collapse" if self._expanded else "Expand")
+        self.setMinimumHeight(self._open_minimum_height if self._expanded else 66)
 
 
 
@@ -5361,6 +5459,7 @@ class AppsPanel(QWidget):
         self.backend_controller = backend_controller
         self._last_signature: tuple = ()
         self._permanent_routes_signature: tuple = ()
+        self._micro_injection_expanded = False
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -5422,13 +5521,10 @@ class AppsPanel(QWidget):
         return_source = ""
         if hasattr(self.backend_controller, "_return_mic_source_config"):
             return_source = str(self.backend_controller._return_mic_source_config() or "").strip()
-        soundboard_state = self.backend_controller._soundboard_route_state()
         injected = tuple(sorted(self.backend_controller.micro_injection_channels()))
         return (
             return_pairs,
             return_source,
-            self.backend_controller.soundboard_output_channel(),
-            bool(soundboard_state.get("send_to_micro")),
             injected,
         )
 
@@ -5444,31 +5540,15 @@ class AppsPanel(QWidget):
         self._permanent_routes_signature = signature
         self._build_permanent_routes()
 
+    def _set_micro_injection_expanded(self, expanded: bool) -> None:
+        self._micro_injection_expanded = bool(expanded)
+
     def _build_permanent_routes(self) -> None:
         self._clear_permanent_routes()
 
         if self.backend_controller is None:
             self.permanent_layout.addWidget(PermanentRouteCard("⚠", "Internal routes", "Backend not connected yet"))
             return
-
-        soundboard_state = self.backend_controller._soundboard_route_state()
-
-        current_key = self.backend_controller.soundboard_output_channel()
-        current_label = SOUNDBOARD_LOGICAL_LABEL_BY_KEY.get(current_key, "MEDIA")
-
-        self.permanent_layout.addWidget(
-            PermanentRouteCard(
-                "🎛",
-                "Soundboard",
-                "Choose where you hear the soundboard. MICRO injects it into your microphone.",
-                select_items=[label for label, _key in SOUNDBOARD_LOGICAL_OUTPUTS],
-                select_current=current_label,
-                select_callback=self._set_soundboard_output,
-                checks=[
-                    ("MICRO", bool(soundboard_state.get("send_to_micro")), self._set_soundboard_to_micro),
-                ],
-            )
-        )
 
         return_pairs = self.backend_controller.available_input_targets()
         return_inputs = ["Off"] + [label for label, _source in return_pairs]
@@ -5520,6 +5600,9 @@ class AppsPanel(QWidget):
                         self._set_micro_injection_volume,
                     ),
                 ],
+                collapsible=True,
+                expanded=self._micro_injection_expanded,
+                expanded_changed=self._set_micro_injection_expanded,
             )
         )
 
@@ -5608,6 +5691,7 @@ class AppsPanel(QWidget):
             "k-sound-hub-soundboard-to-output",
             "k-sound-hub-soundboard-to-micro",
             "k-sound-hub-return-mic-micro",
+            "k-sound-hub-micro-inject",
             "k-sounds hub mic output monitor",
             "k-sound hub all eq",
             "k-sound hub game eq",
@@ -6762,6 +6846,9 @@ class PadsPanel(QWidget):
         except Exception:
             numeric = 100
         self._soundboard_volume = max(0, min(100, numeric))
+        value_label = getattr(self, "soundboard_volume_value", None)
+        if value_label is not None:
+            value_label.setText(f"{int(self._soundboard_volume)}%")
 
         if persist:
             self._save_soundboard_volume_setting(self._soundboard_volume)
@@ -6963,8 +7050,273 @@ class PadsPanel(QWidget):
     def _apply_queued_soundboard_volume(self) -> None:
         self._set_soundboard_volume(int(getattr(self, "_pending_soundboard_volume", self._soundboard_volume)))
 
-    def __init__(self, detach_callback=None, columns: int = 2, show_detach: bool = True):
+    def _add_soundboard_dashboard_card(self, root, icon: str, title: str, meta: str, build_controls=None) -> QFrame:
+        card = QFrame()
+        card.setObjectName("appsRouteCard")
+        card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(9, 8, 9, 8)
+        layout.setSpacing(7)
+
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(8)
+
+        icon_label = QLabel(icon)
+        icon_label.setObjectName("appRouteIcon")
+        icon_label.setAlignment(Qt.AlignCenter)
+        header.addWidget(icon_label)
+
+        text_col = QVBoxLayout()
+        text_col.setContentsMargins(0, 0, 0, 0)
+        text_col.setSpacing(2)
+
+        title_label = QLabel(title)
+        title_label.setObjectName("appRouteName")
+        text_col.addWidget(title_label)
+
+        meta_label = QLabel(meta)
+        meta_label.setObjectName("appRouteMeta")
+        meta_label.setWordWrap(True)
+        text_col.addWidget(meta_label)
+
+        header.addLayout(text_col, 1)
+        layout.addLayout(header)
+
+        if build_controls is not None:
+            body = QWidget()
+            body_layout = QVBoxLayout(body)
+            body_layout.setContentsMargins(0, 0, 0, 0)
+            body_layout.setSpacing(7)
+            build_controls(body_layout)
+            layout.addWidget(body)
+
+        root.addWidget(card)
+        return card
+
+    def _make_soundboard_dashboard_button(self, text: str, tooltip: str, callback, *, minimum_width: int = 118) -> QPushButton:
+        button = QPushButton(text)
+        button.setObjectName("padTopButton")
+        button.setCursor(Qt.PointingHandCursor)
+        button.setMinimumHeight(32)
+        button.setMinimumWidth(int(minimum_width))
+        button.setToolTip(tooltip)
+        button.clicked.connect(callback)
+        return button
+
+    def _make_soundboard_small_icon_button(self, text: str, tooltip: str, callback) -> QPushButton:
+        button = QPushButton(text)
+        button.setObjectName("soundboardSmallIconButton")
+        button.setCursor(Qt.PointingHandCursor)
+        button.setToolTip(tooltip)
+        button.clicked.connect(callback)
+        return button
+
+    def _soundboard_route_state_for_dashboard(self) -> dict[str, bool]:
+        controller = getattr(self, "backend_controller", None)
+        if controller is None:
+            return {"send_to_micro": False, "monitor_to_mic_out": False}
+        try:
+            return dict(controller._soundboard_route_state())
+        except Exception:
+            return {"send_to_micro": False, "monitor_to_mic_out": False}
+
+    def _soundboard_output_for_dashboard(self) -> str:
+        controller = getattr(self, "backend_controller", None)
+        if controller is None:
+            return "media"
+        try:
+            key = str(controller.soundboard_output_channel() or "media")
+        except Exception:
+            key = "media"
+        allowed = {key for _label, key in SOUNDBOARD_LOGICAL_OUTPUTS}
+        return key if key in allowed else "media"
+
+    def _sync_compact_soundboard_dashboard(self) -> None:
+        output_select = getattr(self, "monitoring_output_select", None)
+        if output_select is not None:
+            current_key = self._soundboard_output_for_dashboard()
+            current_label = SOUNDBOARD_LOGICAL_LABEL_BY_KEY.get(current_key, "MEDIA")
+
+            # Synchronize the display without invoking the route callback again.
+            if output_select.current_text() != current_label:
+                output_select._current = current_label
+                output_select._sync_text()
+
+        micro_check = getattr(self, "monitoring_micro_check", None)
+        if micro_check is not None:
+            route_state = self._soundboard_route_state_for_dashboard()
+            wanted = bool(route_state.get("send_to_micro"))
+
+            if micro_check.isChecked() != wanted:
+                micro_check.blockSignals(True)
+                try:
+                    micro_check.setChecked(wanted)
+                finally:
+                    micro_check.blockSignals(False)
+
+    def _handle_dashboard_backend_status(self, message: str) -> None:
+        status = str(message or "")
+        if status.startswith("Soundboard output") or status.startswith("Soundboard MICRO"):
+            QTimer.singleShot(0, self._sync_compact_soundboard_dashboard)
+
+    def _set_dashboard_soundboard_output(self, label: str) -> None:
+        controller = getattr(self, "backend_controller", None)
+        if controller is None:
+            return
+        mapping = {label: key for label, key in SOUNDBOARD_LOGICAL_OUTPUTS}
+        key = mapping.get(str(label or "").strip(), "media")
+        controller.set_soundboard_output_channel(key)
+        QTimer.singleShot(80, self._sync_compact_soundboard_dashboard)
+
+    def _set_dashboard_soundboard_to_micro(self, enabled: bool) -> None:
+        controller = getattr(self, "backend_controller", None)
+        if controller is not None:
+            controller.set_soundboard_micro_enabled(bool(enabled))
+            QTimer.singleShot(80, self._sync_compact_soundboard_dashboard)
+
+    def _build_compact_soundboard_dashboard(self, root: QVBoxLayout) -> None:
+        route_state = self._soundboard_route_state_for_dashboard()
+        current_key = self._soundboard_output_for_dashboard()
+        labels = [label for label, _key in SOUNDBOARD_LOGICAL_OUTPUTS]
+        current_label = SOUNDBOARD_LOGICAL_LABEL_BY_KEY.get(current_key, "MEDIA")
+
+        monitoring_card = PermanentRouteCard(
+            "▦",
+            "Monitoring",
+            "Choose which channel plays the pads. MICRO also sends pads into your microphone.",
+            select_items=labels,
+            select_current=current_label,
+            select_callback=self._set_dashboard_soundboard_output,
+        )
+
+        self.monitoring_card = monitoring_card
+        self.monitoring_output_select = getattr(monitoring_card, "select", None)
+
+        self.monitoring_micro_check = QCheckBox("MICRO")
+        self.monitoring_micro_check.setCursor(Qt.PointingHandCursor)
+        self.monitoring_micro_check.setChecked(bool(route_state.get("send_to_micro")))
+        self.monitoring_micro_check.toggled.connect(
+            self._set_dashboard_soundboard_to_micro
+        )
+
+        body = getattr(monitoring_card, "_body", None)
+        body_layout = body.layout() if body is not None else None
+        if body_layout is not None:
+            action_row = QHBoxLayout()
+            action_row.setContentsMargins(0, 0, 0, 0)
+            action_row.setSpacing(8)
+
+            action_row.addWidget(self.monitoring_micro_check)
+            action_row.addStretch(1)
+
+            open_button = self._make_soundboard_dashboard_button(
+                "Open",
+                "Open the full Soundboard window.",
+                self._detach,
+                minimum_width=132,
+            )
+            action_row.addWidget(open_button)
+            body_layout.addLayout(action_row)
+
+        root.addWidget(monitoring_card)
+
+        def volume_controls(body: QVBoxLayout) -> None:
+            slider_row = QHBoxLayout()
+            slider_row.setContentsMargins(0, 0, 0, 0)
+            slider_row.setSpacing(8)
+
+            minus = QLabel("-")
+            minus.setObjectName("soundboardVolumeSign")
+            minus.setAlignment(Qt.AlignCenter)
+            slider_row.addWidget(minus)
+
+            self.soundboard_volume_slider = NoWheelSlider(Qt.Horizontal)
+            self.soundboard_volume_slider.setObjectName("soundboardVolumeSlider")
+            self.soundboard_volume_slider.setRange(0, 100)
+            self.soundboard_volume_slider.setValue(int(self._soundboard_volume))
+            self.soundboard_volume_slider.setMinimumHeight(24)
+            self.soundboard_volume_slider.setTracking(True)
+
+            self.soundboard_volume_value = QLabel(f"{int(self._soundboard_volume)}%")
+            self.soundboard_volume_value.setObjectName("appRouteMeta")
+            self.soundboard_volume_value.setMinimumWidth(44)
+            self.soundboard_volume_value.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+
+            def on_volume_changed(value: int) -> None:
+                self.soundboard_volume_value.setText(f"{int(value)}%")
+                self._queue_soundboard_volume(int(value))
+
+            self.soundboard_volume_slider.valueChanged.connect(on_volume_changed)
+            slider_row.addWidget(self.soundboard_volume_slider, 1)
+
+            plus = QLabel("+")
+            plus.setObjectName("soundboardVolumeSign")
+            plus.setAlignment(Qt.AlignCenter)
+            slider_row.addWidget(plus)
+
+            slider_row.addWidget(self.soundboard_volume_value)
+            body.addLayout(slider_row)
+
+            options_row = QHBoxLayout()
+            options_row.setContentsMargins(0, 0, 0, 0)
+            options_row.setSpacing(8)
+
+            self.soundboard_auto_level_check = QCheckBox("Auto level")
+            self.soundboard_auto_level_check.setObjectName("soundboardAutoLevelToggle")
+            self.soundboard_auto_level_check.setMinimumHeight(26)
+            self.soundboard_auto_level_check.setCursor(Qt.PointingHandCursor)
+            self.soundboard_auto_level_check.setChecked(bool(self._soundboard_auto_level_enabled))
+            self.soundboard_auto_level_check.setToolTip(
+                "Auto level enabled: pad sliders become trim controls."
+                if self._soundboard_auto_level_enabled
+                else "Auto level disabled: pad sliders keep normal volume behavior."
+            )
+            self.soundboard_auto_level_check.toggled.connect(
+                lambda checked: self._set_soundboard_auto_level_enabled(bool(checked))
+            )
+            options_row.addWidget(self.soundboard_auto_level_check)
+
+            self.soundboard_analyze_button = self._make_soundboard_small_icon_button(
+                "↻",
+                "Refresh auto-level analysis for all present soundboard files.",
+                self._analyze_soundboard_auto_level,
+            )
+            options_row.addWidget(self.soundboard_analyze_button)
+
+            options_row.addStretch(1)
+            body.addLayout(options_row)
+
+        self._add_soundboard_dashboard_card(
+            root,
+            "🔊",
+            "Volume",
+            "Global soundboard volume, auto level toggle, and analysis refresh.",
+            volume_controls,
+        )
+
+        panic_row = QHBoxLayout()
+        panic_row.setContentsMargins(0, 2, 0, 0)
+        panic_row.setSpacing(8)
+        panic_row.addStretch(1)
+
+        self.stop_all_button = QPushButton("■  PANIC  ·  Stop all pads")
+        self.stop_all_button.setObjectName("soundboardPanicButton")
+        self.stop_all_button.setCursor(Qt.PointingHandCursor)
+        self.stop_all_button.setToolTip("Stop all currently playing soundboard pads.")
+        self.stop_all_button.clicked.connect(self._stop_all_sounds)
+        panic_row.addWidget(self.stop_all_button)
+
+        panic_row.addStretch(1)
+        root.addLayout(panic_row)
+
+        root.addStretch(1)
+
+
+    def __init__(self, detach_callback=None, columns: int = 2, show_detach: bool = True, backend_controller=None):
         super().__init__()
+        self.backend_controller = backend_controller
         self._detach_callback = detach_callback
         self._columns = max(1, columns)
         self._show_detach = show_detach
@@ -6995,6 +7347,20 @@ class PadsPanel(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(10)
+
+        if bool(getattr(self, "_show_detach", True)):
+            self._build_compact_soundboard_dashboard(root)
+
+            controller = getattr(self, "backend_controller", None)
+            status_signal = getattr(controller, "status_changed", None)
+            if status_signal is not None:
+                status_signal.connect(self._handle_dashboard_backend_status)
+
+            QTimer.singleShot(0, self._sync_compact_soundboard_dashboard)
+
+            self.pair_overlay = None
+            self.pair_code_input = None
+            return
 
         top_bar = QFrame()
         top_bar.setObjectName("padsTopBar")
@@ -7811,7 +8177,22 @@ QPushButton#pairOverlayButton:hover {
             button.setEnabled(False)
             QTimer.singleShot(180, lambda b=button: b.setEnabled(True))
 
+        # Stop players owned by this dashboard and by every other PadsPanel,
+        # including the detached Soundboard window.
         self._kill_soundboard_bus_players()
+
+        for widget in QApplication.allWidgets():
+            if isinstance(widget, PadsPanel) and widget is not self:
+                widget._kill_soundboard_bus_players()
+
+        # Android/Web Remote playback uses its backend SoundboardDialog.
+        controller = getattr(self, "backend_controller", None)
+        dialog = getattr(controller, "_android_soundboard_dialog", None)
+        if dialog is not None:
+            try:
+                dialog.stop_all()
+            except Exception:
+                pass
 
     def _remote_server_reachable(self) -> bool:
         try:
@@ -8662,18 +9043,10 @@ class Drawer(QFrame):
         header_layout.addWidget(title)
         header_layout.addStretch(1)
 
-        self.pads_panel = PadsPanel(detach_callback=self._detach_pads, columns=3)
+        self.pads_panel = PadsPanel(detach_callback=self._detach_pads, columns=3, backend_controller=self._backend_controller)
 
-        self.pads_analyze_button = QPushButton("↻")
-        self.pads_analyze_button.setObjectName("soundboardAnalyzeButton")
-        self.pads_analyze_button.setCursor(Qt.PointingHandCursor)
-        self.pads_analyze_button.setToolTip("Refresh auto-level analysis for all present soundboard files.")
-        self.pads_analyze_button.clicked.connect(self.pads_panel._analyze_soundboard_auto_level)
-        self.pads_panel.soundboard_analyze_button = self.pads_analyze_button
-        header_layout.addWidget(self.pads_analyze_button, 0, Qt.AlignRight)
-
-        self.pads_pair_button = CenterGlyphButton("📡", y_offset=-1)
-        self.pads_pair_button.setObjectName("soundboardAnalyzeButton")
+        self.pads_pair_button = QPushButton("📡  Remote")
+        self.pads_pair_button.setObjectName("padTopButton")
         self.pads_pair_button.setCursor(Qt.PointingHandCursor)
         self.pads_pair_button.setToolTip("Pair Android remote")
         self.pads_pair_button.clicked.connect(self.pads_panel._pair_android_remote)
@@ -8696,6 +9069,14 @@ class Drawer(QFrame):
 
     def show_page(self, index: int) -> None:
         self.stack.setCurrentIndex(index)
+
+        # Stack index 2 is Pads. Refresh its controls from the same backend
+        # state used by the working Apps/Soundboard card.
+        if int(index) == 2:
+            panel = getattr(self, "pads_panel", None)
+            refresh = getattr(panel, "_sync_compact_soundboard_dashboard", None)
+            if callable(refresh):
+                QTimer.singleShot(0, refresh)
 
 
 class PreviewWindow(QMainWindow):
