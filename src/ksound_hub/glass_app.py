@@ -1948,12 +1948,30 @@ class GlassBackendController(QObject):
     def _set_ksh_mic_physical_gate_open(self, open_gate: bool) -> None:
         channel = self._find_channel("micro")
         user_muted = bool(getattr(channel, "muted", False)) if channel is not None else False
-        wanted_mute = "1" if (user_muted or not bool(open_gate)) else "0"
 
-        for sink_input_id in self._sink_inputs_by_media_name("KSH_MIC_PHYSICAL"):
-            self._pactl("set-sink-input-mute", str(sink_input_id), wanted_mute)
+        # Avoid Pulse/PipeWire mute edges for the hard gate. Manual testing
+        # showed sink-input volume 0/100 creates a softer transition than
+        # set-sink-input-mute. Add a very short volume ramp to de-click the
+        # remaining 0↔100 edge without changing the gate logic.
+        effective_open = bool(open_gate) and not user_muted
 
-        self._micro_gate_open = bool(open_gate)
+        previous_open = bool(getattr(self, "_micro_gate_open", False))
+        if effective_open == previous_open:
+            return
+
+        ramp = (25, 55, 80, 100) if effective_open else (70, 35, 10, 0)
+        sink_input_ids = tuple(self._sink_inputs_by_media_name("KSH_MIC_PHYSICAL"))
+
+        for sink_input_id in sink_input_ids:
+            # Keep the stream unmuted and gate by volume only.
+            self._pactl("set-sink-input-mute", str(sink_input_id), "0")
+
+        for volume in ramp:
+            for sink_input_id in sink_input_ids:
+                self._pactl("set-sink-input-volume", str(sink_input_id), f"{volume}%")
+            time.sleep(0.004)
+
+        self._micro_gate_open = effective_open
 
     def _micro_gate_effective_threshold(self) -> float:
         value = self.micro_hard_gate_threshold()
@@ -2067,7 +2085,7 @@ class GlassBackendController(QObject):
                     raw_peak = 0.0
 
                 # Gate follows the user-facing MICRO input volume.
-                # Only KSH_MIC_PHYSICAL is muted/unmuted: soundboard and
+                # Only KSH_MIC_PHYSICAL is volume-gated: soundboard and
                 # MICRO Injection routes into micro_bus are not gated.
                 peak = raw_peak * self._micro_channel_volume_scalar()
 
