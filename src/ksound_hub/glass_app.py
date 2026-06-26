@@ -6845,13 +6845,32 @@ class PadsPanel(QWidget):
             numeric = int(value)
         except Exception:
             numeric = 100
+
         self._soundboard_volume = max(0, min(100, numeric))
+        self._pending_soundboard_volume = self._soundboard_volume
+
+        slider = getattr(self, "soundboard_volume_slider", None)
+        if slider is not None and slider.value() != self._soundboard_volume:
+            old = slider.blockSignals(True)
+            try:
+                slider.setValue(self._soundboard_volume)
+            finally:
+                slider.blockSignals(old)
+
         value_label = getattr(self, "soundboard_volume_value", None)
         if value_label is not None:
-            value_label.setText(f"{int(self._soundboard_volume)}%")
+            value_label.setText(f"{self._soundboard_volume}%")
 
         if persist:
             self._save_soundboard_volume_setting(self._soundboard_volume)
+
+            # Dashboard and detached Soundboard are separate PadsPanel instances.
+            for widget in QApplication.allWidgets():
+                if isinstance(widget, PadsPanel) and widget is not self:
+                    widget._set_soundboard_volume(
+                        self._soundboard_volume,
+                        persist=False,
+                    )
 
     def _set_soundboard_auto_level_enabled(self, enabled: bool, persist: bool = True) -> None:
         self._soundboard_auto_level_enabled = bool(enabled)
@@ -6873,6 +6892,13 @@ class PadsPanel(QWidget):
 
         if persist:
             self._save_soundboard_auto_level_enabled(self._soundboard_auto_level_enabled)
+
+            for widget in QApplication.allWidgets():
+                if isinstance(widget, PadsPanel) and widget is not self:
+                    widget._set_soundboard_auto_level_enabled(
+                        self._soundboard_auto_level_enabled,
+                        persist=False,
+                    )
 
     def _analyze_soundboard_auto_level(self) -> None:
         if bool(getattr(self, "_soundboard_auto_level_analyzing", False)):
@@ -6928,6 +6954,17 @@ class PadsPanel(QWidget):
             button.setText("↻")
 
         message = str(result.get("message") or "Analyze finished.")
+
+        # Refresh every visible Soundboard instance after analysis.
+        for widget in QApplication.allWidgets():
+            if not isinstance(widget, PadsPanel):
+                continue
+            widget._set_soundboard_auto_level_enabled(
+                widget._read_soundboard_auto_level_enabled(),
+                persist=False,
+            )
+            widget._reload_soundboard_pads()
+
         if bool(result.get("ok")):
             QMessageBox.information(self, "Analyze Auto-level", message)
         else:
@@ -7193,6 +7230,8 @@ class PadsPanel(QWidget):
 
         self.monitoring_card = monitoring_card
         self.monitoring_output_select = getattr(monitoring_card, "select", None)
+        if self.monitoring_output_select is not None:
+            self.monitoring_output_select.setMaximumWidth(172)
 
         self.monitoring_micro_check = QCheckBox("MICRO")
         self.monitoring_micro_check.setCursor(Qt.PointingHandCursor)
@@ -7204,11 +7243,30 @@ class PadsPanel(QWidget):
         body = getattr(monitoring_card, "_body", None)
         body_layout = body.layout() if body is not None else None
         if body_layout is not None:
+            # Keep Output and its compact selector together and center the pair.
+            select_item = body_layout.itemAt(0)
+            select_row = select_item.layout() if select_item is not None else None
+            if select_row is not None:
+                select_row.setSpacing(9)
+                select_row.insertStretch(0, 1)
+                select_row.addStretch(1)
+
             action_row = QHBoxLayout()
             action_row.setContentsMargins(0, 0, 0, 0)
             action_row.setSpacing(8)
 
-            action_row.addWidget(self.monitoring_micro_check)
+            # Equal-width edge zones make the centre of the MICRO text and
+            # the centre of Open equally distant from their respective edges.
+            micro_host = QWidget()
+            micro_host.setFixedWidth(132)
+            micro_layout = QHBoxLayout(micro_host)
+            micro_layout.setContentsMargins(0, 0, 16, 0)
+            micro_layout.setSpacing(0)
+            micro_layout.addStretch(1)
+            micro_layout.addWidget(self.monitoring_micro_check)
+            micro_layout.addStretch(1)
+            action_row.addWidget(micro_host)
+
             action_row.addStretch(1)
 
             open_button = self._make_soundboard_dashboard_button(
@@ -7217,6 +7275,7 @@ class PadsPanel(QWidget):
                 self._detach,
                 minimum_width=132,
             )
+            open_button.setFixedWidth(132)
             action_row.addWidget(open_button)
             body_layout.addLayout(action_row)
 
@@ -8147,17 +8206,52 @@ QPushButton#pairOverlayButton:hover {
         return ids
 
     def _kill_soundboard_bus_players(self) -> int:
-        # The Glass pads player uses a fire-and-forget bash ffmpeg|pacat pipeline.
-        # Track and stop its process group directly; pactl media-name cleanup is
-        # kept as a fallback for older/external players.
+        # Dashboard and detached Soundboard are separate PadsPanel instances,
+        # but all their streams must receive one single shared fade.
+        panels = [self]
+        for widget in QApplication.allWidgets():
+            if isinstance(widget, PadsPanel) and widget is not self:
+                panels.append(widget)
+
         stopped = 0
+        stream_ids = self._soundboard_player_sink_input_ids()
 
-        for proc in list(getattr(self, "_soundboard_bus_player_processes", [])):
-            if self._terminate_soundboard_bus_proc(proc):
-                stopped += 1
-        self._soundboard_bus_player_processes = []
+        if stream_ids:
+            for volume in (70, 40, 15, 0):
+                for stream_id in stream_ids:
+                    try:
+                        subprocess.run(
+                            [
+                                "pactl",
+                                "set-sink-input-volume",
+                                str(stream_id),
+                                f"{volume}%",
+                            ],
+                            capture_output=True,
+                            text=True,
+                            timeout=0.4,
+                        )
+                    except Exception:
+                        pass
+                time.sleep(0.015)
 
-        for stream_id in self._soundboard_player_sink_input_ids():
+        # Terminate every tracked player only after the single global fade.
+        seen_pids: set[int] = set()
+        for panel in panels:
+            for proc in list(getattr(panel, "_soundboard_bus_player_processes", [])):
+                pid = int(getattr(proc, "pid", 0) or 0)
+                if pid <= 0 or pid in seen_pids:
+                    continue
+                seen_pids.add(pid)
+                if panel._terminate_soundboard_bus_proc(proc):
+                    stopped += 1
+            panel._soundboard_bus_player_processes = []
+
+        # Remove any residual stream that was not owned by a tracked process.
+        remaining_ids = self._soundboard_player_sink_input_ids()
+        all_stream_ids = list(dict.fromkeys(stream_ids + remaining_ids))
+
+        for stream_id in all_stream_ids:
             try:
                 result = subprocess.run(
                     ["pactl", "kill-sink-input", str(stream_id)],
@@ -8169,6 +8263,7 @@ QPushButton#pairOverlayButton:hover {
                     stopped += 1
             except Exception:
                 pass
+
         return stopped
 
     def _stop_all_sounds(self) -> None:
@@ -8177,13 +8272,8 @@ QPushButton#pairOverlayButton:hover {
             button.setEnabled(False)
             QTimer.singleShot(180, lambda b=button: b.setEnabled(True))
 
-        # Stop players owned by this dashboard and by every other PadsPanel,
-        # including the detached Soundboard window.
+        # This method now gathers every PadsPanel and performs one global fade.
         self._kill_soundboard_bus_players()
-
-        for widget in QApplication.allWidgets():
-            if isinstance(widget, PadsPanel) and widget is not self:
-                widget._kill_soundboard_bus_players()
 
         # Android/Web Remote playback uses its backend SoundboardDialog.
         controller = getattr(self, "backend_controller", None)
@@ -8290,14 +8380,20 @@ QPushButton#pairOverlayButton:hover {
 
         try:
             root = self._read_soundboard_document()
-            global_volume = max(0, min(150, int(root.get("global_volume", 100) or 100)))
+            raw_global_volume = root.get("global_volume", 100)
+            if raw_global_volume is None:
+                raw_global_volume = 100
+            global_volume = max(0, min(150, int(raw_global_volume)))
             auto_level_enabled = bool(root.get("auto_level_enabled", False))
         except Exception:
             global_volume = 100
             auto_level_enabled = False
 
         try:
-            slot_volume = max(0, min(150, int(slot.get("volume", 100) or 100)))
+            raw_slot_volume = slot.get("volume", 100)
+            if raw_slot_volume is None:
+                raw_slot_volume = 100
+            slot_volume = max(0, min(150, int(raw_slot_volume)))
         except Exception:
             slot_volume = 100
 
@@ -8323,7 +8419,7 @@ QPushButton#pairOverlayButton:hover {
             + f" -filter:a volume={gain:.4f} "
             + " -f f32le -ac 2 -ar 48000 pipe:1 | "
             + "pacat --playback --device=soundboard --raw --format=float32le --rate=48000 --channels=2 "
-            + "--latency-msec=42 --process-time-msec=12 "
+            + "--volume=65536 --latency-msec=42 --process-time-msec=12 "
             + "--property=media.name=K-Sounds-Hub-Soundboard-Player"
         )
 
