@@ -422,6 +422,38 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
 
             self._run_no_fail(["pactl", "unload-module", module_id])
 
+    def _native_micro_soundboard_send_to_micro(self) -> bool:
+        try:
+            configured_path = getattr(self, "_soundboard_config_path", None)
+            soundboard_path = (
+                Path(configured_path)
+                if configured_path
+                else Path.home() / ".config" / "k-sounds-hub" / "soundboard.json"
+            )
+
+            if not soundboard_path.is_file():
+                return False
+
+            soundboard_data = json.loads(soundboard_path.read_text(encoding="utf-8"))
+            if not isinstance(soundboard_data, dict):
+                return False
+
+            raw_send_to_micro = soundboard_data.get("send_to_micro")
+            if isinstance(raw_send_to_micro, bool):
+                return raw_send_to_micro
+
+            slots = soundboard_data.get("slots", [])
+            if isinstance(slots, list):
+                return any(
+                    bool(slot.get("send_to_micro"))
+                    for slot in slots
+                    if isinstance(slot, dict)
+                )
+        except Exception:
+            return False
+
+        return False
+
     def _render_native_micro_state_text(self, settings: AppSettings) -> str:
         channel = self._find_channel(settings, "micro")
         if channel is None:
@@ -469,7 +501,9 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
                 enabled = "1" if gain > 0.0 else "0"
                 lines.append(f"send\t{key}\t{enabled}\t{key}.monitor\t{gain:.4f}")
 
-        if "soundboard" in linked:
+        soundboard_to_micro = "soundboard" in linked or self._native_micro_soundboard_send_to_micro()
+
+        if soundboard_to_micro:
             lines.append("send\tsoundboard\t1\tsoundboard.monitor\t1.0")
 
         return "\n".join(lines) + "\n"

@@ -1181,7 +1181,9 @@ class GlassBackendController(QObject):
             "sink_input_properties=media.name=K-Sound-Hub-Soundboard-To-Output",
         )
 
-        if send_to_micro:
+        if self._micro_hard_gate_uses_native_engine():
+            self._refresh_native_micro_hard_gate_runtime()
+        elif send_to_micro:
             self._pactl(
                 "load-module",
                 "module-loopback",
@@ -1765,7 +1767,26 @@ class GlassBackendController(QObject):
         time.sleep(0.04)
         self._unmute_soundboard_output_streams()
 
+    def _unload_soundboard_micro_loopback(self) -> None:
+        self._unload_modules_matching(
+            lambda line: (
+                "module-loopback" in line.lower()
+                and "source=soundboard.monitor" in line.lower()
+                and "sink=micro_bus" in line.lower()
+            )
+        )
+
     def _load_soundboard_micro_loopback(self, enabled: bool) -> None:
+        if self._micro_hard_gate_uses_native_engine():
+            if enabled:
+                self._ensure_glass_virtual_audio_buses()
+                if not self._ensure_soundboard_bus():
+                    return
+
+            self._refresh_native_micro_hard_gate_runtime()
+            self._unload_soundboard_micro_loopback()
+            return
+
         if enabled:
             self._ensure_glass_virtual_audio_buses()
             if not self._ensure_soundboard_bus():
