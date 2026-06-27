@@ -37,3 +37,13 @@ target_include_directories(ksound_pipewire_probe PRIVATE include)
 target_link_libraries(ksound_pipewire_probe PRIVATE PkgConfig::PIPEWIRE)
 
 target_compile_options(ksound_pipewire_probe PRIVATE -O2 -pipe -Wall -Wextra -Wpedantic)
+
+add_executable(ksound_pipewire_playback_probe
+  src/pipewire_playback_probe.cpp
+)
+
+target_include_directories(ksound_pipewire_playback_probe PRIVATE include)
+
+target_link_libraries(ksound_pipewire_playback_probe PRIVATE PkgConfig::PIPEWIRE)
+
+target_compile_options(ksound_pipewire_playback_probe PRIVATE -O2 -pipe -Wall -Wextra -Wpedantic)
