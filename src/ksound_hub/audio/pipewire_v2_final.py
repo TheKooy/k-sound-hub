@@ -399,6 +399,29 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
                 self._run_no_fail(["pactl", "set-sink-input-volume", sink_input_id, f"{volume}%"])
                 self._run_no_fail(["pactl", "set-sink-input-mute", sink_input_id, muted])
 
+    def _unload_legacy_ksh_mic_physical_loopbacks(self) -> None:
+        """Native MICRO engine owns physical mic -> micro_bus. Remove old Pulse loopback."""
+        proc = self._run(["pactl", "list", "short", "modules"])
+        if proc.returncode != 0:
+            return
+
+        for line in proc.stdout.splitlines():
+            parts = line.split("\t", 2)
+            if len(parts) < 3:
+                continue
+
+            module_id, module_name, args = parts
+            lowered = args.lower()
+
+            if module_name != "module-loopback":
+                continue
+            if "sink=micro_bus" not in lowered:
+                continue
+            if "ksh_mic_physical" not in lowered:
+                continue
+
+            self._run_no_fail(["pactl", "unload-module", module_id])
+
     def _render_native_micro_state_text(self, settings: AppSettings) -> str:
         channel = self._find_channel(settings, "micro")
         if channel is None:
@@ -413,6 +436,8 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
             f"muted\t{'1' if channel.muted else '0'}",
             "volume\t100",
             f"source\t{source_name}",
+            f"hard_gate_enabled\t{1 if bool(getattr(channel, 'hard_gate_enabled', False)) else 0}",
+            f"hard_gate_threshold\t{max(0, min(100, int(getattr(channel, 'hard_gate_threshold', 12))))}",
         ]
 
         for key in ("all", "game", "chat", "media", "more"):
@@ -436,6 +461,15 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
         tmp = self._native_micro_state_path.with_suffix(".txt.tmp")
         tmp.write_text(text, encoding="utf-8")
         tmp.replace(self._native_micro_state_path)
+
+    def refresh_native_micro_state(self, settings: AppSettings) -> None:
+        """Refresh the native MICRO engine state without changing routes."""
+        if not self._native_micro_enabled():
+            return
+        self._write_native_micro_state(settings)
+        self._unload_legacy_ksh_mic_physical_loopbacks()
+        self._ensure_native_micro_engine()
+        self._unload_legacy_ksh_mic_physical_loopbacks()
 
     def _ensure_native_micro_engine(self) -> bool:
         engine_bin = self._native_micro_engine_binary()
@@ -494,6 +528,7 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
                 self._ensure_micro_endpoint()
                 self._write_native_micro_state(settings)
 
+                self._unload_legacy_ksh_mic_physical_loopbacks()
                 if self._ensure_native_micro_engine():
                     self._cleanup_legacy_micro_loopbacks_for_native()
                     self._run_no_fail(["pactl", "set-default-source", "micro"])

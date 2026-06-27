@@ -25,7 +25,7 @@ import threading
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QFileSystemWatcher, QEvent, QObject, QPoint, QProcess, QRect, QRectF, QSize, QTimer, Qt, Signal
+from PySide6.QtCore import QFileSystemWatcher, QEvent, QObject, QPoint, QProcess, QProcessEnvironment, QRect, QRectF, QSize, QTimer, Qt, Signal
 from PySide6.QtGui import QColor, QIcon, QImage, QPainter, QPainterPath, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -833,29 +833,45 @@ class GlassBackendController(QObject):
             value = 12
         return max(0, min(100, value))
 
+    def _sync_micro_hard_gate_audio_runtime(self) -> None:
+        # Best path: native MICRO engine owns the physical mic audio path.
+        # Python only writes state; it must not run the old pactl gate worker.
+        if self._micro_hard_gate_uses_native_engine():
+            self._stop_micro_hard_gate_monitor()
+            self._refresh_native_micro_hard_gate_runtime()
+            self._micro_gate_open = True
+            return
+
+        self._apply_micro_hard_gate_runtime()
+
     def set_micro_hard_gate_enabled(self, enabled: bool) -> bool:
         channel = self._find_channel("micro")
         if channel is None:
             return False
+
         channel.hard_gate_enabled = bool(enabled)
         self.settings_store.save(self.settings)
-        self._apply_micro_hard_gate_runtime()
+
+        self._sync_micro_hard_gate_audio_runtime()
         self.status_changed.emit(f"MICRO input hard gate: {'ON' if bool(enabled) else 'OFF'}")
         return True
+
 
     def set_micro_hard_gate_threshold(self, value: int) -> bool:
         channel = self._find_channel("micro")
         if channel is None:
             return False
+
         try:
             channel.hard_gate_threshold = max(0, min(100, int(value)))
         except Exception:
             channel.hard_gate_threshold = 12
+
         self.settings_store.save(self.settings)
-        if bool(getattr(channel, "hard_gate_enabled", False)):
-            self._apply_micro_hard_gate_runtime()
+        self._sync_micro_hard_gate_audio_runtime()
         self.status_changed.emit(f"MICRO input gate threshold: {int(channel.hard_gate_threshold)}%")
         return True
+
 
     def set_channel_volume(self, channel_key: str, value: int) -> bool:
         return self._apply_mixer_action(channel_key, "set-volume", volume=value)
@@ -2009,7 +2025,41 @@ class GlassBackendController(QObject):
         self._micro_gate_source_name = ""
         self._micro_gate_stop = threading.Event()
 
+    def _micro_hard_gate_uses_native_engine(self) -> bool:
+        engine = getattr(self, "audio_engine", None)
+        enabled = getattr(engine, "_native_micro_enabled", None)
+        try:
+            return bool(enabled()) if callable(enabled) else False
+        except Exception:
+            return False
+
+    def _refresh_native_micro_hard_gate_runtime(self) -> None:
+        engine = getattr(self, "audio_engine", None)
+        refresh = getattr(engine, "refresh_native_micro_state", None)
+        if callable(refresh):
+            try:
+                refresh(self.settings)
+                return
+            except Exception:
+                pass
+
+        writer = getattr(engine, "_write_native_micro_state", None)
+        ensure = getattr(engine, "_ensure_native_micro_engine", None)
+        try:
+            if callable(writer):
+                writer(self.settings)
+            if callable(ensure):
+                ensure()
+        except Exception:
+            pass
+
     def _apply_micro_hard_gate_runtime(self) -> None:
+        if self._micro_hard_gate_uses_native_engine():
+            self._stop_micro_hard_gate_monitor()
+            self._refresh_native_micro_hard_gate_runtime()
+            self._micro_gate_open = True
+            return
+
         if not self.micro_hard_gate_enabled():
             self._stop_micro_hard_gate_monitor()
             self._set_ksh_mic_physical_gate_open(True)
@@ -9377,6 +9427,7 @@ class PreviewWindow(QMainWindow):
         self._load_visual_settings_from_backend()
         self.backend_controller.channel_state_changed.connect(self._sync_channel_card_from_backend)
         self._device_watch_signature: tuple = ()
+        self._device_watch_shutting_down = False
 
         self.overlay = OverlayManager(self)
         self.overlay.set_enabled(bool(getattr(self.backend_controller.settings, "overlay_enabled", False)))
@@ -9537,6 +9588,10 @@ class PreviewWindow(QMainWindow):
         self._device_watch_process.errorOccurred.connect(
             lambda _error: self.backend_controller.status_changed.emit("Audio device watcher unavailable")
         )
+
+        app = QApplication.instance()
+        if app is not None:
+            app.aboutToQuit.connect(self._stop_device_watch_process)
         if __import__("os").environ.get("KSH_DEVICE_WATCHER_DISABLED", "").strip() != "1":
             QTimer.singleShot(0, self._start_device_watch_process)
             QTimer.singleShot(0, lambda: self._refresh_device_selectors_if_needed(force=True))
@@ -9856,13 +9911,106 @@ QFrame#channelCard[muted="true"]:hover {{
         self.overlay.set_enabled(bool(getattr(self.backend_controller.settings, "overlay_enabled", False)))
         self.overlay.show_message(str(text or ""), muted_active=bool(muted_active))
 
+    def _device_watch_process_is_marked(self, pid: int) -> bool:
+        if pid <= 0:
+            return False
+
+        proc_dir = Path("/proc") / str(pid)
+
+        try:
+            cmdline = proc_dir.joinpath("cmdline").read_bytes().replace(b"\0", b" ").decode("utf-8", "replace")
+        except Exception:
+            return False
+
+        if "pactl" not in cmdline or "subscribe" not in cmdline:
+            return False
+
+        try:
+            environ = proc_dir.joinpath("environ").read_bytes()
+        except Exception:
+            return False
+
+        return b"KSH_RUNTIME_ROLE=glass_device_watch" in environ
+
+    def _cleanup_stale_device_watch_processes(self) -> None:
+        current_pid = 0
+        process = getattr(self, "_device_watch_process", None)
+        if process is not None:
+            try:
+                current_pid = int(process.processId())
+            except Exception:
+                current_pid = 0
+
+        proc_root = Path("/proc")
+        for proc_dir in proc_root.iterdir():
+            if not proc_dir.name.isdigit():
+                continue
+
+            pid = int(proc_dir.name)
+            if pid in {os.getpid(), current_pid}:
+                continue
+
+            if not self._device_watch_process_is_marked(pid):
+                continue
+
+            try:
+                os.kill(pid, 15)
+            except ProcessLookupError:
+                continue
+            except Exception:
+                continue
+
+            time.sleep(0.04)
+
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                continue
+            except Exception:
+                continue
+
+            try:
+                os.kill(pid, 9)
+            except Exception:
+                pass
+
+    def _stop_device_watch_process(self) -> None:
+        self._device_watch_shutting_down = True
+        process = getattr(self, "_device_watch_process", None)
+        if process is None:
+            return
+
+        try:
+            if process.state() == QProcess.ProcessState.NotRunning:
+                return
+
+            process.terminate()
+            if not process.waitForFinished(700):
+                process.kill()
+                process.waitForFinished(700)
+        except Exception:
+            pass
+
     def _start_device_watch_process(self) -> None:
         process = getattr(self, "_device_watch_process", None)
         if process is None:
             return
+
+        if os.environ.get("KSH_DEVICE_WATCHER_DISABLED", "").strip() == "1":
+            return
+
         try:
             if process.state() != QProcess.ProcessState.NotRunning:
                 return
+
+            self._cleanup_stale_device_watch_processes()
+
+            env = QProcessEnvironment.systemEnvironment()
+            env.insert("KSH_RUNTIME_ROLE", "glass_device_watch")
+            env.insert("KSH_GLASS_PARENT_PID", str(os.getpid()))
+            process.setProcessEnvironment(env)
+
+            self._device_watch_shutting_down = False
             process.start()
         except Exception as exc:
             self.backend_controller.status_changed.emit(f"Audio device watcher unavailable — {exc}")
@@ -9870,6 +10018,10 @@ QFrame#channelCard[muted="true"]:hover {{
     def _handle_device_watch_finished(self, *_args) -> None:
         # pactl subscribe should normally stay alive. If Pulse/PipeWire restarts,
         # retry without falling back to periodic polling.
+        if getattr(self, "_device_watch_shutting_down", False):
+            return
+        if os.environ.get("KSH_DEVICE_WATCHER_DISABLED", "").strip() == "1":
+            return
         QTimer.singleShot(2000, self._start_device_watch_process)
 
     def _handle_device_watch_events(self) -> None:

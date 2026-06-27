@@ -7,6 +7,7 @@
 #include <cstring>
 #include <cstdio>
 #include <fcntl.h>
+#include <poll.h>
 #include <fstream>
 #include <iostream>
 #include <map>
@@ -171,6 +172,8 @@ struct MicroState {
     bool muted{false};
     float volume_percent{100.0f};
     std::string mic_source;
+    bool hard_gate_enabled{false};
+    float hard_gate_threshold{12.0f};
     std::vector<SourceSpec> sends;
 
     bool return_enabled{false};
@@ -179,6 +182,89 @@ struct MicroState {
     std::string return_target_sink{"retour"};
     std::vector<SourceSpec> return_sources;
 };
+
+struct HardGateState {
+    bool open{true};
+    int hold_chunks{0};
+    float gain{1.0f};
+    float last_peak{0.0f};
+};
+
+float hard_gate_threshold_to_peak(float threshold_percent) {
+    const float normalized = clampf(threshold_percent, 0.0f, 100.0f) / 100.0f;
+
+    // User slider -> audio peak threshold.
+    // This intentionally gives the upper half of the slider real authority:
+    // 0%  ~= tiny room noise
+    // 25% ~= light gate
+    // 50% ~= normal voice gate
+    // 75%+ strong gate
+    return 0.0012f + std::pow(normalized, 1.35f) * 0.42f;
+}
+
+float chunk_peak_for_gate(const std::vector<float>& frames, float volume_percent) {
+    float raw_peak = 0.0f;
+    for (float sample : frames) {
+        if (std::isfinite(sample)) {
+            raw_peak = std::max(raw_peak, std::fabs(sample));
+        }
+    }
+
+    const float volume_scalar = clampf(volume_percent / 100.0f, 0.0f, 1.5f);
+    return raw_peak * volume_scalar;
+}
+
+void apply_hard_gate_to_micro_chunk(std::vector<float>& frames, HardGateState& gate, const MicroState& state) {
+    if (frames.empty()) {
+        return;
+    }
+
+    if (!state.hard_gate_enabled) {
+        gate.open = true;
+        gate.hold_chunks = 0;
+        gate.gain = 1.0f;
+        return;
+    }
+
+    const float peak = chunk_peak_for_gate(frames, state.volume_percent);
+    gate.last_peak = peak;
+
+    const float open_threshold = hard_gate_threshold_to_peak(state.hard_gate_threshold);
+    const float close_threshold = std::max(0.00035f, open_threshold * 0.50f);
+
+    if (peak >= open_threshold) {
+        gate.open = true;
+        gate.hold_chunks = 18; // 180 ms at 10 ms chunks, prevents chopped word endings.
+    } else if (gate.open && peak < close_threshold) {
+        if (gate.hold_chunks > 0) {
+            --gate.hold_chunks;
+        } else {
+            gate.open = false;
+        }
+    }
+
+    const float start_gain = clampf(gate.gain, 0.0f, 1.0f);
+    const float target_gain = gate.open ? 1.0f : 0.0f;
+    const int frames_count = std::max(1, static_cast<int>(frames.size()) / CHANNELS);
+
+    // Sample-level de-clicking:
+    // - fast 2 ms attack to avoid eating words;
+    // - slower 6 ms release to avoid clicks/crackles on close.
+    const int ramp_frames = target_gain > start_gain ? 96 : 288;
+
+    for (int frame = 0; frame < frames_count; ++frame) {
+        const float progress = std::min(1.0f, static_cast<float>(frame + 1) / static_cast<float>(ramp_frames));
+        const float gain = start_gain + ((target_gain - start_gain) * progress);
+
+        for (int ch = 0; ch < CHANNELS; ++ch) {
+            const int index = frame * CHANNELS + ch;
+            float& sample = frames[index];
+            sample = std::isfinite(sample) ? sample * gain : 0.0f;
+        }
+    }
+
+    gate.gain = target_gain;
+}
 
 struct CaptureClient {
     std::string source_name;
@@ -219,20 +305,48 @@ struct CaptureClient {
             return silence;
         }
 
-        for (int i = 0; i < 16; ++i) {
-            char tmp[65536];
-            ssize_t n = ::read(proc.fd, tmp, sizeof(tmp));
-            if (n > 0) {
-                buffer.insert(buffer.end(), tmp, tmp + n);
+        auto read_available = [&]() -> bool {
+            for (int i = 0; i < 16; ++i) {
+                char tmp[65536];
+                ssize_t n = ::read(proc.fd, tmp, sizeof(tmp));
+                if (n > 0) {
+                    buffer.insert(buffer.end(), tmp, tmp + n);
+                    continue;
+                }
+                if (n < 0 && errno == EINTR) {
+                    continue;
+                }
+                if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                    return true;
+                }
+                return false;
+            }
+            return true;
+        };
+
+        // Wait briefly for a complete 10 ms chunk instead of returning silence
+        // too often. Returning repeated silence chunks is a common source of
+        // small crackles in this parec -> engine -> pacat pipeline.
+        for (int attempt = 0; attempt < 6 && static_cast<int>(buffer.size()) < CHUNK_BYTES; ++attempt) {
+            if (!read_available()) {
+                stop();
+                return silence;
+            }
+
+            if (static_cast<int>(buffer.size()) >= CHUNK_BYTES) {
+                break;
+            }
+
+            pollfd pfd{};
+            pfd.fd = proc.fd;
+            pfd.events = POLLIN;
+            const int poll_result = ::poll(&pfd, 1, 2);
+            if (poll_result < 0 && errno == EINTR) {
                 continue;
             }
-            if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            if (poll_result <= 0) {
                 break;
             }
-            if (n == 0) {
-                break;
-            }
-            break;
         }
 
         if (static_cast<int>(buffer.size()) < CHUNK_BYTES) {
@@ -351,6 +465,18 @@ struct PlaybackClient {
                 done += static_cast<std::size_t>(n);
                 continue;
             }
+            if (n < 0 && errno == EINTR) {
+                continue;
+            }
+
+            if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                pollfd pfd{};
+                pfd.fd = proc.fd;
+                pfd.events = POLLOUT;
+                ::poll(&pfd, 1, 2);
+                continue;
+            }
+
             stop();
             return;
         }
@@ -387,6 +513,14 @@ MicroState parse_state_file(const std::string& path) {
             }
         } else if (parts[0] == "source" && parts.size() >= 2) {
             state.mic_source = parts[1];
+        } else if (parts[0] == "hard_gate_enabled" && parts.size() >= 2) {
+            state.hard_gate_enabled = parts[1] == "1";
+        } else if (parts[0] == "hard_gate_threshold" && parts.size() >= 2) {
+            try {
+                state.hard_gate_threshold = std::stof(parts[1]);
+            } catch (...) {
+                state.hard_gate_threshold = 12.0f;
+            }
         } else if (parts[0] == "send" && parts.size() >= 4) {
             if (parts[2] != "1") {
                 continue;
@@ -443,6 +577,7 @@ MicroState parse_state_file(const std::string& path) {
     }
 
     state.volume_percent = clampf(state.volume_percent, 0.0f, 150.0f);
+    state.hard_gate_threshold = clampf(state.hard_gate_threshold, 0.0f, 100.0f);
     state.return_volume_percent = clampf(state.return_volume_percent, 0.0f, 150.0f);
     if (state.return_target_sink.empty()) {
         state.return_target_sink = "retour";
@@ -456,6 +591,8 @@ std::string state_signature(const MicroState& state) {
     out << state.muted << "\n";
     out << state.volume_percent << "\n";
     out << state.mic_source << "\n";
+    out << state.hard_gate_enabled << "\n";
+    out << state.hard_gate_threshold << "\n";
     for (const auto& send : state.sends) {
         out << "send\t" << send.key << "\t" << send.source_name << "\t" << send.gain << "\n";
     }
@@ -541,7 +678,7 @@ int main(int argc, char** argv) {
     std::string state_path;
     std::string log_path;
     std::string levels_path;
-    int period_ms = 20;
+    int period_ms = 10;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -560,9 +697,9 @@ int main(int argc, char** argv) {
             levels_path = next();
         } else if (arg == "--period-ms") {
             try {
-                period_ms = std::stoi(next());
+                period_ms = std::max(5, std::min(20, std::stoi(next())));
             } catch (...) {
-                period_ms = 20;
+                period_ms = 10;
             }
         }
     }
@@ -588,6 +725,8 @@ int main(int argc, char** argv) {
 
     std::map<std::string, CaptureClient> captures;
     std::string last_signature;
+    HardGateState micro_gate;
+    std::string micro_gate_source;
 
     while (g_running) {
         MicroState state = parse_state_file(state_path);
@@ -629,6 +768,8 @@ int main(int argc, char** argv) {
                     << " mic_enabled=" << state.enabled
                     << " mic_muted=" << state.muted
                     << " mic_source=" << state.mic_source
+                    << " hard_gate=" << state.hard_gate_enabled
+                    << " hard_gate_threshold=" << state.hard_gate_threshold
                     << " sends=" << state.sends.size()
                     << " return_enabled=" << state.return_enabled
                     << " return_muted=" << state.return_muted
@@ -665,7 +806,14 @@ int main(int argc, char** argv) {
             const float mic_gain = volume_percent_to_gain(state.volume_percent);
 
             if (!state.mic_source.empty()) {
-                mix_add(micro_mix, chunk_for(state.mic_source), mic_gain);
+                if (micro_gate_source != state.mic_source) {
+                    micro_gate = HardGateState{};
+                    micro_gate_source = state.mic_source;
+                }
+
+                std::vector<float> mic_chunk = chunk_for(state.mic_source);
+                apply_hard_gate_to_micro_chunk(mic_chunk, micro_gate, state);
+                mix_add(micro_mix, mic_chunk, mic_gain);
             }
 
             for (const auto& send : state.sends) {
@@ -687,7 +835,8 @@ int main(int argc, char** argv) {
 
         write_levels_file(levels_path, micro_mix, return_mix);
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(std::max(5, period_ms)));
+        (void)period_ms;
+        std::this_thread::yield();
     }
 
     for (auto& [_, client] : captures) {
