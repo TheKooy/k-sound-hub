@@ -5,6 +5,9 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(PIPEWIRE REQUIRED IMPORTED_TARGET libpipewire-0.3)
+
 add_executable(ksound_native_engine
   src/main.cpp
   src/files.cpp
@@ -24,3 +27,13 @@ add_executable(ksound_native_micro_engine
 target_include_directories(ksound_native_micro_engine PRIVATE include)
 
 target_compile_options(ksound_native_micro_engine PRIVATE -O2 -pipe -Wall -Wextra -Wpedantic)
+
+add_executable(ksound_pipewire_probe
+  src/pipewire_probe.cpp
+)
+
+target_include_directories(ksound_pipewire_probe PRIVATE include)
+
+target_link_libraries(ksound_pipewire_probe PRIVATE PkgConfig::PIPEWIRE)
+
+target_compile_options(ksound_pipewire_probe PRIVATE -O2 -pipe -Wall -Wextra -Wpedantic)
