@@ -430,6 +430,29 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
         source_name = self._native_micro_source_for_channel(channel)
         linked = {str(key).lower() for key in getattr(channel, "linked_channels", []) or []}
 
+        allowed_micro_injection = {"all", "game", "chat", "media", "more"}
+        raw_micro_injection = getattr(settings, "glass_micro_injection_channels", []) or []
+        if not isinstance(raw_micro_injection, list):
+            raw_micro_injection = []
+        micro_injection = {
+            str(key).strip().lower()
+            for key in raw_micro_injection
+            if str(key).strip().lower() in allowed_micro_injection
+        }
+
+        try:
+            injection_volume = int(getattr(settings, "glass_micro_injection_volume", 125))
+        except Exception:
+            injection_volume = 125
+        injection_gain = max(0.0, min(2.0, injection_volume / 100.0))
+
+        send_gains: dict[str, float] = {}
+        for key in ("all", "game", "chat", "media", "more"):
+            if key in linked:
+                send_gains[key] = max(send_gains.get(key, 0.0), self._channel_send_gain_for_micro(settings, key))
+            if key in micro_injection:
+                send_gains[key] = max(send_gains.get(key, 0.0), injection_gain)
+
         lines = [
             "version\t2",
             f"enabled\t{'1' if channel.enabled else '0'}",
@@ -441,8 +464,8 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
         ]
 
         for key in ("all", "game", "chat", "media", "more"):
-            if key in linked:
-                gain = self._channel_send_gain_for_micro(settings, key)
+            if key in send_gains:
+                gain = max(0.0, min(2.0, float(send_gains.get(key, 0.0))))
                 enabled = "1" if gain > 0.0 else "0"
                 lines.append(f"send\t{key}\t{enabled}\t{key}.monitor\t{gain:.4f}")
 

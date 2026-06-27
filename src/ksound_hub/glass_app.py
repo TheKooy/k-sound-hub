@@ -2272,6 +2272,36 @@ class GlassBackendController(QObject):
         self._set_micro_inject_live_volume(channel_key, 0, smooth=True)
         time.sleep(0.08)
 
+    def _unload_micro_inject_loopbacks(self) -> None:
+        allowed = {"all", "game", "chat", "media", "more"}
+        modules: list[tuple[str, str]] = []
+
+        for line in self._pulse_modules():
+            lowered = line.lower()
+            parts = line.split("\t", 2)
+            if len(parts) < 3 or not parts[0].isdigit():
+                continue
+
+            if "module-loopback" not in lowered or "sink=micro_bus" not in lowered:
+                continue
+
+            matched_key = ""
+            for key in allowed:
+                if f"k-sound-hub-micro-inject-{key}" in lowered:
+                    matched_key = key
+                    break
+
+            if not matched_key:
+                continue
+
+            modules.append((matched_key, parts[0]))
+
+        for key, module_id in modules:
+            # Native MICRO engine now owns these sends. Force the old Pulse
+            # loopback to silence before unloading to avoid a one-shot thump.
+            self._set_micro_inject_live_volume(key, 0, smooth=False)
+            self._pactl("unload-module", module_id)
+
     def set_micro_injection_channel_state(self, channel_key: str, enabled: bool) -> bool:
         key = str(channel_key or "").strip().lower()
         allowed = {"all", "game", "chat", "media", "more"}
@@ -2293,6 +2323,11 @@ class GlassBackendController(QObject):
         return True
 
     def apply_micro_injection_runtime_routes(self) -> None:
+        if self._micro_hard_gate_uses_native_engine():
+            self._refresh_native_micro_hard_gate_runtime()
+            self._unload_micro_inject_loopbacks()
+            return
+
         enabled = self.micro_injection_channels()
         allowed = {"all", "game", "chat", "media", "more"}
         volume = self.micro_injection_volume()
