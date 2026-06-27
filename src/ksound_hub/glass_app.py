@@ -879,10 +879,9 @@ class GlassBackendController(QObject):
     def set_channel_volume_live(self, channel_key: str, value: int) -> bool:
         """Update live volume state without overlay/status/save churn.
 
-        Playback channels also get a lightweight native audio apply. MICRO and
-        MIC OUT only get visual/in-memory preview during drag; their real audio
-        commit still happens on release because that path can run pactl and
-        return-mic/micro-link logic.
+        Playback channels and MIC OUT get a lightweight native audio apply.
+        MICRO stays visual/in-memory only during drag because that path can run
+        pactl and micro-link logic.
         """
         key = self._normalize_channel_key(channel_key)
         channel = self._find_channel(key)
@@ -901,7 +900,7 @@ class GlassBackendController(QObject):
         except Exception:
             pass
 
-        if key not in {"all", "game", "chat", "media", "more"}:
+        if key not in {"all", "game", "chat", "media", "more", "return-mic"}:
             return True
 
         if bool(channel.muted):
