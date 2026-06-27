@@ -291,7 +291,7 @@ struct CaptureClient {
                 "--format=float32le",
                 "--rate=48000",
                 "--channels=2",
-                "--latency-msec=20",
+                "--latency-msec=10",
             },
             false
         );
@@ -404,7 +404,7 @@ struct PlaybackClient {
                 "--format=float32le",
                 "--rate=48000",
                 "--channels=2",
-                "--latency-msec=40",
+                "--latency-msec=20",
                 "--process-time-msec=10",
             },
             true
