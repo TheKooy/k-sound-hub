@@ -57,6 +57,7 @@ from PySide6.QtWidgets import (
 
 
 from .audio.pipewire_v2_final import PipeWireAudioEngine
+from .app_routing import channel_for_media_role, process_display_name_from_cmdline, process_route_rule_from_cmdline, stream_display_name_from_data
 from .config import CONFIG_DIR, IPC_SOCKET_PATH
 from .control import resolve_ipc_socket_path
 from .ipc import AudioIpcServer
@@ -471,12 +472,246 @@ class GlassBackendController(QObject):
 
     def list_app_streams(self) -> list:
         try:
-            return list(self.audio_engine.list_sink_inputs())
+            self._app_route_sink_info_cache = None
+            self._app_route_clients_cache = None
+            streams = list(self.audio_engine.list_sink_inputs())
+
+            for stream in streams:
+                try:
+                    friendly = self._friendly_display_name_for_stream(stream)
+                    if friendly:
+                        stream.display_name = friendly
+                except Exception:
+                    pass
+
+            return streams
         except Exception as exc:
             self.status_changed.emit(f"Apps list error — {exc}")
             return []
 
+
+    def _app_route_prop_value(self, line: str) -> str:
+        return str(line.split("=", 1)[1] if "=" in line else "").strip().strip('"')
+
+    def _pactl_route_text(self, *args: str) -> str:
+        try:
+            result = subprocess.run(
+                ["pactl", *args],
+                capture_output=True,
+                text=True,
+                timeout=2.0,
+                check=False,
+            )
+        except Exception:
+            return ""
+        if result.returncode != 0:
+            return ""
+        return result.stdout or ""
+
+    def _app_route_sink_info_by_id(self) -> dict[int, dict[str, str]]:
+        cached = getattr(self, "_app_route_sink_info_cache", None)
+        if isinstance(cached, dict):
+            return cached
+
+        blocks: dict[int, dict[str, str]] = {}
+        current_id: int | None = None
+
+        for raw_line in self._pactl_route_text("list", "sink-inputs").splitlines():
+            line = raw_line.strip()
+
+            if raw_line.startswith("Sink Input #"):
+                try:
+                    current_id = int(raw_line.split("#", 1)[1].strip())
+                except Exception:
+                    current_id = None
+                if current_id is not None:
+                    blocks[current_id] = {}
+                continue
+
+            if current_id is None:
+                continue
+
+            info = blocks.setdefault(current_id, {})
+
+            if line.startswith("Client:"):
+                info["client_id"] = line.split(":", 1)[1].strip()
+            elif line.startswith("application.process.id = "):
+                info["process_id"] = self._app_route_prop_value(line)
+            elif line.startswith("application.name = "):
+                info["app_name"] = self._app_route_prop_value(line)
+            elif line.startswith("application.process.binary = "):
+                info["binary_name"] = self._app_route_prop_value(line)
+            elif line.startswith("media.name = "):
+                info["media_name"] = self._app_route_prop_value(line)
+            elif line.startswith("media.role = "):
+                info["media_role"] = self._app_route_prop_value(line)
+            elif line.startswith("node.name = "):
+                info["node_name"] = self._app_route_prop_value(line)
+            elif line.startswith("node.loop.name = "):
+                info["node_loop_name"] = self._app_route_prop_value(line)
+
+        self._app_route_sink_info_cache = blocks
+        return blocks
+
+    def _app_route_clients_by_id(self) -> dict[str, dict[str, str]]:
+        cached = getattr(self, "_app_route_clients_cache", None)
+        if isinstance(cached, dict):
+            return cached
+
+        clients: dict[str, dict[str, str]] = {}
+        current_id = ""
+
+        for raw_line in self._pactl_route_text("list", "clients").splitlines():
+            line = raw_line.strip()
+
+            if raw_line.startswith("Client #"):
+                current_id = raw_line.split("#", 1)[1].strip()
+                clients[current_id] = {}
+                continue
+
+            if not current_id:
+                continue
+
+            info = clients.setdefault(current_id, {})
+
+            if line.startswith("application.process.id = "):
+                info["process_id"] = self._app_route_prop_value(line)
+            elif line.startswith("application.name = "):
+                info["app_name"] = self._app_route_prop_value(line)
+            elif line.startswith("application.process.binary = "):
+                info["binary_name"] = self._app_route_prop_value(line)
+
+        self._app_route_clients_cache = clients
+        return clients
+
+    def _app_route_cmdline_for_pid(self, pid: str) -> str:
+        pid = str(pid or "").strip()
+        if not pid.isdigit():
+            return ""
+
+        cache = getattr(self, "_app_route_cmdline_cache", None)
+        if not isinstance(cache, dict):
+            cache = {}
+            self._app_route_cmdline_cache = cache
+
+        if pid in cache:
+            return cache[pid]
+
+        try:
+            raw = Path("/proc", pid, "cmdline").read_bytes()
+            value = raw.decode("utf-8", "replace").replace("\x00", " ").strip()
+        except Exception:
+            value = ""
+
+        cache[pid] = value
+        return value
+
+
+    def _process_cmdline_for_stream(self, stream) -> str:
+        try:
+            stream_id = int(getattr(stream, "stream_id", 0))
+        except Exception:
+            return ""
+
+        info = dict(self._app_route_sink_info_by_id().get(stream_id, {}))
+
+        client_id = str(info.get("client_id") or "").strip()
+        if client_id:
+            client_info = self._app_route_clients_by_id().get(client_id, {})
+            for key in ("process_id", "app_name", "binary_name"):
+                if not info.get(key) and client_info.get(key):
+                    info[key] = client_info[key]
+
+        return self._app_route_cmdline_for_pid(str(info.get("process_id") or ""))
+
+    def _friendly_display_name_for_stream(self, stream) -> str:
+        original = str(getattr(stream, "display_name", "") or "")
+
+        # Keep internal soundboard labels stable.
+        if original.upper().startswith("SOUNDBOARD"):
+            return original
+
+        return stream_display_name_from_data(
+            cmdline=self._process_cmdline_for_stream(stream),
+            display_name=original,
+            app_name=str(getattr(stream, "app_name", "") or ""),
+            binary_name=str(getattr(stream, "binary_name", "") or ""),
+            media_name=str(getattr(stream, "media_name", "") or ""),
+            node_name=str(getattr(stream, "node_name", "") or ""),
+        )
+
+
+    def _process_route_rule_for_stream(self, stream) -> str:
+        try:
+            stream_id = int(getattr(stream, "stream_id", 0))
+        except Exception:
+            return ""
+
+        info = dict(self._app_route_sink_info_by_id().get(stream_id, {}))
+
+        client_id = str(info.get("client_id") or "").strip()
+        if client_id:
+            client_info = self._app_route_clients_by_id().get(client_id, {})
+            for key in ("process_id", "app_name", "binary_name"):
+                if not info.get(key) and client_info.get(key):
+                    info[key] = client_info[key]
+
+        cmdline = self._app_route_cmdline_for_pid(str(info.get("process_id") or ""))
+        return process_route_rule_from_cmdline(cmdline)
+
+    def _role_channel_for_stream(self, stream) -> str:
+        try:
+            stream_id = int(getattr(stream, "stream_id", 0))
+        except Exception:
+            return ""
+
+        info = self._app_route_sink_info_by_id().get(stream_id, {})
+        return channel_for_media_role(str(info.get("media_role") or ""))
+
+    def _move_app_stream_if_needed(self, stream, channel_key: str) -> bool:
+        key = self._normalize_channel_key(channel_key)
+        if key not in APP_ROUTE_KEYS:
+            return False
+
+        try:
+            stream_id = int(getattr(stream, "stream_id", 0))
+        except Exception:
+            return False
+
+        if str(getattr(stream, "sink_name", "") or "").strip().lower() == key:
+            return True
+
+        return bool(self.audio_engine.move_sink_input_to_channel(stream_id, key))
+
+    def _autosort_app_streams_by_role(self, streams, handled_stream_ids: set[int]) -> None:
+        if not bool(getattr(self.settings, "auto_sort_app_streams_by_role", True)):
+            return
+
+        if self.audio_engine is None:
+            return
+
+        for stream in streams:
+            try:
+                stream_id = int(getattr(stream, "stream_id", 0))
+            except Exception:
+                continue
+
+            if stream_id in handled_stream_ids:
+                continue
+
+            target = self._role_channel_for_stream(stream)
+            if target not in {"game", "chat", "media"}:
+                continue
+
+            if self._move_app_stream_if_needed(stream, target):
+                handled_stream_ids.add(stream_id)
+
+
     def _stream_rule_for(self, stream) -> str:
+        proc_rule = self._process_route_rule_for_stream(stream)
+        if proc_rule:
+            return proc_rule
+
         display_name = str(getattr(stream, "display_name", "") or "")
         media_name = str(getattr(stream, "media_name", "") or "").strip()
         node_name = str(getattr(stream, "node_name", "") or "").strip()
@@ -504,6 +739,8 @@ class GlassBackendController(QObject):
         rule = str(rule or "").strip()
         if not rule:
             return False
+        if rule.startswith("proc:"):
+            return self._process_route_rule_for_stream(stream) == rule
         if rule.startswith("bin:"):
             return bool(getattr(stream, "binary_name", "")) and stream.binary_name == rule[4:]
         if rule.startswith("app:"):
@@ -523,9 +760,13 @@ class GlassBackendController(QObject):
         if not rule:
             return
 
+        rules_to_remove = {rule}
+        if rule.startswith("proc:prismlauncher:minecraft"):
+            rules_to_remove.update({"bin:java", "app:java", "node:java", "media:Playback Stream"})
+
         for channel in self.settings.channels:
             rules = list(getattr(channel, "app_rules", []) or [])
-            channel.app_rules = [item for item in rules if item != rule]
+            channel.app_rules = [item for item in rules if item not in rules_to_remove]
 
         target.app_rules = list(getattr(target, "app_rules", []) or [])
         if rule not in target.app_rules:
@@ -534,24 +775,65 @@ class GlassBackendController(QObject):
         self._save_timer.start()
 
     def _reapply_saved_app_routes(self) -> None:
+        self._app_route_sink_info_cache = None
+        self._app_route_clients_cache = None
+        self._app_route_cmdline_cache = {}
+
         streams = self.list_app_streams()
         if not streams:
             return
 
+        channel_rules: list[tuple[str, list[str]]] = []
         for channel in self.settings.channels:
             channel_key = self._normalize_channel_key(getattr(channel, "key", ""))
             if channel_key not in APP_ROUTE_KEYS:
                 continue
 
-            rules = list(getattr(channel, "app_rules", []) or [])
-            if not rules:
+            rules = [
+                str(rule or "").strip()
+                for rule in (getattr(channel, "app_rules", []) or [])
+                if str(rule or "").strip()
+            ]
+            if rules:
+                channel_rules.append((channel_key, rules))
+
+        handled_stream_ids: set[int] = set()
+
+        # First pass: precise process/cmdline rules. These must win over old
+        # generic app/bin/media rules and over auto-sort role routing.
+        for stream in streams:
+            try:
+                stream_id = int(getattr(stream, "stream_id", 0))
+            except Exception:
                 continue
 
-            for stream in streams:
-                if getattr(stream, "sink_name", "") == channel_key:
-                    continue
-                if any(self._stream_matches_rule(stream, rule) for rule in rules):
-                    self.audio_engine.move_sink_input_to_channel(stream.stream_id, channel_key)
+            for channel_key, rules in channel_rules:
+                proc_rules = [rule for rule in rules if rule.startswith("proc:")]
+                if proc_rules and any(self._stream_matches_rule(stream, rule) for rule in proc_rules):
+                    if self._move_app_stream_if_needed(stream, channel_key):
+                        handled_stream_ids.add(stream_id)
+                    break
+
+        # Second pass: legacy/manual app/bin/media/node rules.
+        for stream in streams:
+            try:
+                stream_id = int(getattr(stream, "stream_id", 0))
+            except Exception:
+                continue
+
+            if stream_id in handled_stream_ids:
+                continue
+
+            for channel_key, rules in channel_rules:
+                legacy_rules = [rule for rule in rules if not rule.startswith("proc:")]
+                if legacy_rules and any(self._stream_matches_rule(stream, rule) for rule in legacy_rules):
+                    if self._move_app_stream_if_needed(stream, channel_key):
+                        handled_stream_ids.add(stream_id)
+                    break
+
+        # Last pass: optional automatic routing for unknown/new streams.
+        self._autosort_app_streams_by_role(streams, handled_stream_ids)
+
 
     def move_app_stream(self, stream_id: int, channel_key: str) -> bool:
         key = self._normalize_channel_key(channel_key)
@@ -8902,7 +9184,8 @@ class DetachedPadsWindow(QMainWindow):
             self.setWindowIcon(QIcon(str(APP_ICON)))
 
         self._background_source = QPixmap(str(APP_BG)) if APP_BG.is_file() else QPixmap()
-        self._background_saturation = 0.72
+        self._background_saturation = 1.0
+        self._background_contrast = 1.0
         self._background_darkness = 130
         self._glass_opacity = 178
 
@@ -8965,13 +9248,14 @@ class DetachedPadsWindow(QMainWindow):
         grid.setHorizontalSpacing(10)
         grid.setVerticalSpacing(4)
 
-        title = QLabel("Background")
+        title = QLabel("Backdrop")
         title.setObjectName("detachedBgTitle")
         grid.addWidget(title, 0, 0, 1, 4)
 
         controls = [
             ("Blur", "blur", 18),
-            ("Saturation", "saturation", 72),
+            ("Saturation", "saturation", 50),
+            ("Contrast", "contrast", 50),
             ("Darkness", "darkness", 55),
             ("Glass", "glass", 70),
         ]
@@ -8984,6 +9268,8 @@ class DetachedPadsWindow(QMainWindow):
             slider = NoWheelSlider(Qt.Horizontal)
             slider.setRange(0, 100)
             slider.setValue(value)
+            if key in {"saturation", "contrast"}:
+                slider.setTracking(False)
             slider.setMinimumHeight(26)
             slider.valueChanged.connect(lambda new_value, item_key=key: self._apply_visual_setting(item_key, new_value))
             grid.addWidget(slider, index, 1, 1, 3)
@@ -9014,7 +9300,7 @@ class DetachedPadsWindow(QMainWindow):
         glass = max(0, min(255, self._glass_opacity))
         hover = max(0, min(255, glass + 18))
         dim = max(0, min(255, self._background_darkness))
-        wash = int(max(0.0, min(1.0, self._background_saturation)) * 42)
+        wash = 0
 
         self.setStyleSheet(f"""
 QFrame#backgroundWash {{
@@ -9166,7 +9452,7 @@ class Drawer(QFrame):
         content = QWidget()
         root = QVBoxLayout(content)
         root.setContentsMargins(2, 4, 2, 4)
-        root.setSpacing(12)
+        root.setSpacing(7)
 
         title = QLabel("Settings")
         title.setObjectName("sectionTitle")
@@ -9189,6 +9475,16 @@ class Drawer(QFrame):
         self.close_to_tray_check.toggled.connect(lambda checked: self._notify_visual("close_to_tray", bool(checked)))
         root.addWidget(self.close_to_tray_check)
 
+        self.auto_sort_apps_check = QCheckBox("Auto-sort new apps by PipeWire role")
+        self.auto_sort_apps_check.setChecked(bool(getattr(settings, "auto_sort_app_streams_by_role", True)))
+        self.auto_sort_apps_check.setToolTip(
+            "Automatically route new unknown audio streams by PipeWire media.role. Manual app routes always win."
+        )
+        self.auto_sort_apps_check.toggled.connect(
+            lambda checked: self._notify_visual("auto_sort_app_streams_by_role", bool(checked))
+        )
+        root.addWidget(self.auto_sort_apps_check)
+
         self.background_enabled_check = QCheckBox("Use custom background")
         self.background_enabled_check.setChecked(bool(getattr(settings, "wallpaper_enabled", False)))
         self.background_enabled_check.toggled.connect(lambda checked: self._notify_visual("background_enabled", bool(checked)))
@@ -9207,23 +9503,36 @@ class Drawer(QFrame):
         bg_row.addWidget(self.background_path_label, 1)
         root.addLayout(bg_row)
 
-        slider_controls = [
-            ("Background blur", "blur", int(getattr(settings, "glass_background_blur", 18))),
-            ("Background saturation", "saturation", int(getattr(settings, "glass_background_saturation", 72))),
-            ("Background darkness", "darkness", int(getattr(settings, "glass_background_darkness", 55))),
-            ("Black glass opacity", "glass", int(getattr(settings, "glass_opacity", 70))),
-        ]
+        def add_settings_section(section_title: str) -> None:
+            if root.count() > 0:
+                root.addSpacing(4)
+            label = QLabel(section_title)
+            label.setObjectName("sectionTitle")
+            root.addWidget(label)
 
-        for label, key, value in slider_controls:
-            root.addWidget(QLabel(label))
+        def add_settings_slider(label_text: str, key: str, value: int, *, live: bool = True) -> None:
+            label = QLabel(label_text)
+            label.setContentsMargins(0, 1, 0, 0)
+            root.addWidget(label)
             slider = NoWheelSlider(Qt.Horizontal)
             slider.setRange(0, 100)
             slider.setValue(max(0, min(100, int(value))))
-            slider.setMinimumHeight(34)
-            slider.setMaximumHeight(34)
-            slider.setTracking(True)
+            slider.setMinimumHeight(28)
+            slider.setMaximumHeight(28)
+            slider.setTracking(bool(live))
             slider.valueChanged.connect(lambda new_value, item_key=key: self._notify_visual(item_key, int(new_value)))
             root.addWidget(slider)
+
+        add_settings_section("Wallpaper image")
+        add_settings_slider("Saturation", "saturation", int(getattr(settings, "glass_background_saturation", 50)), live=False)
+        add_settings_slider("Contrast", "contrast", int(getattr(settings, "glass_background_contrast", 50)), live=False)
+
+        add_settings_section("Backdrop / overlay")
+        add_settings_slider("Blur", "blur", int(getattr(settings, "glass_background_blur", 18)))
+        add_settings_slider("Darkness", "darkness", int(getattr(settings, "glass_background_darkness", 55)))
+
+        add_settings_section("UI / Glass")
+        add_settings_slider("Black glass opacity", "glass", int(getattr(settings, "glass_opacity", 70)))
 
         root.addStretch(1)
         return self._make_scroll_page(content)
@@ -9473,7 +9782,8 @@ class PreviewWindow(QMainWindow):
         self.tray_icon: QSystemTrayIcon | None = None
 
         self._background_source = QPixmap(str(APP_BG)) if APP_BG.is_file() else QPixmap()
-        self._background_saturation = 0.72
+        self._background_saturation = 1.0
+        self._background_contrast = 1.0
         self._background_darkness = 130
         self._glass_opacity = 178
         self._meter_phase = 0.0
@@ -9634,6 +9944,10 @@ class PreviewWindow(QMainWindow):
         self._device_watch_debounce.setSingleShot(True)
         self._device_watch_debounce.setInterval(300)
         self._device_watch_debounce.timeout.connect(lambda: self._refresh_device_selectors_if_needed(force=True))
+        self._app_route_watch_debounce = QTimer(self)
+        self._app_route_watch_debounce.setSingleShot(True)
+        self._app_route_watch_debounce.setInterval(180)
+        self._app_route_watch_debounce.timeout.connect(self._refresh_app_routes_after_stream_event)
 
         self._device_watch_process = QProcess(self)
         self._device_watch_process.setProgram("pactl")
@@ -9796,7 +10110,8 @@ class PreviewWindow(QMainWindow):
     def _load_visual_settings_from_backend(self) -> None:
         settings = self.backend_controller.settings
         self._background_source = self._load_background_source_from_settings()
-        self._background_saturation = max(0.0, min(2.0, float(getattr(settings, "glass_background_saturation", 72)) / 100.0))
+        self._background_saturation = self._background_saturation_factor_from_slider(int(getattr(settings, "glass_background_saturation", 50)))
+        self._background_contrast = self._background_contrast_factor_from_slider(int(getattr(settings, "glass_background_contrast", 50)))
         self._background_darkness = int(40 + max(0, min(100, int(getattr(settings, "glass_background_darkness", 55)))) * 2.0)
         self._glass_opacity = int(70 + max(0, min(100, int(getattr(settings, "glass_opacity", 70)))) * 1.55)
 
@@ -9835,6 +10150,21 @@ class PreviewWindow(QMainWindow):
             self._save_visual_settings_later()
             return
 
+        if key == "auto_sort_app_streams_by_role":
+            settings.auto_sort_app_streams_by_role = bool(value)
+            try:
+                self.backend_controller._save_timer.start()
+            except Exception:
+                try:
+                    self.backend_controller.settings_store.save(settings)
+                except Exception:
+                    pass
+            try:
+                self.backend_controller._reapply_saved_app_routes()
+            except Exception as exc:
+                self.backend_controller.status_changed.emit(f"Apps auto-sort refresh error — {exc}")
+            return
+
         if key == "background_enabled":
             settings.wallpaper_enabled = bool(value)
             self._background_source = self._load_background_source_from_settings()
@@ -9863,9 +10193,16 @@ class PreviewWindow(QMainWindow):
 
         if key == "saturation":
             settings.glass_background_saturation = numeric
-            self._background_saturation = max(0.0, min(2.0, numeric / 100.0))
-            self._request_visual_style_update()
+            self._background_saturation = self._background_saturation_factor_from_slider(numeric)
             self._save_visual_settings_later()
+            self._refresh_background()
+            return
+
+        if key == "contrast":
+            settings.glass_background_contrast = numeric
+            self._background_contrast = self._background_contrast_factor_from_slider(numeric)
+            self._save_visual_settings_later()
+            self._refresh_background()
             return
 
         if key == "darkness":
@@ -9895,7 +10232,7 @@ class PreviewWindow(QMainWindow):
         hover = max(0, min(255, glass + 18))
         dim = max(0, min(255, self._background_darkness))
 
-        wash = int(max(0.0, min(1.0, self._background_saturation)) * 42)
+        wash = 0
         dynamic_style = f"""
 QFrame#backgroundWash {{
     background: rgba(90, 130, 255, {wash});
@@ -10046,6 +10383,20 @@ QFrame#channelCard[muted="true"]:hover {{
         except Exception:
             pass
 
+    def _refresh_app_routes_after_stream_event(self) -> None:
+        controller = getattr(self, "backend_controller", None)
+        if controller is None:
+            return
+
+        refresh = getattr(controller, "_reapply_saved_app_routes", None)
+        if not callable(refresh):
+            return
+
+        try:
+            refresh()
+        except Exception as exc:
+            controller.status_changed.emit(f"Apps auto-sort error — {exc}")
+
     def _start_device_watch_process(self) -> None:
         process = getattr(self, "_device_watch_process", None)
         if process is None:
@@ -10090,9 +10441,15 @@ QFrame#channelCard[muted="true"]:hover {{
             return
 
         interesting = False
+        app_route_interesting = False
+
         for line in data.lower().splitlines():
-            # Keep this passive watcher focused on real device topology changes.
-            # Do not refresh selectors for sink-input/source-output app stream events.
+            # Device selectors only need topology events. App routing also watches
+            # sink-input stream events, but with a separate lightweight debounce.
+            if " on sink-input #" in line:
+                app_route_interesting = True
+                continue
+
             if (
                 " on sink #" in line
                 or " on source #" in line
@@ -10100,10 +10457,13 @@ QFrame#channelCard[muted="true"]:hover {{
                 or " on server" in line
             ):
                 interesting = True
-                break
+
+        if app_route_interesting:
+            self._app_route_watch_debounce.start()
 
         if interesting:
             self._device_watch_debounce.start()
+
 
     def _device_watch_current_signature(self) -> tuple:
         output_pairs = tuple(self.backend_controller.available_output_targets())
@@ -10296,9 +10656,121 @@ QFrame#channelCard[muted="true"]:hover {{
     def _queue_background_refresh(self) -> None:
         self._background_refresh_timer.start()
 
+
+
+    def _background_saturation_factor_from_slider(self, value: int) -> float:
+        """Map UI saturation slider to real image saturation.
+
+        0   -> 0.0 grayscale
+        50  -> 1.0 original image colors
+        100 -> 2.0 boosted colors
+        """
+        try:
+            numeric = max(0, min(100, int(value)))
+        except Exception:
+            numeric = 50
+        return max(0.0, min(2.0, numeric / 50.0))
+
+
+    def _background_contrast_factor_from_slider(self, value: int) -> float:
+        """Map UI contrast slider to real image contrast.
+
+        0   -> flat/low contrast
+        50  -> original contrast
+        100 -> boosted contrast
+        """
+        try:
+            numeric = max(0, min(100, int(value)))
+        except Exception:
+            numeric = 50
+        return max(0.0, min(2.0, numeric / 50.0))
+
+    def _saturate_background_pixmap(self, pixmap: QPixmap) -> QPixmap:
+        """Apply saturation and contrast to the cached/scaled background pixmap.
+
+        Slider mapping:
+        0   -> reduced
+        50  -> normal
+        100 -> boosted
+        """
+        if pixmap.isNull():
+            return pixmap
+
+        try:
+            saturation = max(0.0, min(2.0, float(getattr(self, "_background_saturation", 1.0))))
+        except Exception:
+            saturation = 1.0
+
+        try:
+            contrast = max(0.0, min(2.0, float(getattr(self, "_background_contrast", 1.0))))
+        except Exception:
+            contrast = 1.0
+
+        if abs(saturation - 1.0) < 0.01 and abs(contrast - 1.0) < 0.01:
+            return pixmap
+
+        try:
+            fmt = getattr(QImage, "Format_ARGB32", None)
+            if fmt is None:
+                fmt = QImage.Format.Format_ARGB32
+            image = pixmap.toImage().convertToFormat(fmt)
+
+            bits = image.bits()
+            try:
+                bits.setsize(image.sizeInBytes())
+            except Exception:
+                pass
+
+            buf = memoryview(bits)
+            if buf.readonly:
+                return pixmap
+            if buf.format != "B":
+                buf = buf.cast("B")
+
+            width = int(image.width())
+            height = int(image.height())
+            bytes_per_line = int(image.bytesPerLine())
+
+            def clamp(value: float) -> int:
+                if value <= 0:
+                    return 0
+                if value >= 255:
+                    return 255
+                return int(value + 0.5)
+
+            for y in range(height):
+                row = y * bytes_per_line
+                end = row + width * 4
+                for i in range(row, end, 4):
+                    # QImage.Format_ARGB32 memory layout on little-endian: B, G, R, A.
+                    b = int(buf[i])
+                    g = int(buf[i + 1])
+                    r = int(buf[i + 2])
+
+                    gray = (0.299 * r) + (0.587 * g) + (0.114 * b)
+
+                    b = gray + (b - gray) * saturation
+                    g = gray + (g - gray) * saturation
+                    r = gray + (r - gray) * saturation
+
+                    # Contrast around mid-gray.
+                    b = 128.0 + (b - 128.0) * contrast
+                    g = 128.0 + (g - 128.0) * contrast
+                    r = 128.0 + (r - 128.0) * contrast
+
+                    buf[i] = clamp(b)
+                    buf[i + 1] = clamp(g)
+                    buf[i + 2] = clamp(r)
+
+            return QPixmap.fromImage(image)
+        except Exception:
+            return pixmap
+
+
+
     def _saturate_pixmap(self, pixmap: QPixmap) -> QPixmap:
         # V10: no pixel-by-pixel saturation processing.
-        # The Settings saturation slider controls a cheap background color wash instead.
+        # The Settings saturation slider applies real saturation to the scaled background pixmap.
         return pixmap
 
     def _refresh_background(self) -> None:
@@ -10309,14 +10781,28 @@ QFrame#channelCard[muted="true"]:hover {{
             self.background_label.clear()
             return
 
-        # One cheap low-res background pixmap. QLabel scales it during resize.
+
+
+        # Keep the normal background reasonably detailed, but process a smaller
+        # pixmap when saturation is not neutral. Pixel saturation is UI-only and
+        # must stay responsive while the slider is being dragged.
+        try:
+            saturation = float(getattr(self, "_background_saturation", 1.0))
+        except Exception:
+            saturation = 1.0
+        try:
+            contrast = float(getattr(self, "_background_contrast", 1.0))
+        except Exception:
+            contrast = 1.0
+
+        neutral = abs(saturation - 1.0) < 0.01 and abs(contrast - 1.0) < 0.01
         render_size = QSize(1280, 720)
         scaled = self._background_source.scaled(
             render_size,
             Qt.KeepAspectRatioByExpanding,
             Qt.SmoothTransformation,
         )
-        self.background_label.setPixmap(scaled)
+        self.background_label.setPixmap(self._saturate_background_pixmap(scaled))
 
     def _edges_for_global_pos(self, global_pos: QPoint) -> set[str]:
         local = self.mapFromGlobal(global_pos)

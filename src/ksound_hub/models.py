@@ -194,9 +194,11 @@ class AppSettings:
     wallpaper_blur: int = 0
     wallpaper_tint_strength: int = 40
     glass_background_blur: int = 18
-    glass_background_saturation: int = 72
+    glass_background_saturation: int = 50
+    glass_background_contrast: int = 50
     glass_background_darkness: int = 55
     glass_opacity: int = 70
+    auto_sort_app_streams_by_role: bool = True
     glass_micro_injection_channels: list[str] = field(default_factory=list)
     glass_micro_injection_volume: int = 125
     channels: list[ChannelConfig] = field(default_factory=list)
@@ -264,9 +266,11 @@ class AppSettings:
             wallpaper_blur=max(0, min(32, int(data.get("wallpaper_blur", 0)))),
             wallpaper_tint_strength=max(0, min(100, int(data.get("wallpaper_tint_strength", 40)))),
             glass_background_blur=max(0, min(100, int(data.get("glass_background_blur", 18)))),
-            glass_background_saturation=max(0, min(100, int(data.get("glass_background_saturation", 72)))),
+            glass_background_saturation=max(0, min(100, int(data.get("glass_background_saturation", 50)))),
+            glass_background_contrast=max(0, min(100, int(data.get("glass_background_contrast", 50)))),
             glass_background_darkness=max(0, min(100, int(data.get("glass_background_darkness", 55)))),
             glass_opacity=max(0, min(100, int(data.get("glass_opacity", 70)))),
+            auto_sort_app_streams_by_role=bool(data.get("auto_sort_app_streams_by_role", True)),
             glass_micro_injection_channels=glass_micro_injection_channels,
             glass_micro_injection_volume=glass_micro_injection_volume,
             channels=channels,
@@ -283,8 +287,10 @@ class AppSettings:
             "wallpaper_tint_strength": self.wallpaper_tint_strength,
             "glass_background_blur": self.glass_background_blur,
             "glass_background_saturation": self.glass_background_saturation,
+            "glass_background_contrast": self.glass_background_contrast,
             "glass_background_darkness": self.glass_background_darkness,
             "glass_opacity": self.glass_opacity,
+            "auto_sort_app_streams_by_role": bool(self.auto_sort_app_streams_by_role),
             "glass_micro_injection_channels": list(self.glass_micro_injection_channels),
             "glass_micro_injection_volume": max(0, min(200, int(self.glass_micro_injection_volume))),
             "channels": [channel.to_dict() for channel in self.channels],
