@@ -431,6 +431,45 @@ class GlassBackendController(QObject):
             return None
         return int(channel.volume), bool(channel.muted)
 
+    def channel_stereo_width(self, channel_key: str) -> int:
+        channel = self._find_channel(channel_key)
+        if channel is None:
+            return 100
+        try:
+            value = int(getattr(channel, "stereo_width", 100))
+        except Exception:
+            value = 100
+        return max(0, min(100, value))
+
+    def set_channel_stereo_width(self, channel_key: str, value: int) -> bool:
+        channel = self._find_channel(channel_key)
+        if channel is None:
+            return False
+
+        try:
+            numeric = int(value)
+        except Exception:
+            numeric = 100
+
+        # UI uses 10% steps. Clamp and normalize here too so config stays clean.
+        numeric = max(0, min(100, int(round(numeric / 10.0) * 10)))
+
+        if int(getattr(channel, "stereo_width", 100)) == numeric:
+            return True
+
+        channel.stereo_width = numeric
+        self.settings_store.save(self.settings)
+
+        try:
+            self.audio_engine.apply_channel(self.settings, channel.key)
+        except Exception as exc:
+            self.status_changed.emit(f"Stereo width warning — {exc}")
+
+        label = GLASS_CHANNEL_OVERLAY_META.get(channel.key, ("", channel.key.upper()))[1]
+        mode = "Mono" if numeric == 0 else "Stereo" if numeric == 100 else "Narrow stereo"
+        self.overlay_message_requested.emit(f"↔ {label} {mode} {numeric}%", False)
+        return True
+
     def meter_levels(self, channel_key: str) -> tuple[float, float]:
         try:
             key = self._normalize_channel_key(channel_key)
@@ -5046,6 +5085,8 @@ class ChannelCard(QFrame):
         volume_callback=None,
         volume_live_callback=None,
         mute_callback=None,
+        stereo_width: int = 100,
+        stereo_width_callback=None,
         device_callback=None,
         current_device: str | None = None,
         hard_gate_available: bool = False,
@@ -5059,6 +5100,7 @@ class ChannelCard(QFrame):
         self._volume_callback = volume_callback
         self._volume_live_callback = volume_live_callback
         self._mute_callback = mute_callback
+        self._stereo_width_callback = stereo_width_callback
         self._device_callback = device_callback
         self._hard_gate_available = bool(hard_gate_available and self.channel_key == "micro")
         self._hard_gate_enabled = bool(hard_gate_enabled and self._hard_gate_available)
@@ -5068,6 +5110,14 @@ class ChannelCard(QFrame):
         self._hard_gate_threshold_callback = hard_gate_threshold_callback
         self._normal_volume_value = int(value)
         self._normal_muted_value = False
+        self._stereo_width = max(0, min(100, int(round(int(stereo_width) / 10.0) * 10)))
+        self._stereo_popover = None
+        self._stereo_slider = None
+        self._stereo_value_label = None
+        self._stereo_save_timer = QTimer(self)
+        self._stereo_save_timer.setSingleShot(True)
+        self._stereo_save_timer.setInterval(80)
+        self._stereo_save_timer.timeout.connect(self._flush_stereo_width_callback)
         self._last_sent_gate_threshold: int | None = None
         self._syncing_controls = False
 
@@ -5099,7 +5149,11 @@ class ChannelCard(QFrame):
         icon_label = QLabel()
         icon_label.setObjectName("channelIcon")
         icon_label.setAlignment(Qt.AlignCenter)
+        icon_label.setCursor(Qt.PointingHandCursor)
+        icon_label.setToolTip("Click for stereo width / mono controls.")
         self._set_icon(icon_label, icon)
+        self.icon_label = icon_label
+        icon_label.mousePressEvent = self._on_icon_mouse_press  # type: ignore[method-assign]
         root.addWidget(icon_label, 0, Qt.AlignHCenter)
 
         name_label = QLabel(name)
@@ -5187,6 +5241,248 @@ class ChannelCard(QFrame):
         except Exception:
             pass
 
+
+    def _stereo_width_text(self, value: int) -> str:
+        numeric = max(0, min(100, int(value)))
+        if numeric == 0:
+            return "Mono"
+        if numeric == 100:
+            return "Stereo"
+        return "Narrow"
+
+    def _on_icon_mouse_press(self, event) -> None:
+        try:
+            if event.button() != Qt.LeftButton:
+                return
+            event.accept()
+        except Exception:
+            pass
+        self._toggle_stereo_popover()
+
+    def _ensure_stereo_popover(self) -> QFrame:
+        parent = self.window() or self
+        popover = getattr(self, "_stereo_popover", None)
+        if popover is not None and popover.parent() is parent:
+            return popover
+
+        if popover is not None:
+            try:
+                popover.hide()
+                popover.deleteLater()
+            except Exception:
+                pass
+
+        popover = QFrame(parent)
+        popover.setObjectName("stereoPopover")
+        popover.setAttribute(Qt.WA_StyledBackground, True)
+        popover.setWindowFlags(Qt.Widget)
+
+        layout = QVBoxLayout(popover)
+        layout.setContentsMargins(12, 10, 12, 10)
+        layout.setSpacing(7)
+
+        title = QLabel("Stereo width", popover)
+        title.setObjectName("stereoPopoverTitle")
+        title.setMinimumHeight(18)
+        title.setAlignment(Qt.AlignCenter)
+        layout.addWidget(title)
+
+        hint = QLabel("0% Mono  ·  100% Stereo  ·  10% steps", popover)
+        hint.setObjectName("stereoPopoverHint")
+        hint.setMinimumHeight(16)
+        hint.setAlignment(Qt.AlignCenter)
+        layout.addWidget(hint)
+
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(8)
+
+        mono = QLabel("Mono", popover)
+        mono.setObjectName("stereoPopoverHint")
+        mono.setMinimumWidth(34)
+        row.addWidget(mono)
+
+        slider = NoWheelSlider(Qt.Horizontal, popover)
+        slider.setObjectName("stereoPopoverSlider")
+        slider.setRange(0, 10)
+        slider.setSingleStep(1)
+        slider.setPageStep(1)
+        slider.setTickPosition(QSlider.TicksBelow)
+        slider.setTickInterval(1)
+        slider.setTracking(True)
+        slider.setMinimumHeight(30)
+        slider.setValue(max(0, min(10, int(round(self._stereo_width / 10.0)))))
+        slider.valueChanged.connect(self._on_stereo_slider_raw_changed)
+        row.addWidget(slider, 1)
+
+        stereo = QLabel("Stereo", popover)
+        stereo.setObjectName("stereoPopoverHint")
+        stereo.setMinimumWidth(44)
+        row.addWidget(stereo)
+
+        layout.addLayout(row)
+
+        tick_label = QLabel("│  │  │  │  │  │  │  │  │  │  │", popover)
+        tick_label.setObjectName("stereoPopoverTicks")
+        tick_label.setAlignment(Qt.AlignCenter)
+        tick_label.setMinimumHeight(10)
+        layout.addWidget(tick_label)
+
+        value_label = QLabel("", popover)
+        value_label.setObjectName("stereoPopoverValue")
+        value_label.setMinimumHeight(22)
+        value_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(value_label)
+
+        self._stereo_slider = slider
+        self._stereo_value_label = value_label
+        self._sync_stereo_popover_label()
+
+        popover.setFixedSize(236, 138)
+        popover.setStyleSheet("""
+QFrame#stereoPopover {
+    background: rgba(5, 8, 14, 238);
+    border: none;
+    border-radius: 14px;
+}
+QLabel#stereoPopoverTitle {
+    color: rgba(245, 250, 255, 250);
+    background: transparent;
+    font-size: 13px;
+    font-weight: 900;
+}
+QLabel#stereoPopoverHint {
+    color: rgba(205, 225, 240, 235);
+    background: transparent;
+    font-size: 11px;
+    font-weight: 650;
+}
+QLabel#stereoPopoverValue {
+    color: rgba(255, 255, 255, 250);
+    background: transparent;
+    font-size: 14px;
+    font-weight: 900;
+}
+QLabel#stereoPopoverTicks {
+    color: rgba(205, 225, 240, 145);
+    background: transparent;
+    font-size: 9px;
+    font-weight: 700;
+}
+QSlider#stereoPopoverSlider::groove:horizontal {
+    height: 5px;
+    border: none;
+    border-radius: 2px;
+    background: rgba(255, 255, 255, 50);
+}
+QSlider#stereoPopoverSlider::sub-page:horizontal {
+    height: 5px;
+    border: none;
+    border-radius: 2px;
+    background: rgba(76, 205, 255, 160);
+}
+QSlider#stereoPopoverSlider::add-page:horizontal {
+    height: 5px;
+    border: none;
+    border-radius: 2px;
+    background: rgba(255, 255, 255, 35);
+}
+QSlider#stereoPopoverSlider::handle:horizontal {
+    width: 14px;
+    height: 14px;
+    margin: -5px 0;
+    border: none;
+    border-radius: 7px;
+    background: rgba(238, 249, 255, 250);
+}
+""")
+
+        self._stereo_popover = popover
+        return popover
+
+    def _sync_stereo_popover_label(self) -> None:
+        label = getattr(self, "_stereo_value_label", None)
+        if label is not None:
+            label.setText(f"{self._stereo_width_text(self._stereo_width)}  {int(self._stereo_width)}%")
+
+    def _position_stereo_popover(self) -> None:
+        popover = getattr(self, "_stereo_popover", None)
+        icon = getattr(self, "icon_label", None)
+        if popover is None or icon is None:
+            return
+
+        parent = popover.parentWidget()
+        if parent is None:
+            return
+
+        try:
+            pos = icon.mapTo(parent, QPoint(0, icon.height() + 7))
+            x = max(8, min(pos.x() - 98, parent.width() - popover.width() - 8))
+            y = max(8, min(pos.y(), parent.height() - popover.height() - 8))
+            popover.move(x, y)
+        except Exception:
+            popover.move(12, 12)
+
+    def _toggle_stereo_popover(self) -> None:
+        popover = self._ensure_stereo_popover()
+        if popover.isVisible():
+            self._hide_stereo_popover()
+            return
+        slider = getattr(self, "_stereo_slider", None)
+        if slider is not None:
+            slider.blockSignals(True)
+            slider.setValue(max(0, min(10, int(round(self._stereo_width / 10.0)))))
+            slider.blockSignals(False)
+        self._sync_stereo_popover_label()
+        popover.adjustSize()
+        self._position_stereo_popover()
+        app = QApplication.instance()
+        if app is not None:
+            app.installEventFilter(self)
+        popover.show()
+        popover.raise_()
+
+    def _hide_stereo_popover(self) -> None:
+        popover = getattr(self, "_stereo_popover", None)
+        if popover is not None:
+            popover.hide()
+        app = QApplication.instance()
+        if app is not None:
+            try:
+                app.removeEventFilter(self)
+            except Exception:
+                pass
+
+    def _on_stereo_slider_raw_changed(self, raw: int) -> None:
+        self._stereo_width = max(0, min(100, int(raw) * 10))
+        self._sync_stereo_popover_label()
+        self._stereo_save_timer.start()
+
+    def _flush_stereo_width_callback(self) -> None:
+        if self._stereo_width_callback is None or not self.channel_key:
+            return
+        try:
+            self._stereo_width_callback(self.channel_key, int(self._stereo_width))
+        except Exception:
+            pass
+
+    def eventFilter(self, obj, event) -> bool:
+        if event.type() == QEvent.MouseButtonPress:
+            popover = getattr(self, "_stereo_popover", None)
+            if popover is not None and popover.isVisible():
+                try:
+                    global_pos = event.globalPosition().toPoint()
+                except AttributeError:
+                    global_pos = event.globalPos()
+
+                popover_rect = QRect(popover.mapToGlobal(QPoint(0, 0)), popover.size())
+                icon = getattr(self, "icon_label", None)
+                icon_rect = QRect(icon.mapToGlobal(QPoint(0, 0)), icon.size()) if icon is not None else QRect()
+
+                if not popover_rect.contains(global_pos) and not icon_rect.contains(global_pos):
+                    self._hide_stereo_popover()
+
+        return super().eventFilter(obj, event)
 
     def _set_icon(self, icon_label: QLabel, icon: str) -> None:
         icon_path = Path(str(icon or ""))
@@ -9910,6 +10206,8 @@ class PreviewWindow(QMainWindow):
                 volume_callback=self._send_channel_volume,
                 volume_live_callback=self._send_channel_volume_live,
                 mute_callback=self._set_channel_muted,
+                stereo_width=self._channel_stereo_width(channel_key),
+                stereo_width_callback=self._set_channel_stereo_width,
                 device_callback=self._set_channel_device,
                 current_device=self._channel_device_label(channel_key, card_devices),
                 hard_gate_available=hard_gate_available,
@@ -10566,6 +10864,9 @@ QFrame#channelCard[muted="true"]:hover {{
             return max(0, min(100, int(fallback_value))), False
         return state
 
+    def _channel_stereo_width(self, channel_key: str) -> int:
+        return self.backend_controller.channel_stereo_width(channel_key)
+
     def _sync_channel_card_from_backend(self, channel_key: str, volume: int, muted: bool) -> None:
         key = str(channel_key or "").strip()
         for card in self.channel_cards:
@@ -10593,6 +10894,9 @@ QFrame#channelCard[muted="true"]:hover {{
 
     def _set_channel_muted(self, channel_key: str, muted: bool) -> bool:
         return self.backend_controller.set_channel_muted(channel_key, bool(muted))
+
+    def _set_channel_stereo_width(self, channel_key: str, value: int) -> bool:
+        return self.backend_controller.set_channel_stereo_width(channel_key, int(value))
 
     def _start_meter_simulation(self) -> None:
         if __import__("os").environ.get("KSH_METERS_DISABLED", "").strip() == "1":

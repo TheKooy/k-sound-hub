@@ -365,6 +365,7 @@ struct ChannelState {
     bool enabled{false};
     bool muted{false};
     float volume{0.0f};
+    float stereo_width{1.0f};
     std::string target_label{};
     std::string target_sink{};
     std::vector<Biquad> filters;
@@ -610,6 +611,22 @@ bool same_filter_shape(const Biquad& a, const Biquad& b) {
            std::abs(a.a2 - b.a2) < eps;
 }
 
+
+void apply_stereo_width(std::vector<float>& frames, float width) {
+    width = clampf(width, 0.0f, 1.0f);
+    if (std::fabs(width - 1.0f) < 0.0001f) {
+        return;
+    }
+
+    for (std::size_t i = 0; i + 1 < frames.size(); i += 2) {
+        const float left = frames[i];
+        const float right = frames[i + 1];
+        const float mid = 0.5f * (left + right);
+        frames[i] = mid + (left - mid) * width;
+        frames[i + 1] = mid + (right - mid) * width;
+    }
+}
+
 void parse_state_text(const std::string& text) {
     std::map<std::string, ChannelState> parsed;
     for (const auto* key : PLAYBACK_KEYS) {
@@ -639,6 +656,15 @@ void parse_state_text(const std::string& text) {
             st.volume = volume_percent_to_gain(std::stof(parts[4]));
         } catch (...) {
             st.volume = 1.0f;
+        }
+
+        st.stereo_width = 1.0f;
+        if (parts.size() >= 9) {
+            try {
+                st.stereo_width = clampf(std::stof(parts[8]) / 100.0f, 0.0f, 1.0f);
+            } catch (...) {
+                st.stereo_width = 1.0f;
+            }
         }
         st.target_label = parts[5];
         st.target_sink = parts[6];
@@ -736,6 +762,10 @@ std::vector<float> process_channel(CaptureClient& capture, const ChannelState& s
 
     for (auto& filt : const_cast<std::vector<Biquad>&>(state.filters)) {
         filt.process(frames);
+    }
+
+    if (state.stereo_width < 0.999f) {
+        apply_stereo_width(frames, state.stereo_width);
     }
 
     const float base_gain = should_play ? state.volume : 0.0f;

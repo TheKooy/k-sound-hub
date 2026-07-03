@@ -179,6 +179,7 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
             target_sink = target.sink_name if target is not None else ""
 
         profile = self._current_profile(channel)
+        stereo_width = max(0, min(100, int(getattr(channel, "stereo_width", 100))))
         fields = [
             "channel",
             render_key,
@@ -188,11 +189,12 @@ class PipeWireAudioEngine(PipeWireAudioEngineBase):
             target_label,
             target_sink,
             self._bands_spec(profile),
+            str(stereo_width),
         ]
         return "\t".join(fields)
 
     def _render_state_text(self, settings: AppSettings) -> str:
-        lines = ["version\t1"]
+        lines = ["version\t2"]
         for key in PLAYBACK_KEYS:
             channel = self._find_channel(settings, key)
             if channel is None:

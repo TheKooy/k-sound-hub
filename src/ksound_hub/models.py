@@ -126,6 +126,7 @@ class ChannelConfig:
     muted: bool = False
     hard_gate_enabled: bool = False
     hard_gate_threshold: int = 12
+    stereo_width: int = 100
     visualizer_enabled: bool = True
     primary_target: str = ""
     linked_channels: list[str] = field(default_factory=list)
@@ -151,6 +152,7 @@ class ChannelConfig:
             muted=bool(data.get("muted", False)),
             hard_gate_enabled=bool(data.get("hard_gate_enabled", False)),
             hard_gate_threshold=max(0, min(100, int(data.get("hard_gate_threshold", 12)))),
+            stereo_width=max(0, min(100, int(data.get("stereo_width", 100)))),
             visualizer_enabled=bool(data.get("visualizer_enabled", True)),
             primary_target=str(data.get("primary_target", "")),
             linked_channels=[
@@ -175,6 +177,7 @@ class ChannelConfig:
             "muted": self.muted,
             "hard_gate_enabled": bool(self.hard_gate_enabled),
             "hard_gate_threshold": max(0, min(100, int(self.hard_gate_threshold))),
+            "stereo_width": max(0, min(100, int(self.stereo_width))),
             "visualizer_enabled": self.visualizer_enabled,
             "primary_target": self.primary_target,
             "linked_channels": list(self.linked_channels),
