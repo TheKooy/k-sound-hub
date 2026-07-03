@@ -451,8 +451,8 @@ class GlassBackendController(QObject):
         except Exception:
             numeric = 100
 
-        # UI uses 10% steps. Clamp and normalize here too so config stays clean.
-        numeric = max(0, min(100, int(round(numeric / 10.0) * 10)))
+        # UI uses 5% steps. Clamp and normalize here too so config stays clean.
+        numeric = max(0, min(100, int(round(numeric / 5.0) * 5)))
 
         if int(getattr(channel, "stereo_width", 100)) == numeric:
             return True
@@ -5110,7 +5110,7 @@ class ChannelCard(QFrame):
         self._hard_gate_threshold_callback = hard_gate_threshold_callback
         self._normal_volume_value = int(value)
         self._normal_muted_value = False
-        self._stereo_width = max(0, min(100, int(round(int(stereo_width) / 10.0) * 10)))
+        self._stereo_width = max(0, min(100, int(round(int(stereo_width) / 5.0) * 5)))
         self._stereo_popover = None
         self._stereo_slider = None
         self._stereo_value_label = None
@@ -5287,7 +5287,7 @@ class ChannelCard(QFrame):
         title.setAlignment(Qt.AlignCenter)
         layout.addWidget(title)
 
-        hint = QLabel("0% Mono  ·  100% Stereo  ·  10% steps", popover)
+        hint = QLabel("0% Mono  ·  100% Stereo  ·  5% steps", popover)
         hint.setObjectName("stereoPopoverHint")
         hint.setMinimumHeight(16)
         hint.setAlignment(Qt.AlignCenter)
@@ -5304,14 +5304,13 @@ class ChannelCard(QFrame):
 
         slider = NoWheelSlider(Qt.Horizontal, popover)
         slider.setObjectName("stereoPopoverSlider")
-        slider.setRange(0, 10)
+        slider.setRange(0, 20)
         slider.setSingleStep(1)
         slider.setPageStep(1)
-        slider.setTickPosition(QSlider.TicksBelow)
-        slider.setTickInterval(1)
+        slider.setTickPosition(QSlider.NoTicks)
         slider.setTracking(True)
-        slider.setMinimumHeight(30)
-        slider.setValue(max(0, min(10, int(round(self._stereo_width / 10.0)))))
+        slider.setMinimumHeight(24)
+        slider.setValue(max(0, min(20, int(round(self._stereo_width / 5.0)))))
         slider.valueChanged.connect(self._on_stereo_slider_raw_changed)
         row.addWidget(slider, 1)
 
@@ -5321,12 +5320,6 @@ class ChannelCard(QFrame):
         row.addWidget(stereo)
 
         layout.addLayout(row)
-
-        tick_label = QLabel("│  │  │  │  │  │  │  │  │  │  │", popover)
-        tick_label.setObjectName("stereoPopoverTicks")
-        tick_label.setAlignment(Qt.AlignCenter)
-        tick_label.setMinimumHeight(10)
-        layout.addWidget(tick_label)
 
         value_label = QLabel("", popover)
         value_label.setObjectName("stereoPopoverValue")
@@ -5338,7 +5331,7 @@ class ChannelCard(QFrame):
         self._stereo_value_label = value_label
         self._sync_stereo_popover_label()
 
-        popover.setFixedSize(236, 138)
+        popover.setFixedSize(236, 122)
         popover.setStyleSheet("""
 QFrame#stereoPopover {
     background: rgba(5, 8, 14, 238);
@@ -5362,12 +5355,6 @@ QLabel#stereoPopoverValue {
     background: transparent;
     font-size: 14px;
     font-weight: 900;
-}
-QLabel#stereoPopoverTicks {
-    color: rgba(205, 225, 240, 145);
-    background: transparent;
-    font-size: 9px;
-    font-weight: 700;
 }
 QSlider#stereoPopoverSlider::groove:horizontal {
     height: 5px;
@@ -5431,7 +5418,7 @@ QSlider#stereoPopoverSlider::handle:horizontal {
         slider = getattr(self, "_stereo_slider", None)
         if slider is not None:
             slider.blockSignals(True)
-            slider.setValue(max(0, min(10, int(round(self._stereo_width / 10.0)))))
+            slider.setValue(max(0, min(20, int(round(self._stereo_width / 5.0)))))
             slider.blockSignals(False)
         self._sync_stereo_popover_label()
         popover.adjustSize()
@@ -5454,7 +5441,7 @@ QSlider#stereoPopoverSlider::handle:horizontal {
                 pass
 
     def _on_stereo_slider_raw_changed(self, raw: int) -> None:
-        self._stereo_width = max(0, min(100, int(raw) * 10))
+        self._stereo_width = max(0, min(100, int(raw) * 5))
         self._sync_stereo_popover_label()
         self._stereo_save_timer.start()
 
