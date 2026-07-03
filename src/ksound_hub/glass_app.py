@@ -5287,7 +5287,7 @@ class ChannelCard(QFrame):
         title.setAlignment(Qt.AlignCenter)
         layout.addWidget(title)
 
-        hint = QLabel("0% Mono  ·  100% Stereo  ·  5% steps", popover)
+        hint = QLabel("0% Mono  ·  100% Stereo", popover)
         hint.setObjectName("stereoPopoverHint")
         hint.setMinimumHeight(16)
         hint.setAlignment(Qt.AlignCenter)
